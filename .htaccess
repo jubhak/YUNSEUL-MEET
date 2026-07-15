@@ -1,0 +1,12 @@
+# YUNSEUL-PPT → Node.js Socket.io (127.0.0.1:3000)
+<IfModule mod_rewrite.c>
+  RewriteEngine On
+
+  # WebSocket
+  RewriteCond %{HTTP:Upgrade} =websocket [NC]
+  RewriteRule ^ ws://127.0.0.1:3000%{REQUEST_URI} [P,L,QSA,UnsafeAllow3F]
+
+  # HTTP → Node
+  RewriteCond %{HTTP:Upgrade} !=websocket [NC]
+  RewriteRule ^ http://127.0.0.1:3000%{REQUEST_URI} [P,L,QSA,UnsafeAllow3F]
+</IfModule>

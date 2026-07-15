@@ -1,0 +1,275 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <title>참가 - YUNSEUL PPT</title>
+  <link rel="stylesheet" href="css/style.css?v=20260715at">
+  <style>
+    #main-toolbar.toolbar {
+      position: fixed !important;
+      top: 0 !important;
+      left: 0 !important;
+      right: 0 !important;
+      width: 100% !important;
+      z-index: 9000 !important;
+      display: flex !important;
+      align-items: center !important;
+      justify-content: space-between !important;
+      gap: 1rem !important;
+      opacity: 1 !important;
+      visibility: visible !important;
+      pointer-events: auto !important;
+      padding: 0.55rem 1rem !important;
+      margin: 0 !important;
+      background: linear-gradient(180deg, rgba(15,17,23,0.96) 0%, rgba(26,29,39,0.9) 80%, rgba(26,29,39,0.75) 100%) !important;
+      border-bottom: 1px solid rgba(46,51,69,0.7) !important;
+      box-shadow: 0 8px 24px rgba(0,0,0,0.35) !important;
+      backdrop-filter: blur(10px);
+      -webkit-backdrop-filter: blur(10px);
+      box-sizing: border-box !important;
+    }
+    #main-toolbar .room-badge {
+      display: inline-flex !important;
+      align-items: center !important;
+      gap: 0.35rem !important;
+      padding: 0.28rem 0.7rem !important;
+      border-radius: 8px !important;
+      background: rgba(45,212,168,0.14) !important;
+      border: 1px solid rgba(45,212,168,0.4) !important;
+      color: #e8eaef !important;
+      font-size: 0.88rem !important;
+      opacity: 1 !important;
+      visibility: visible !important;
+    }
+    #main-toolbar .room-badge strong {
+      color: #2dd4a8 !important;
+      font-size: 1.08rem !important;
+      letter-spacing: 0.14em !important;
+      font-weight: 700 !important;
+    }
+    body.presentation-page #app {
+      position: absolute !important;
+      inset: 0 !important;
+      width: 100% !important;
+      height: 100% !important;
+      z-index: 1 !important;
+    }
+    body.presentation-page .stage-area {
+      position: absolute !important;
+      inset: 0 !important;
+      z-index: 1 !important;
+    }
+    #main-toolbar .toolbar-right {
+      display: inline-flex !important;
+      align-items: center !important;
+      gap: 0.45rem !important;
+    }
+    #main-toolbar .tb-group-av {
+      display: inline-flex !important;
+      align-items: center !important;
+      gap: 0.35rem !important;
+    }
+    #main-toolbar .btn-icon {
+      display: inline-flex !important;
+      align-items: center !important;
+      justify-content: center !important;
+      width: 2.35rem !important;
+      height: 2.35rem !important;
+      min-width: 2.35rem !important;
+      padding: 0 !important;
+      border-radius: 9px !important;
+      border: 1px solid #3a4158 !important;
+      background: #242836 !important;
+      color: #e8eaef !important;
+      font-size: 1.15rem !important;
+      line-height: 1 !important;
+      cursor: pointer !important;
+    }
+    #main-toolbar .btn-icon .ico { display: block !important; font-size: 1.15rem !important; line-height: 1 !important; }
+    #main-toolbar .btn-av.is-active {
+      background: rgba(45,212,168,0.2) !important;
+      border-color: rgba(45,212,168,0.55) !important;
+      color: #2dd4a8 !important;
+    }
+    #main-toolbar .btn-av:not(.is-active) {
+      background: #2a2030 !important;
+      border-color: #6b3a4a !important;
+      color: #ff8fa3 !important;
+    }
+    #main-toolbar .btn-av .ico-off { display: none !important; }
+    #main-toolbar .btn-av:not(.is-active) .ico-on { display: none !important; }
+    #main-toolbar .btn-av:not(.is-active) .ico-off { display: block !important; }
+    .unmute-banner {
+      position: fixed !important;
+      left: 50% !important;
+      bottom: 18% !important;
+      transform: translateX(-50%) !important;
+      z-index: 9500 !important;
+      padding: 0.85rem 1.4rem !important;
+      border-radius: 999px !important;
+      border: 2px solid rgba(45,212,168,0.65) !important;
+      background: rgba(15,17,23,0.92) !important;
+      color: #2dd4a8 !important;
+      font-size: 1.05rem !important;
+      font-weight: 700 !important;
+      box-shadow: 0 12px 40px rgba(0,0,0,0.45) !important;
+      cursor: default !important;
+      pointer-events: none !important;
+      animation: unmute-pulse 1.4s ease-in-out infinite !important;
+    }
+    .unmute-banner.is-off {
+      border-color: rgba(148,163,184,0.55) !important;
+      color: #cbd5e1 !important;
+    }
+    @keyframes unmute-pulse {
+      0%, 100% { transform: translateX(-50%) scale(1); }
+      50% { transform: translateX(-50%) scale(1.04); }
+    }
+  </style>
+  <script type="importmap">
+  {
+    "imports": {
+      "tslib": "https://cdn.jsdelivr.net/npm/tslib@2.7.0/tslib.es6.mjs",
+      "jszip": "https://cdn.jsdelivr.net/npm/jszip@3.10.1/+esm",
+      "lodash": "https://cdn.jsdelivr.net/npm/lodash-es@4.17.21/lodash.js",
+      "uuid": "https://cdn.jsdelivr.net/npm/uuid@10.0.0/+esm",
+      "echarts": "./js/echarts-stub.js",
+      "pptx-preview": "https://esm.sh/pptx-preview@1.0.7"
+    }
+  }
+  </script>
+</head>
+<body class="presentation-page viewer-page">
+  <header class="toolbar" id="main-toolbar">
+    <div class="toolbar-left">
+      <span class="room-badge">참여 코드 <strong id="room-code"></strong></span>
+      <span class="viewer-badge">참가자 <a id="viewer-count-link" class="viewer-count-link"><strong id="viewer-count">0</strong>명</a></span>
+      <span id="sync-status" class="sync-status">연결 중...</span>
+    </div>
+    <div class="toolbar-center" id="slide-controls" style="display:none">
+      <span id="slide-indicator">1 / 1</span>
+    </div>
+    <div class="toolbar-right">
+      <div class="tb-group tb-group-av" id="viewer-av-tools">
+        <button type="button" id="btn-av-speaker" class="btn btn-icon btn-av" title="소리 꺼짐 — 클릭하여 켜기" aria-pressed="false" aria-label="소리">
+          <span class="ico ico-on" aria-hidden="true">🔊</span>
+          <span class="ico ico-off" aria-hidden="true">🔇</span>
+        </button>
+        <button type="button" id="btn-av-mic" class="btn btn-icon btn-av" title="마이크 꺼짐 — 클릭하여 켜기" aria-pressed="false" aria-label="마이크">
+          <span class="ico ico-on" aria-hidden="true">🎙️</span>
+          <span class="ico ico-off" aria-hidden="true">🚫</span>
+        </button>
+      </div>
+      <button type="button" id="btn-fullscreen" class="btn btn-sm" title="전체화면 (F)">전체화면</button>
+      <a href="./" class="btn btn-sm btn-ghost">나가기</a>
+    </div>
+  </header>
+
+  <div id="app">
+    <main class="stage-area">
+      <div id="waiting-panel" class="waiting-panel">
+        <div class="waiting-box">
+          <div class="spinner"></div>
+          <h2 id="waiting-title">호스트 화면 송출 대기</h2>
+          <p id="waiting-desc">호스트가 「송출」을 누르면 실시간으로 발표 화면이 보입니다.</p>
+        </div>
+      </div>
+
+      <div id="live-stage" class="live-stage hidden">
+        <video id="live-video" class="live-video" playsinline autoplay></video>
+      </div>
+
+      <!-- 레거시 DOM 유지(향후 하이브리드용), 기본은 숨김 -->
+      <div id="presentation-stage" class="presentation-stage hidden" aria-hidden="true">
+        <div id="slide-fit" class="slide-fit">
+          <div id="slide-scaler" class="slide-scaler">
+            <div id="slide-container" class="slide-container"></div>
+          </div>
+          <canvas id="draw-canvas" class="draw-canvas"></canvas>
+        </div>
+      </div>
+    </main>
+  </div>
+
+  <div id="mobile-fs-gate" class="mobile-fs-gate hidden">
+    <div class="gate-box">
+      <h2>전체화면으로 보기</h2>
+      <p>버튼을 누르면 전체화면으로 전환됩니다. 휴대폰은 가로로 돌려 주세요.</p>
+      <button type="button" id="btn-mobile-fs" class="btn btn-primary btn-lg">전체화면 시작</button>
+    </div>
+  </div>
+
+  <div id="rotate-hint" class="rotate-hint hidden">
+    <div>
+      <span class="phone-icon">📱</span>
+      <p>가로로 돌려 주세요</p>
+    </div>
+  </div>
+
+  <div id="link-popup" class="overlay hidden">
+    <div class="popup-window">
+      <div class="popup-header">
+        <span id="popup-title">링크</span>
+        <a id="popup-open-ext" class="popup-open-ext btn btn-sm" target="_blank" rel="noopener noreferrer">새 탭</a>
+        <button type="button" id="popup-close" class="btn-close" title="닫기">✕</button>
+      </div>
+      <iframe id="popup-iframe" sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-popups-to-escape-sandbox"></iframe>
+      <div id="popup-fallback" class="popup-fallback hidden">
+        <p id="popup-fallback-msg">이 사이트는 보안 정책으로 발표 화면에 넣을 수 없습니다.</p>
+        <a id="popup-fallback-open" class="btn btn-primary" target="_blank" rel="noopener noreferrer">새 탭에서 열기</a>
+      </div>
+    </div>
+  </div>
+
+  <div id="video-overlay" class="overlay hidden">
+    <div class="video-fullscreen">
+      <button type="button" id="video-close" class="btn-close video-close-btn" title="닫기" style="display:none">✕</button>
+      <video id="sync-video" playsinline></video>
+      <canvas id="video-draw-canvas" class="video-draw-canvas"></canvas>
+    </div>
+  </div>
+
+  <audio id="sync-audio" preload="auto" playsinline></audio>
+  <div id="unmute-banner" class="unmute-banner hidden" role="status" aria-live="polite">소리 켜기</div>
+
+  <div id="viewer-link-gate" class="viewer-link-gate hidden" aria-live="polite">
+    <div class="viewer-link-box">
+      <button type="button" id="viewer-link-close" class="btn-close viewer-link-close" title="닫기" aria-label="닫기">✕</button>
+      <h2 id="viewer-link-heading">호스트가 링크를 열었습니다</h2>
+      <p id="viewer-link-title" class="viewer-link-title"></p>
+      <p class="viewer-link-hint">보안 정책으로 발표 화면에 넣을 수 없는 사이트일 수 있습니다. 아래 버튼으로 본인 브라우저에서 열어 주세요.</p>
+      <div class="viewer-link-actions">
+        <a id="viewer-link-open" class="btn btn-primary" target="_blank" rel="noopener noreferrer">새 탭에서 열기</a>
+        <button type="button" id="viewer-link-dismiss" class="btn btn-sm btn-ghost">발표 화면으로</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 호스트가 링크 화면에 머무는 동안 언제든 다시 열기 -->
+  <a id="viewer-link-chip" class="viewer-link-chip hidden" target="_blank" rel="noopener noreferrer" title="호스트가 연 링크 다시 열기">🔗 새 탭에서 열기</a>
+
+  <div id="session-end-gate" class="session-end-gate hidden">
+    <div class="session-end-box">
+      <h2>발표가 종료되었습니다</h2>
+      <p id="session-end-message">호스트가 발표를 종료했습니다.</p>
+      <button type="button" id="btn-session-end-ok" class="btn btn-primary">확인</button>
+    </div>
+  </div>
+
+  <div id="load-progress" aria-hidden="true"></div>
+
+  <script src="/socket.io/socket.io.js"></script>
+  <script src="js/toolbar-pin.js?v=20260715d"></script>
+  <script src="js/progress-bar.js?v=20260715d"></script>
+  <script type="module" src="js/load-progress.js?v=20260715d"></script>
+  <script type="module" src="js/deps.js?v=20260715d"></script>
+  <script type="module" src="js/viewer.js?v=20260715av"></script>
+  <script type="module">
+    import { setupDisplayMode } from './js/display-mode.js?v=20260715';
+    setupDisplayMode({ autoPromptMobile: true });
+  </script>
+</body>
+</html>

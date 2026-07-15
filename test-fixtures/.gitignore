@@ -1,0 +1,4 @@
+# test fixtures — large PPTX are not copied; analysis only
+*
+!.gitignore
+!analysis.json

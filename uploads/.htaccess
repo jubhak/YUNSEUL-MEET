@@ -1,0 +1,11 @@
+# 업로드 폴더에서 PHP 실행 차단
+Options -ExecCGI
+<FilesMatch "\.(php|phtml|php3|php4|php5|phar)$">
+  <IfModule mod_authz_core.c>
+    Require all denied
+  </IfModule>
+  <IfModule !mod_authz_core.c>
+    Order deny,allow
+    Deny from all
+  </IfModule>
+</FilesMatch>

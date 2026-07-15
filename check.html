@@ -1,0 +1,217 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>시스템 점검 - YUNSEUL PPT</title>
+  <link rel="stylesheet" href="css/style.css">
+  <script type="importmap">
+  {
+    "imports": {
+      "tslib": "https://cdn.jsdelivr.net/npm/tslib@2.7.0/tslib.es6.mjs",
+      "jszip": "https://cdn.jsdelivr.net/npm/jszip@3.10.1/+esm",
+      "lodash": "https://cdn.jsdelivr.net/npm/lodash-es@4.17.21/lodash.js",
+      "uuid": "https://cdn.jsdelivr.net/npm/uuid@10.0.0/+esm",
+      "echarts": "./js/echarts-stub.js",
+      "pptx-preview": "https://esm.sh/pptx-preview@1.0.7"
+    }
+  }
+  </script>
+  <style>
+    .check-page { max-width: 720px; margin: 2rem auto; padding: 0 1rem; }
+    .check-page h1 { margin-bottom: 0.5rem; }
+    .check-list { list-style: none; margin: 1.5rem 0; }
+    .check-list li {
+      display: flex; gap: 0.75rem; align-items: flex-start;
+      padding: 0.75rem 1rem; margin-bottom: 0.5rem;
+      background: var(--surface); border: 1px solid var(--border); border-radius: 8px;
+      font-size: 0.95rem;
+    }
+    .badge { font-weight: 700; min-width: 3.5rem; }
+    .badge.ok { color: var(--secondary); }
+    .badge.fail { color: var(--danger); }
+    .badge.run { color: var(--text-muted); }
+    .detail { color: var(--text-muted); font-size: 0.85rem; margin-top: 0.25rem; word-break: break-all; }
+    #preview-box {
+      margin-top: 1rem; background: #fff; min-height: 200px;
+      border-radius: 8px; overflow: auto;
+    }
+  </style>
+</head>
+<body class="landing-page">
+  <div class="check-page">
+    <h1>시스템 점검</h1>
+    <p class="subtitle">업로드·표시가 안 될 때 여기서 원인을 확인하세요.</p>
+    <ul class="check-list" id="results"></ul>
+    <div id="preview-box" class="hidden"></div>
+    <p style="margin-top:1.5rem">
+      <a href="./" class="btn btn-primary">메인으로</a>
+      <button type="button" id="btn-rerun" class="btn btn-sm">다시 검사</button>
+    </p>
+  </div>
+
+  <script type="module">
+    const results = document.getElementById('results');
+
+    function add(name, state, detail = '') {
+      const li = document.createElement('li');
+      li.innerHTML = `<span class="badge ${state}">${state === 'ok' ? '통과' : state === 'fail' ? '실패' : '…'}</span>
+        <div><strong>${name}</strong>${detail ? `<div class="detail">${detail}</div>` : ''}</div>`;
+      results.appendChild(li);
+      return li;
+    }
+
+    async function run() {
+      results.innerHTML = '';
+      let failed = 0;
+
+      // 1) PHP health
+      try {
+        const res = await fetch('api/health.php');
+        const text = await res.text();
+        let data;
+        try { data = JSON.parse(text); }
+        catch { throw new Error('JSON 아님: ' + text.slice(0, 100)); }
+        if (!res.ok || !data.ok) {
+          failed++;
+          add('PHP / 폴더 권한', 'fail', JSON.stringify(data.checks || data, null, 2));
+        } else {
+          add('PHP / 폴더 권한', 'ok',
+            `PHP ${data.checks.php_version.value}, upload=${data.checks.upload_limits.value.upload_max_filesize}`);
+        }
+      } catch (e) {
+        failed++;
+        add('PHP / 폴더 권한', 'fail', e.message);
+      }
+
+      // 2) 방 생성 API
+      try {
+        const res = await fetch('api/create-room.php', { method: 'POST' });
+        const data = await res.json();
+        if (!res.ok || !data.code || !data.hostToken) throw new Error(data.error || '응답 이상');
+        add('방 생성 API', 'ok', `code=${data.code}`);
+        window.__checkRoom = data;
+      } catch (e) {
+        failed++;
+        add('방 생성 API', 'fail', e.message);
+      }
+
+      // 3) bare deps (tslib 등)
+      const deps = ['tslib', 'jszip', 'lodash', 'uuid', 'echarts'];
+      for (const name of deps) {
+        try {
+          await import(name);
+          add(`의존성 ${name}`, 'ok');
+        } catch (e) {
+          failed++;
+          add(`의존성 ${name}`, 'fail', e.message);
+        }
+      }
+
+      // 4) pptx-preview init
+      let initFn = null;
+      try {
+        const mod = await import('pptx-preview');
+        if (typeof mod.init !== 'function') throw new Error('init 함수 없음');
+        initFn = mod.init;
+        add('pptx-preview (esm.sh)', 'ok', 'init() 확인');
+      } catch (e) {
+        failed++;
+        add('pptx-preview (esm.sh)', 'fail', e.message);
+      }
+
+      // 5) 최소 PPTX ZIP 생성 → preview
+      try {
+        if (!initFn) throw new Error('pptx-preview 로드 실패로 건너뜀');
+        const JSZip = (await import('jszip')).default;
+        const zip = new JSZip();
+        // 최소 OOXML 뼈대 (열기 검증용 — 빈 슬라이드급)
+        zip.file('[Content_Types].xml',
+          `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+  <Default Extension="xml" ContentType="application/xml"/>
+  <Override PartName="/ppt/presentation.xml" ContentType="application/vnd.openxmlformats-officedocument.presentationml.presentation.main+xml"/>
+  <Override PartName="/ppt/slides/slide1.xml" ContentType="application/vnd.openxmlformats-officedocument.presentationml.slide+xml"/>
+</Types>`);
+        zip.file('_rels/.rels',
+          `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="ppt/presentation.xml"/>
+</Relationships>`);
+        zip.file('ppt/presentation.xml',
+          `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<p:presentation xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"
+ xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"
+ xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main">
+  <p:sldIdLst><p:sldId id="256" r:id="rId1"/></p:sldIdLst>
+</p:presentation>`);
+        zip.file('ppt/_rels/presentation.xml.rels',
+          `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/slide" Target="slides/slide1.xml"/>
+</Relationships>`);
+        zip.file('ppt/slides/slide1.xml',
+          `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<p:sld xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"
+ xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"
+ xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main">
+  <p:cSld><p:spTree>
+    <p:nvGrpSpPr><p:cNvPr id="1" name=""/><p:cNvGrpSpPr/><p:nvPr/></p:nvGrpSpPr>
+    <p:grpSpPr/>
+  </p:spTree></p:cSld>
+</p:sld>`);
+
+        const buf = await zip.generateAsync({ type: 'arraybuffer' });
+        const head = new Uint8Array(buf, 0, 2);
+        if (head[0] !== 0x50 || head[1] !== 0x4b) throw new Error('생성된 ZIP 매직 실패');
+
+        // 업로드 라운드트립
+        const room = window.__checkRoom;
+        if (!room) throw new Error('방 생성 결과가 없어 업로드 테스트 생략');
+
+        const fd = new FormData();
+        fd.append('presentation', new Blob([buf], {
+          type: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+        }), 'check.pptx');
+        fd.append('hostToken', room.hostToken);
+        fd.append('code', room.code);
+        fd.append('slideCount', '1');
+
+        const up = await fetch('api/upload.php', { method: 'POST', body: fd });
+        const upText = await up.text();
+        let upData;
+        try { upData = JSON.parse(upText); }
+        catch { throw new Error('업로드 응답 비정상: ' + upText.slice(0, 120)); }
+        if (!up.ok) throw new Error(upData.error || '업로드 실패');
+
+        const fileUrl = upData.presentation.url;
+        const fileRes = await fetch(fileUrl);
+        if (!fileRes.ok) throw new Error('get-file HTTP ' + fileRes.status);
+        const fileBuf = await fileRes.arrayBuffer();
+        const pk = new Uint8Array(fileBuf, 0, 2);
+        if (pk[0] !== 0x50 || pk[1] !== 0x4b) {
+          throw new Error('다운로드 내용이 ZIP이 아님 (HTML일 수 있음)');
+        }
+
+        const box = document.getElementById('preview-box');
+        box.classList.remove('hidden');
+        box.innerHTML = '';
+        const viewer = initFn(box, { width: 480, height: 270 });
+        await viewer.preview(fileBuf);
+
+        add('업로드→다운로드→렌더', 'ok', fileUrl);
+      } catch (e) {
+        failed++;
+        add('업로드→다운로드→렌더', 'fail', e.message);
+      }
+
+      add('종합', failed === 0 ? 'ok' : 'fail',
+        failed === 0 ? '모든 검사 통과. 호스트에서 PPT를 다시 올려보세요.' : `실패 ${failed}건 — 위 항목을 해결하세요.`);
+    }
+
+    document.getElementById('btn-rerun').addEventListener('click', run);
+    run();
+  </script>
+</body>
+</html>

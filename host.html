@@ -1,0 +1,331 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+  <meta http-equiv="Pragma" content="no-cache">
+  <title>호스트 - YUNSEUL PPT</title>
+  <link rel="stylesheet" href="css/style.css?v=20260715at">
+  <style>
+    /* 툴바 강제 · 아이콘 가시성 강제 (캐시된 CSS 이겨내기) */
+    #main-toolbar.toolbar {
+      position: fixed !important;
+      top: 0 !important;
+      left: 0 !important;
+      right: 0 !important;
+      width: 100% !important;
+      z-index: 9000 !important;
+      display: flex !important;
+      align-items: flex-start !important;
+      justify-content: flex-start !important;
+      opacity: 1 !important;
+      visibility: visible !important;
+      pointer-events: auto !important;
+      padding: 0.45rem 0.65rem 0.7rem !important;
+      margin: 0 !important;
+      min-height: 3.4rem !important;
+      background: linear-gradient(180deg, rgba(15,17,23,0.96) 0%, rgba(26,29,39,0.9) 80%, rgba(26,29,39,0.75) 100%) !important;
+      border-bottom: 1px solid rgba(46,51,69,0.7) !important;
+      box-shadow: 0 8px 24px rgba(0,0,0,0.35) !important;
+      box-sizing: border-box !important;
+    }
+    #main-toolbar .toolbar-groups {
+      display: flex !important;
+      flex-wrap: wrap !important;
+      align-items: center !important;
+      row-gap: 0.5rem !important;
+      column-gap: 0 !important;
+      width: 100% !important;
+    }
+    #main-toolbar .tb-group {
+      display: inline-flex !important;
+      align-items: center !important;
+      gap: 0.4rem !important;
+      min-height: 2.2rem !important;
+    }
+    #main-toolbar .tb-sep {
+      width: 1px !important;
+      align-self: stretch !important;
+      min-height: 1.8rem !important;
+      margin: 0 0.55rem !important;
+      background: rgba(148,163,184,0.45) !important;
+      flex-shrink: 0 !important;
+    }
+    body:not(.has-presentation) #main-toolbar .tb-sep,
+    body:not(.has-presentation) #main-toolbar .tb-group-nav,
+    body:not(.has-presentation) #main-toolbar .tb-group-draw,
+    body:not(.has-presentation) #main-toolbar .tb-group-av {
+      display: none !important;
+    }
+    body.has-presentation #main-toolbar .tb-sep {
+      display: block !important;
+    }
+    body.has-presentation #main-toolbar .tb-group-nav,
+    body.has-presentation #main-toolbar .tb-group-draw,
+    body.has-presentation #main-toolbar .tb-group-av,
+    body.has-presentation #main-toolbar #av-tools {
+      display: inline-flex !important;
+      visibility: visible !important;
+      opacity: 1 !important;
+    }
+    #main-toolbar .room-badge {
+      display: inline-flex !important;
+      align-items: center !important;
+      gap: 0.35rem !important;
+      padding: 0.28rem 0.7rem !important;
+      border-radius: 8px !important;
+      background: rgba(45,212,168,0.14) !important;
+      border: 1px solid rgba(45,212,168,0.4) !important;
+      color: #e8eaef !important;
+      font-size: 0.88rem !important;
+    }
+    #main-toolbar .room-badge strong {
+      color: #2dd4a8 !important;
+      font-size: 1.08rem !important;
+      letter-spacing: 0.14em !important;
+      font-weight: 700 !important;
+    }
+    #main-toolbar .btn-nav {
+      padding: 0.2rem 0.35rem !important;
+      font-size: 0.78rem !important;
+      min-width: 1.7rem !important;
+    }
+    #main-toolbar #slide-indicator {
+      font-size: 0.78rem !important;
+      min-width: 2.8rem !important;
+      white-space: nowrap !important;
+      color: #e8eaef !important;
+    }
+    #main-toolbar .btn-icon {
+      display: inline-flex !important;
+      align-items: center !important;
+      justify-content: center !important;
+      width: 2.35rem !important;
+      height: 2.35rem !important;
+      min-width: 2.35rem !important;
+      padding: 0 !important;
+      border-radius: 9px !important;
+      border: 1px solid #3a4158 !important;
+      background: #242836 !important;
+      color: #e8eaef !important;
+      font-size: 1.15rem !important;
+      line-height: 1 !important;
+      cursor: pointer !important;
+    }
+    #main-toolbar .btn-icon .ico { display: block !important; font-size: 1.15rem !important; line-height: 1 !important; }
+    #main-toolbar .btn-icon svg { display: none !important; }
+    #main-toolbar #btn-pen.is-active {
+      background: #3d6aef !important;
+      border-color: #355fd4 !important;
+      color: #fff !important;
+    }
+    #main-toolbar .btn-av.is-active {
+      background: rgba(45,212,168,0.2) !important;
+      border-color: rgba(45,212,168,0.55) !important;
+      color: #2dd4a8 !important;
+    }
+    #main-toolbar .btn-av:not(.is-active) {
+      background: #2a2030 !important;
+      border-color: #6b3a4a !important;
+      color: #ff8fa3 !important;
+      opacity: 0.95 !important;
+    }
+    #main-toolbar .btn-av .ico-off { display: none !important; }
+    #main-toolbar .btn-av:not(.is-active) .ico-on { display: none !important; }
+    #main-toolbar .btn-av:not(.is-active) .ico-off { display: block !important; }
+    #main-toolbar #pen-color {
+      width: 2.1rem !important;
+      height: 2.1rem !important;
+      border: 1px solid #3a4158 !important;
+      border-radius: 6px !important;
+      padding: 0 !important;
+      background: none !important;
+    }
+    body.presentation-page #app {
+      position: absolute !important;
+      inset: 0 !important;
+      width: 100% !important;
+      height: 100% !important;
+      z-index: 1 !important;
+    }
+    body.presentation-page .stage-area {
+      position: absolute !important;
+      inset: 0 !important;
+      z-index: 1 !important;
+    }
+  </style>
+  <script type="importmap">
+  {
+    "imports": {
+      "tslib": "https://cdn.jsdelivr.net/npm/tslib@2.7.0/tslib.es6.mjs",
+      "jszip": "https://cdn.jsdelivr.net/npm/jszip@3.10.1/+esm",
+      "lodash": "https://cdn.jsdelivr.net/npm/lodash-es@4.17.21/lodash.js",
+      "uuid": "https://cdn.jsdelivr.net/npm/uuid@10.0.0/+esm",
+      "echarts": "./js/echarts-stub.js",
+      "pptx-preview": "https://esm.sh/pptx-preview@1.0.7"
+    }
+  }
+  </script>
+</head>
+<body class="presentation-page">
+  <!-- 툴바는 #app 밖 body 직속 — 슬라이드에 절대 가려지지 않음 -->
+  <header class="toolbar toolbar-host" id="main-toolbar">
+    <div class="toolbar-groups">
+      <div class="tb-group tb-group-room">
+        <span class="room-badge">참여 코드 <strong id="room-code"></strong></span>
+        <span class="viewer-badge">참가자 <a id="viewer-count-link" class="viewer-count-link"><strong id="viewer-count">0</strong>명</a></span>
+      </div>
+
+      <div class="tb-sep" role="separator" aria-hidden="true"></div>
+
+      <div class="tb-group tb-group-nav" id="slide-controls" style="display:none">
+        <button type="button" id="btn-prev" class="btn btn-sm btn-nav" title="이전 슬라이드">◀</button>
+        <span id="slide-indicator">1 / 1</span>
+        <button type="button" id="btn-next" class="btn btn-sm btn-nav" title="다음 슬라이드">▶</button>
+      </div>
+
+      <div class="tb-sep tb-sep-draw" role="separator" aria-hidden="true"></div>
+
+      <div class="tb-group tb-group-draw" id="draw-tools" style="display:none">
+        <button type="button" id="btn-pen" class="btn btn-icon btn-pen is-active" title="펜 끄기" aria-pressed="true" aria-label="펜">
+          <span class="ico" aria-hidden="true">✏️</span>
+        </button>
+        <input type="color" id="pen-color" value="#ff0000" title="펜 색상">
+        <input type="range" id="pen-size" min="1" max="20" value="4" title="펜 굵기">
+        <button type="button" id="btn-eraser" class="btn btn-sm" title="지우개">지우개</button>
+        <button type="button" id="btn-clear-slide" class="btn btn-sm" title="현재 슬라이드 지우기">슬라이드 지우기</button>
+        <button type="button" id="btn-clear-all" class="btn btn-sm" title="전체 지우기">전체 지우기</button>
+      </div>
+
+      <div class="tb-sep tb-sep-session" role="separator" aria-hidden="true"></div>
+
+      <div class="tb-group tb-group-session">
+        <button type="button" id="btn-reload-ppt" class="btn btn-sm" title="다른 PPTX 파일로 바꾸기" style="display:none">PPT 바꾸기</button>
+        <button type="button" id="btn-stream" class="btn btn-sm btn-primary" title="참가자에게 화면 송출">송출</button>
+        <button type="button" id="btn-fullscreen" class="btn btn-sm" title="전체화면 (F)">전체화면</button>
+        <button type="button" id="btn-end-session" class="btn btn-sm btn-ghost">종료</button>
+      </div>
+
+      <div class="tb-sep tb-sep-av" role="separator" aria-hidden="true"></div>
+
+      <div class="tb-group tb-group-av" id="av-tools" style="display:none">
+        <button type="button" id="btn-av-speaker" class="btn btn-icon btn-av is-active" title="탭 오디오 켜짐 — 클릭하여 끄기" aria-pressed="true" aria-label="탭 오디오">
+          <span class="ico ico-on" aria-hidden="true">🔊</span>
+          <span class="ico ico-off" aria-hidden="true">🔇</span>
+        </button>
+        <button type="button" id="btn-av-mic" class="btn btn-icon btn-av" title="마이크 꺼짐 — 클릭하여 켜기" aria-pressed="false" aria-label="마이크">
+          <span class="ico ico-on" aria-hidden="true">🎙️</span>
+          <span class="ico ico-off" aria-hidden="true">🚫</span>
+        </button>
+      </div>
+    </div>
+  </header>
+
+  <!-- 송출(Region/Element Capture) 대상: 툴바는 제외, 발표·오버레이만 포함 -->
+  <div id="capture-root">
+  <div id="app">
+    <main class="stage-area">
+      <div id="upload-panel" class="upload-panel">
+        <div class="upload-box" id="upload-box" role="button" tabindex="0">
+          <h2>PPT 파일 업로드</h2>
+          <p>.pptx 파일을 선택하거나 이 영역에 드래그하세요</p>
+          <input type="file" id="file-input" accept=".pptx,application/vnd.openxmlformats-officedocument.presentationml.presentation" hidden>
+          <label for="file-input" id="btn-select-file" class="btn btn-primary">파일 선택</label>
+          <p id="upload-status" class="upload-status">라이브러리 준비 중…</p>
+        </div>
+      </div>
+
+      <div id="presentation-stage" class="presentation-stage hidden">
+        <div id="slide-fit" class="slide-fit">
+          <div id="slide-scaler" class="slide-scaler">
+            <div id="slide-container" class="slide-container"></div>
+          </div>
+          <canvas id="draw-canvas" class="draw-canvas"></canvas>
+        </div>
+      </div>
+    </main>
+  </div><!-- /#app -->
+
+  <div id="link-popup" class="overlay hidden">
+    <div class="popup-window">
+      <div class="popup-header">
+        <span id="popup-title">링크</span>
+        <button type="button" id="btn-popup-pen" class="btn btn-sm btn-popup-pen" title="펜으로 그리기" aria-pressed="false">펜</button>
+        <a id="popup-open-ext" class="popup-open-ext btn btn-sm" target="_blank" rel="noopener noreferrer">새 탭</a>
+        <button type="button" id="popup-close" class="btn-close">✕</button>
+      </div>
+      <div class="popup-body">
+        <iframe id="popup-iframe" sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-popups-to-escape-sandbox"></iframe>
+        <div id="popup-fallback" class="popup-fallback hidden">
+          <p id="popup-fallback-msg">이 사이트는 보안 정책으로 발표 화면에 넣을 수 없습니다.</p>
+          <a id="popup-fallback-open" class="btn btn-primary" target="_blank" rel="noopener noreferrer">새 탭에서 열기</a>
+        </div>
+        <canvas id="link-draw-canvas" class="link-draw-canvas"></canvas>
+      </div>
+    </div>
+  </div>
+
+  <div id="video-overlay" class="overlay hidden">
+    <div class="video-fullscreen">
+      <button type="button" id="video-close" class="btn-close video-close-btn">✕</button>
+      <video id="sync-video" controls playsinline></video>
+      <canvas id="video-draw-canvas" class="video-draw-canvas"></canvas>
+    </div>
+  </div>
+  </div><!-- /#capture-root -->
+
+  <div id="stream-options-gate" class="stream-options-gate hidden">
+    <div class="stream-options-box">
+      <h2>화면 송출</h2>
+      <p>참가자에게 이 탭 화면을 실시간으로 보냅니다.</p>
+      <div class="stream-opt-list">
+        <label class="stream-opt-row">
+          <input type="checkbox" id="opt-stream-mic">
+          <span>마이크도 함께 송출</span>
+        </label>
+      </div>
+      <p class="stream-opt-hint">다음 화면에서 Chrome이 탭 공유·탭 오디오를 묻습니다. (브라우저 보안상 필수) PPT/동영상 소리는 거기에서 허용하면 됩니다.</p>
+      <div class="stream-options-actions">
+        <button type="button" id="btn-stream-cancel" class="btn btn-sm btn-ghost">취소</button>
+        <button type="button" id="btn-stream-start" class="btn btn-sm btn-primary">시작</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="mobile-fs-gate" class="mobile-fs-gate hidden">
+    <div class="gate-box">
+      <h2>전체화면으로 보기</h2>
+      <p>휴대폰에서는 버튼을 눌러 전체화면·가로 모드로 시청하세요.</p>
+      <button type="button" id="btn-mobile-fs" class="btn btn-primary btn-lg">전체화면 시작</button>
+    </div>
+  </div>
+
+  <div id="rotate-hint" class="rotate-hint hidden">
+    <div>
+      <span class="phone-icon">📱</span>
+      <p>가로로 돌려 주세요</p>
+    </div>
+  </div>
+
+  <audio id="sync-audio" preload="auto" playsinline></audio>
+  <button type="button" id="unmute-banner" class="unmute-banner hidden">🔊 탭하여 소리 켜기</button>
+
+  <div id="load-progress" aria-hidden="true"></div>
+
+  <script src="/socket.io/socket.io.js"></script>
+  <script src="js/toolbar-pin.js?v=20260715w"></script>
+  <script src="js/progress-bar.js?v=20260715w"></script>
+  <script src="js/host-upload.js?v=20260715w"></script>
+  <script type="module" src="js/load-progress.js?v=20260715w"></script>
+  <script type="module" src="js/deps.js?v=20260715w"></script>
+  <script type="module" src="js/host-ppt-loader.js?v=20260715ah"></script>
+  <script type="module" src="js/host.js?v=20260715at"></script>
+  <script type="module">
+    import { setupDisplayMode } from './js/display-mode.js?v=20260715';
+    setupDisplayMode({ autoPromptMobile: true });
+  </script>
+</body>
+</html>

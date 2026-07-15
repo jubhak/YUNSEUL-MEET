@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>YUNSEUL PPT - 실시간 발표 공유</title>
+  <link rel="stylesheet" href="css/style.css?v=20260715h">
+</head>
+<body class="landing-page">
+  <div class="landing-container">
+    <header class="landing-header">
+      <h1>YUNSEUL PPT</h1>
+      <p class="subtitle">실시간 PPT 공유 · 낙서 · 링크 · 동영상 동기화</p>
+    </header>
+
+    <main class="landing-main">
+      <section class="card">
+        <h2>호스트 — 방 만들기</h2>
+        <p>방을 만들고 PPT를 업로드한 뒤, 참가자에게 방 코드를 공유하세요.</p>
+        <button id="btn-create-room" class="btn btn-primary btn-lg">새 방 만들기</button>
+        <div id="host-result" class="result-box hidden">
+          <p>방 코드: <strong id="room-code-display"></strong></p>
+          <p class="hint">이 코드를 참가자에게 알려주세요.</p>
+          <button id="btn-go-host" class="btn btn-primary">발표 시작하기</button>
+        </div>
+      </section>
+
+      <section class="card">
+        <h2>참가자 — 방 참가</h2>
+        <p>호스트가 알려준 방 코드를 입력하고 참가하세요.</p>
+        <div class="form-group">
+          <label for="join-code">방 코드</label>
+          <input type="text" id="join-code" placeholder="예: ABC123" maxlength="6" autocomplete="off">
+        </div>
+        <div class="form-group">
+          <label for="viewer-name">이름 (선택)</label>
+          <input type="text" id="viewer-name" placeholder="참가자" maxlength="20">
+        </div>
+        <button id="btn-join-room" class="btn btn-secondary btn-lg">방 참가하기</button>
+        <p id="join-error" class="error-text hidden"></p>
+      </section>
+    </main>
+
+    <footer class="landing-footer">
+      <p>10명 이상 동시 접속 지원 · 실시간 슬라이드 · 낙서 · 링크/동영상 동기화</p>
+    </footer>
+  </div>
+
+  <script type="module" src="js/landing.js?v=20260715h"></script>
+</body>
+</html>
