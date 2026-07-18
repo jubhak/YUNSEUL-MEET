@@ -1,6 +1,6 @@
 /**
- * 툴바를 body 직속으로 올리고 항상 보이게 고정.
- * 슬라이드 transform/overflow 때문에 가려지는 문제 방지.
+ * 툴바 표시 보조 — fixed 오버레이 금지.
+ * body = column flex, 툴바는 흐름 안(relative)에 두고 본문이 나머지를 채움.
  */
 (function () {
   'use strict';
@@ -17,12 +17,14 @@
       document.body.insertBefore(toolbar, document.body.firstChild);
     }
 
-    toolbar.style.setProperty('position', 'fixed', 'important');
-    toolbar.style.setProperty('top', '0', 'important');
-    toolbar.style.setProperty('left', '0', 'important');
-    toolbar.style.setProperty('right', '0', 'important');
+    toolbar.style.setProperty('position', 'relative', 'important');
+    toolbar.style.setProperty('top', 'auto', 'important');
+    toolbar.style.setProperty('left', 'auto', 'important');
+    toolbar.style.setProperty('right', 'auto', 'important');
+    toolbar.style.setProperty('bottom', 'auto', 'important');
     toolbar.style.setProperty('width', '100%', 'important');
-    toolbar.style.setProperty('z-index', '9000', 'important');
+    toolbar.style.setProperty('flex', '0 0 auto', 'important');
+    toolbar.style.setProperty('z-index', '20', 'important');
     toolbar.style.setProperty('display', 'flex', 'important');
     toolbar.style.setProperty('opacity', '1', 'important');
     toolbar.style.setProperty('visibility', 'visible', 'important');
@@ -79,26 +81,14 @@
     var room = document.getElementById('room-code');
     if (room && room.parentElement) {
       room.parentElement.style.setProperty('display', 'inline-flex', 'important');
-      room.parentElement.style.setProperty('visibility', 'visible', 'important');
-      room.parentElement.style.setProperty('opacity', '1', 'important');
     }
-    return toolbar;
   }
 
   window.YunseulToolbar = { pin: pinToolbar, showTools: showTools };
 
-  function boot() {
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', pinToolbar);
+  } else {
     pinToolbar();
   }
-
-  if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', boot);
-  } else {
-    boot();
-  }
-
-  window.addEventListener('ppt-ready', function () {
-    showTools();
-    document.body.classList.add('has-presentation');
-  });
 })();

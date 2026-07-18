@@ -3,6 +3,7 @@ import { TRACK_KIND } from './config.js';
 
 /**
  * Host -> viewer display share (+ optional tab audio / mic).
+ * 송출은 단순하게: 탭 공유 + #capture-root(툴바 아래 본문)만 crop.
  */
 export class HostPublisher {
   /**
@@ -23,7 +24,6 @@ export class HostPublisher {
     this._micTracks = [];
     this.tabAudioWanted = true;
     this.micWanted = false;
-    /** 참가자 새로고침 시 늦게 오는 peer-left가 새 연결을 끊지 않게 */
     this._joinGuard = new Map();
 
     this._unsubSignal = signaling.onSignal((msg) => this._onSignal(msg));
@@ -62,11 +62,21 @@ export class HostPublisher {
     this._tabAudioTracks = [];
     this._micTracks = [];
 
+    const stage = document.getElementById('presentation-stage');
+    const slide = document.getElementById('slide-fit');
+    const stageOn = stage && !stage.classList.contains('hidden');
+    // 검정 스테이지 말고 실제 PPT 박스만 송출 → 참가자 화면이 호스트처럼 큼
+    const root = (stageOn && slide)
+      || document.getElementById('capture-root')
+      || document.querySelector('.stage-area');
+    const rw = Math.max(640, Math.round(root?.clientWidth || window.innerWidth));
+    const rh = Math.max(360, Math.round(root?.clientHeight || window.innerHeight));
+
     const stream = await navigator.mediaDevices.getDisplayMedia({
       video: {
         frameRate: { ideal: 30, max: 30 },
-        width: { ideal: 1920 },
-        height: { ideal: 1080 },
+        width: { ideal: rw },
+        height: { ideal: rh },
       },
       audio: withTabAudio
         ? {
@@ -93,7 +103,7 @@ export class HostPublisher {
     this.localStream = stream;
     this.active = true;
 
-    await this._restrictCaptureToStage(stream);
+    await this._cropToCaptureRoot(stream, root);
 
     if (withMic) {
       await this.ensureMic(true);
@@ -110,40 +120,16 @@ export class HostPublisher {
     return stream;
   }
 
-  /**
-   * 참가자에게 툴바가 안 보이게 발표 영역만 송출.
-   * Region Capture(cropTo) 우선 — Element Capture는 복잡 DOM에서 검정 프레임이 나는 경우가 있음.
-   */
-  async _restrictCaptureToStage(stream) {
-    const el = document.getElementById('capture-root')
-      || document.getElementById('presentation-stage')
-      || document.querySelector('.stage-area');
+  async _cropToCaptureRoot(stream, el) {
     if (!el) return;
-
     const track = stream.getVideoTracks()[0];
-    if (!track) return;
-
+    if (!track || typeof track.cropTo !== 'function') return;
+    if (typeof CropTarget === 'undefined' || !CropTarget.fromElement) return;
     try {
-      if (typeof CropTarget !== 'undefined' && CropTarget.fromElement
-          && typeof track.cropTo === 'function') {
-        const target = await CropTarget.fromElement(el);
-        await track.cropTo(target);
-        console.info('[HostPublisher] Region Capture OK');
-        return;
-      }
+      const target = await CropTarget.fromElement(el);
+      await track.cropTo(target);
     } catch (err) {
-      console.warn('[HostPublisher] Region Capture failed', err);
-    }
-
-    try {
-      if (typeof RestrictionTarget !== 'undefined' && RestrictionTarget.fromElement
-          && typeof track.restrictTo === 'function') {
-        const target = await RestrictionTarget.fromElement(el);
-        await track.restrictTo(target);
-        console.info('[HostPublisher] Element Capture OK');
-      }
-    } catch (err) {
-      console.warn('[HostPublisher] Element Capture failed', err);
+      console.warn('[HostPublisher] crop skipped', err);
     }
   }
 
@@ -252,12 +238,7 @@ export class HostPublisher {
     if (!force && existing) {
       const st = existing.pc?.connectionState;
       const ice = existing.pc?.iceConnectionState;
-      if (st === 'connected'
-          || ice === 'connected'
-          || ice === 'completed') {
-        return;
-      }
-      // 협상 중이면 잠시 유지 — 8초 넘으면 고착으로 보고 재생성
+      if (st === 'connected' || ice === 'connected' || ice === 'completed') return;
       if ((st === 'connecting' || ice === 'checking') && age < 8000) return;
     }
 
@@ -333,145 +314,125 @@ export class HostPublisher {
     if (joinedAt && Date.now() - joinedAt < 4000) return;
     this._joinGuard.delete(id);
     this._closePeer(id);
-    this._closeUplink(id);
   }
 
   async _onSignal(msg) {
     const { type, fromClientId, payload } = msg;
     if (!fromClientId) return;
 
-    // 참가자 마이크 업링크
     if (payload?.kind === 'viewer-mic') {
-      if (type === 'offer' && payload?.sdp) {
-        await this._acceptViewerMic(fromClientId, payload.sdp);
-        return;
-      }
-      const up = this._uplinks?.get(fromClientId);
-      if (type === 'ice' && up && payload?.candidate) {
-        await up.addIce(payload.candidate);
-        return;
-      }
-      if (type === 'bye') {
-        this._closeUplink(fromClientId);
-        return;
-      }
+      await this._acceptViewerMic(fromClientId, type, payload);
+      return;
     }
 
     const session = this.peers.get(fromClientId);
-
     if (type === 'answer' && session && payload?.sdp) {
       await session.acceptAnswer(payload.sdp);
       return;
     }
     if (type === 'ice' && session && payload?.candidate) {
       await session.addIce(payload.candidate);
+    }
+  }
+
+  async _acceptViewerMic(fromClientId, type, payload) {
+    if (!this._viewerMicSessions) this._viewerMicSessions = new Map();
+
+    if (type === 'offer' && payload?.sdp) {
+      let session = this._viewerMicSessions.get(fromClientId);
+      if (session) {
+        try { session.pc.close(); } catch { /* ignore */ }
+      }
+      session = new PeerSession({
+        peerId: fromClientId,
+        onIce: (candidate) => {
+          this.signaling.send({
+            type: 'ice',
+            toClientId: fromClientId,
+            payload: {
+              kind: 'viewer-mic',
+              candidate: candidate.toJSON ? candidate.toJSON() : candidate,
+            },
+          });
+        },
+        onTrack: (ev) => this._playViewerMic(fromClientId, ev),
+        onConnectionState: (state) => {
+          if (state === 'failed' || state === 'closed') {
+            this._stopViewerMic(fromClientId);
+          }
+        },
+      });
+      this._viewerMicSessions.set(fromClientId, session);
+      const answer = await session.acceptOffer(payload.sdp);
+      this.signaling.send({
+        type: 'answer',
+        toClientId: fromClientId,
+        payload: { kind: 'viewer-mic', sdp: answer },
+      });
       return;
     }
-    if (type === 'bye') {
-      this._closePeer(fromClientId);
-      this._closeUplink(fromClientId);
+
+    const session = this._viewerMicSessions.get(fromClientId);
+    if (type === 'ice' && session && payload?.candidate) {
+      await session.addIce(payload.candidate);
     }
   }
 
-  async _acceptViewerMic(peerId, sdp) {
-    if (!this._uplinks) this._uplinks = new Map();
-    this._closeUplink(peerId);
-
-    if (!this._viewerAudioEl) {
-      const a = document.createElement('audio');
-      a.autoplay = true;
-      a.playsInline = true;
-      a.setAttribute('playsinline', '');
-      a.style.display = 'none';
-      document.body.appendChild(a);
-      this._viewerAudioEl = a;
+  _playViewerMic(peerId, ev) {
+    if (!this._viewerAudioMix) {
+      this._viewerAudioMix = new MediaStream();
+      this._viewerAudioEl = document.createElement('audio');
+      this._viewerAudioEl.autoplay = true;
+      this._viewerAudioEl.playsInline = true;
+      this._viewerAudioEl.srcObject = this._viewerAudioMix;
+      this._viewerAudioEl.style.display = 'none';
+      document.body.appendChild(this._viewerAudioEl);
     }
-
-    const session = new PeerSession({
-      peerId,
-      onIce: (candidate) => {
-        this.signaling.send({
-          type: 'ice',
-          toClientId: peerId,
-          payload: {
-            candidate: candidate.toJSON ? candidate.toJSON() : candidate,
-            kind: 'viewer-mic',
-          },
-        });
-      },
-      onTrack: (ev) => {
-        const stream = ev.streams?.[0] || new MediaStream([ev.track]);
-        if (!this._viewerAudioMix) {
-          this._viewerAudioMix = new MediaStream();
-        }
-        stream.getAudioTracks().forEach((t) => {
-          if (!this._viewerAudioMix.getTracks().includes(t)) {
-            this._viewerAudioMix.addTrack(t);
-          }
-        });
-        this._viewerAudioEl.srcObject = this._viewerAudioMix;
-        this._viewerAudioEl.play().catch(() => {});
-      },
-      onConnectionState: (state) => {
-        if (session._intentionalClose) return;
-        if (state === 'failed' || state === 'closed') {
-          this._closeUplink(peerId);
-        }
-      },
-    });
-
-    this._uplinks.set(peerId, session);
-    const answer = await session.acceptOffer(sdp);
-    this.signaling.send({
-      type: 'answer',
-      toClientId: peerId,
-      payload: { sdp: answer, kind: 'viewer-mic' },
-    });
+    const track = ev.track;
+    if (track && !this._viewerAudioMix.getTracks().includes(track)) {
+      this._viewerAudioMix.addTrack(track);
+    }
+    this._viewerAudioEl?.play?.().catch(() => {});
   }
 
-  _closeUplink(peerId) {
-    const s = this._uplinks?.get(peerId);
+  _stopViewerMic(peerId) {
+    const s = this._viewerMicSessions?.get(peerId);
     if (!s) return;
-    s._intentionalClose = true;
     try { s.pc.close(); } catch { /* ignore */ }
-    this._uplinks.delete(peerId);
+    this._viewerMicSessions.delete(peerId);
   }
 
   stopCaptureOnly() {
+    if (this._viewerMicSessions) {
+      for (const id of [...this._viewerMicSessions.keys()]) {
+        this._stopViewerMic(id);
+      }
+    }
+    if (this._viewerAudioEl) {
+      try {
+        this._viewerAudioEl.pause();
+        this._viewerAudioEl.srcObject = null;
+        this._viewerAudioEl.remove();
+      } catch { /* ignore */ }
+      this._viewerAudioEl = null;
+      this._viewerAudioMix = null;
+    }
+    [...this.peers.keys()].forEach((id) => this._closePeer(id));
     if (this.localStream) {
       this.localStream.getTracks().forEach((t) => {
         try { t.stop(); } catch { /* ignore */ }
       });
+      this.localStream = null;
     }
-    this.localStream = null;
     this._tabAudioTracks = [];
     this._micTracks = [];
+    this.active = false;
+    this.kinds = [];
   }
 
   stop() {
-    [...this.peers.keys()].forEach((id) => {
-      this.signaling.send({ type: 'bye', toClientId: id, payload: {} });
-      this._closePeer(id);
-    });
-    if (this._uplinks) {
-      [...this._uplinks.keys()].forEach((id) => this._closeUplink(id));
-    }
-    if (this._viewerAudioEl) {
-      this._viewerAudioEl.srcObject = null;
-    }
-    this._viewerAudioMix = null;
     this.stopCaptureOnly();
-    this.active = false;
-    this.kinds = [];
-    this.signaling.setStreamStatus({ active: false, kinds: [] });
-    this.onStatus({
-      active: false,
-      kinds: [],
-      withMic: false,
-      withTabAudio: this.tabAudioWanted,
-      micWanted: this.micWanted,
-      tabAudioWanted: this.tabAudioWanted,
-    });
+    this._emitStatus();
   }
 
   dispose() {

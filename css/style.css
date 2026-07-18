@@ -229,33 +229,27 @@ html, body {
   display: flex;
   flex-direction: column;
   position: relative;
-}
-
-/* 송출 크롭 루트 — 툴바 아래에서만 캡처 (참가자에게 툴바 안 보임) */
-#capture-root {
-  position: fixed;
-  top: 3.4rem; /* #main-toolbar 높이 */
-  left: 0;
-  right: 0;
-  bottom: 0;
-  width: 100%;
-  height: auto;
+  flex: 1 1 auto;
   min-height: 0;
-  overflow: hidden;
-  z-index: 1;
-  background: #000; /* Element Capture 시 투명→검정 블렌딩 방지 */
-  isolation: isolate; /* RestrictionTarget 스택 컨텍스트 */
 }
 
-body.has-presentation #capture-root,
-body.is-presenting #capture-root {
-  top: 3.4rem;
+/* 본문만 송출 — flex로 툴바 아래 남은 공간 채움 (fixed/overlay 없음) */
+#capture-root {
+  position: relative;
+  flex: 1 1 auto;
+  min-height: 0;
+  width: 100%;
+  overflow: hidden;
+  background: #000;
+  display: flex;
+  flex-direction: column;
 }
 
 #capture-root #app {
+  flex: 1 1 auto;
+  min-height: 0;
   width: 100%;
-  height: 100%;
-  min-height: 100%;
+  height: auto;
 }
 
 .presentation-page {
@@ -480,9 +474,7 @@ body.is-presenting #capture-root {
 .live-stage {
   position: absolute;
   inset: 0;
-  display: flex;
-  align-items: center;
-  justify-content: center;
+  display: block;
   background: #000;
   z-index: 2;
 }
@@ -492,21 +484,45 @@ body.is-presenting #capture-root {
 }
 
 .live-video {
+  display: block;
   width: 100%;
   height: 100%;
   object-fit: contain;
+  object-position: center center;
   background: #000;
 }
 
-/* 발표 중: 스테이지는 전체 화면 (툴바는 HTML에서 body 직속 fixed) */
-body.has-presentation .stage-area,
-body.is-presenting .stage-area {
-  position: absolute;
-  inset: 0;
-  flex: none;
-  height: 100%;
+/* 참가자: #app이 툴바 아래 flex 영역 전체를 씀 */
+body.viewer-page #app {
+  position: relative !important;
+  inset: auto !important;
+  top: auto !important;
+  flex: 1 1 auto !important;
+  min-height: 0 !important;
+  width: 100% !important;
+  height: auto !important;
+}
+
+body.viewer-page .stage-area,
+body.viewer-page.has-presentation .stage-area,
+body.viewer-page.is-presenting .stage-area {
+  position: relative !important;
+  inset: auto !important;
+  flex: 1 1 auto !important;
+  min-height: 0 !important;
+  height: 100% !important;
+  width: 100% !important;
+}
+
+/* 호스트 발표: stage는 capture-root/#app 안에서 flex로 채움 */
+body.has-presentation:not(.viewer-page) .stage-area,
+body.is-presenting:not(.viewer-page) .stage-area {
+  position: relative;
+  inset: auto;
+  flex: 1 1 auto;
+  min-height: 0;
+  height: auto;
   width: 100%;
-  z-index: 1;
 }
 
 body.has-presentation .room-badge,

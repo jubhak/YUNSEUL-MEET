@@ -5,7 +5,7 @@ import { goToSlide, getPptEngine } from './host-ppt-loader.js?v=20260715ah';
 import { findHttpLinkAt, findVideoHitAt } from './link-utils.js?v=20260715z';
 import { setViewerCount, setupViewersPanel } from './viewers-panel.js?v=20260715f';
 import { WebrtcSignaling } from './webrtc/signaling.js?v=20260715j';
-import { HostPublisher } from './webrtc/host-publisher.js?v=20260715at';
+import { HostPublisher } from './webrtc/host-publisher.js?v=20260715az';
 
 const params = new URLSearchParams(window.location.search);
 const roomCode = (params.get('code') || sessionStorage.getItem('roomCode') || '').toUpperCase();
