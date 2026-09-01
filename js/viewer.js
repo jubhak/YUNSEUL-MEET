@@ -2,10 +2,15 @@
  * 참가자: WebRTC로 호스트 화면을 시청 (화상회의 수신 모드)
  * PPT ZIP/동영상 추출 없음 — 추후 다자 화상 UI를 같은 레이어에 확장 가능
  */
-import { RoomSync } from './sync.js?v=20260715aj';
-import { setViewerCount, setupViewersPanel } from './viewers-panel.js?v=20260715f';
+import { RoomSync } from './sync.js?v=20260728b';
+import {
+  setViewerCount,
+  setupViewersPanel,
+  setSelectedBroadcaster,
+} from './viewers-panel.js?v=20260728b';
 import { WebrtcSignaling } from './webrtc/signaling.js?v=20260715j';
-import { ViewerSubscriber } from './webrtc/viewer-subscriber.js?v=20260715av';
+import { ViewerSubscriber } from './webrtc/viewer-subscriber.js?v=20260826sfu20';
+import { setupViewerZoom } from './viewer-zoom.js?v=20260819b';
 
 const params = new URLSearchParams(window.location.search);
 const roomCode = (params.get('code') || sessionStorage.getItem('roomCode') || '').toUpperCase();
@@ -31,6 +36,9 @@ const viewerLinkOpen = document.getElementById('viewer-link-open');
 const viewerLinkClose = document.getElementById('viewer-link-close');
 const viewerLinkDismiss = document.getElementById('viewer-link-dismiss');
 const viewerLinkChip = document.getElementById('viewer-link-chip');
+
+/** 로컬 핀치 줌 — 호스트 화면 전환과 무관하게 유지 */
+setupViewerZoom(liveStage);
 
 let sync = null;
 let subscriber = null;
@@ -136,11 +144,13 @@ let avToastTimer = null;
 
 function showAvToast(text, { off = false } = {}) {
   if (!unmuteBanner) return;
+  if (unmuteBanner.dataset.sticky === '1') return; // 소리 차단 안내 유지
   unmuteBanner.textContent = text;
   unmuteBanner.classList.toggle('is-off', !!off);
   unmuteBanner.classList.remove('hidden');
   clearTimeout(avToastTimer);
   avToastTimer = setTimeout(() => {
+    if (unmuteBanner.dataset.sticky === '1') return;
     unmuteBanner.classList.add('hidden');
   }, 1600);
 }
@@ -171,8 +181,8 @@ btnAvSpeaker?.addEventListener('click', () => {
 btnAvMic?.addEventListener('click', async () => {
   if (!subscriber) return;
   const next = !subscriber.micOn;
-  if (next && !subscriber.hostPeerId) {
-    alert('호스트 화면이 연결된 뒤 마이크를 켤 수 있습니다.');
+  if (next && !sync?.socket?.connected) {
+    alert('방에 연결되지 않았습니다.');
     return;
   }
   btnAvMic.disabled = true;
@@ -192,7 +202,33 @@ btnAvMic?.addEventListener('click', async () => {
 function handleEvent(type, data) {
   switch (type) {
     case 'viewer-count':
-      setViewerCount(data.count ?? 0, data.viewers);
+      setViewerCount(data.count ?? 0, data.viewers, {
+        activeBroadcasterId: data.activeBroadcasterId,
+      });
+      break;
+    case 'broadcaster-changed':
+      setSelectedBroadcaster(data.clientId || null);
+      break;
+    case 'request-screen-share': {
+      const hostLabel = data.hostName || '호스트';
+      const ok = window.confirm(
+        `${hostLabel}님이 회원님의 PC 화면을 모든 참가자에게 보여 달라고 요청했습니다.\n\n화면 공유를 허용할까요?`
+      );
+      if (!ok) {
+        syncStatus.textContent = '화면 공유 요청 거절';
+        break;
+      }
+      syncStatus.textContent = '화면 공유 창 선택…';
+      subscriber?.startScreenShare().then((started) => {
+        syncStatus.textContent = started ? '내 화면 공유 중' : '화면 공유 취소됨';
+      });
+      break;
+    }
+    case 'stop-screen-share':
+      subscriber?.stopScreenShare().catch(() => {});
+      if (subscriber?.hasLiveVideo?.()) {
+        syncStatus.textContent = '실시간 시청 중';
+      }
       break;
     case 'session-end':
       clearHostLink();
@@ -221,6 +257,7 @@ function handleEvent(type, data) {
         if (!liveVideo?.srcObject) {
           setWaiting('호스트 화면 연결 중…', '잠시만 기다려 주세요.');
         }
+        subscriber?.watch?.().catch((err) => { console.warn('[viewer] watch', err); });
       } else {
         subscriber?.clearRemote();
         setWaiting(
@@ -271,15 +308,30 @@ sync.start()
           showLive();
           syncStatus.textContent = '실시간 시청 중';
           syncStatus.classList.add('connected');
+        } else if (s.connectError) {
+          setWaiting('화면 연결 실패', s.connectError);
+          syncStatus.textContent = '연결 실패';
         } else if (s.streamActive && !liveVideo?.srcObject) {
           setWaiting('호스트 화면 연결 중…', '잠시만 기다려 주세요.');
           syncStatus.textContent = '호스트 화면 연결 중…';
         }
+        if (s.needUnmute && s.hasRemoteAudio) {
+          if (unmuteBanner) {
+            unmuteBanner.textContent = '🔊 탭하여 소리 켜기';
+            unmuteBanner.classList.remove('hidden', 'is-off');
+            unmuteBanner.dataset.sticky = '1';
+          }
+        } else if (s.needUnmute === false) {
+          if (unmuteBanner) {
+            unmuteBanner.dataset.sticky = '';
+            unmuteBanner.classList.add('hidden');
+          }
+        }
       },
     });
 
-    // 기본값: 소리 OFF, 마이크 OFF (원할 때만 스피커 아이콘)
-    subscriber.speakerOn = false;
+    // 기본: 소리 ON — 별도 <audio>로 재생 (첫 클릭 시 unlock)
+    subscriber.speakerOn = true;
     subscriber.micOn = false;
     if (liveVideo) liveVideo.muted = true;
     if (data.state?.hostClientId) {
@@ -287,21 +339,29 @@ sync.start()
     }
     syncAvButtons();
 
-    // 영상이 멈춘 경우만 재생 재개 (소리는 스피커 버튼으로만)
-    const ensurePlayback = () => {
-      const v = liveVideo;
-      if (!v?.srcObject || !v.paused) return;
-      v.muted = !subscriber?.speakerOn;
-      v.play()
-        .then(() => { if (subscriber?.speakerOn) subscriber.unlockAudio(); })
-        .catch(() => {});
+    const unlockSound = () => {
+      if (!subscriber?.speakerOn) return;
+      // 이미 unlock 됐어도 영상 muted면 다시 시도
+      if (subscriber._audioUnlocked && subscriber.videoEl && !subscriber.videoEl.muted) return;
+      subscriber.unlockAudio().then((ok) => {
+        if (ok && unmuteBanner) {
+          unmuteBanner.dataset.sticky = '';
+          unmuteBanner.classList.add('hidden');
+        }
+      });
     };
-    window.addEventListener('pointerdown', ensurePlayback, { capture: true });
-    window.addEventListener('keydown', ensurePlayback, { capture: true });
+    unmuteBanner?.addEventListener('click', (e) => {
+      e.preventDefault();
+      unlockSound();
+    });
+    window.addEventListener('pointerdown', unlockSound, { capture: true });
+    window.addEventListener('keydown', unlockSound, { capture: true });
 
     syncStatus.textContent = '연결됨';
     syncStatus.classList.add('connected');
-    setViewerCount(data.state?.viewerCount ?? 0, data.state?.viewers);
+    setViewerCount(data.state?.viewerCount ?? 0, data.state?.viewers, {
+      activeBroadcasterId: data.state?.activeBroadcasterId,
+    });
 
     if (data.state?.popup?.url) {
       showViewerLink(data.state.popup.url, data.state.popup.title || data.state.popup.url);
@@ -310,15 +370,8 @@ sync.start()
     if (data.state?.streamActive) {
       setWaiting('호스트 화면 연결 중…', '송출이 진행 중입니다. 곧 표시됩니다.');
       syncStatus.textContent = '호스트 화면 연결 중…';
-      let tries = 0;
-      const retry = () => {
-        if (subscriber?.hasLiveVideo?.() || liveVideo?.srcObject || tries >= 3) return;
-        tries += 1;
-        try { sync.socket?.emit('request-stream'); } catch { /* ignore */ }
-        setTimeout(retry, 2500);
-      };
-      // 첫 peer-joined가 처리될 시간을 준 뒤, 영상 없을 때만 재요청
-      setTimeout(retry, 2000);
+      // SFU: watch()로 기존 producer consume
+      subscriber.watch?.().catch((err) => { console.warn('[viewer] watch', err); });
     } else {
       setWaiting(
         '호스트 화면 송출 대기',

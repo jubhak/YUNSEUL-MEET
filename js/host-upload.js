@@ -235,7 +235,7 @@
     var uploadBox = document.getElementById('upload-box');
     if (!fileInput || !uploadBox) return;
 
-    setStatus('파일을 선택하거나 드래그하세요.');
+    setStatus('');
 
     fileInput.addEventListener('change', function () {
       if (fileInput.files && fileInput.files[0]) {
@@ -274,7 +274,9 @@
     });
 
     uploadBox.addEventListener('click', function (e) {
-      if (e.target.closest('label')) return;
+      // 준비 화면에서는 카드 전체 클릭으로 파일 선택하지 않음
+      if (uploadBox.classList.contains('ready-box')) return;
+      if (e.target.closest('label') || e.target.closest('a') || e.target.closest('button')) return;
       fileInput.click();
     });
   }

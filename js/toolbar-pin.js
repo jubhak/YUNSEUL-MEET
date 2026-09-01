@@ -1,9 +1,14 @@
 /**
- * 툴바 표시 보조 — fixed 오버레이 금지.
- * body = column flex, 툴바는 흐름 안(relative)에 두고 본문이 나머지를 채움.
+ * 툴바 표시 보조.
+ * 일반: body 흐름 안(relative).
+ * 전체화면: fixed 오버레이 + 슬라이드 (display-mode CSS와 맞춤).
  */
 (function () {
   'use strict';
+
+  function isFsChrome() {
+    return document.body.classList.contains('is-fullscreen');
+  }
 
   function pinToolbar() {
     var toolbar = document.getElementById('main-toolbar') || document.querySelector('.toolbar');
@@ -17,19 +22,43 @@
       document.body.insertBefore(toolbar, document.body.firstChild);
     }
 
-    toolbar.style.setProperty('position', 'relative', 'important');
-    toolbar.style.setProperty('top', 'auto', 'important');
-    toolbar.style.setProperty('left', 'auto', 'important');
-    toolbar.style.setProperty('right', 'auto', 'important');
-    toolbar.style.setProperty('bottom', 'auto', 'important');
-    toolbar.style.setProperty('width', '100%', 'important');
-    toolbar.style.setProperty('flex', '0 0 auto', 'important');
-    toolbar.style.setProperty('z-index', '20', 'important');
     toolbar.style.setProperty('display', 'flex', 'important');
-    toolbar.style.setProperty('opacity', '1', 'important');
     toolbar.style.setProperty('visibility', 'visible', 'important');
-    toolbar.style.setProperty('pointer-events', 'auto', 'important');
-    toolbar.style.setProperty('transform', 'none', 'important');
+    toolbar.style.setProperty('opacity', '1', 'important');
+    toolbar.style.setProperty('width', '100%', 'important');
+
+    if (isFsChrome()) {
+      toolbar.style.setProperty('position', 'fixed', 'important');
+      toolbar.style.setProperty('top', '0', 'important');
+      toolbar.style.setProperty('left', '0', 'important');
+      toolbar.style.setProperty('right', '0', 'important');
+      toolbar.style.setProperty('bottom', 'auto', 'important');
+      toolbar.style.setProperty('flex', '0 0 auto', 'important');
+      toolbar.style.setProperty('z-index', '9000', 'important');
+      // 숨김/표시는 display-mode 가 인라인으로 관리
+      if (window.YunseulFsChrome?.apply) {
+        window.YunseulFsChrome.apply();
+      } else {
+        var open = document.body.classList.contains('fs-chrome-open');
+        toolbar.style.setProperty(
+          'transform',
+          open ? 'translate3d(0,0,0)' : 'translate3d(0,-120%,0)',
+          'important'
+        );
+        toolbar.style.setProperty('visibility', open ? 'visible' : 'hidden', 'important');
+        toolbar.style.setProperty('pointer-events', open ? 'auto' : 'none', 'important');
+      }
+    } else {
+      toolbar.style.setProperty('position', 'relative', 'important');
+      toolbar.style.setProperty('top', 'auto', 'important');
+      toolbar.style.setProperty('left', 'auto', 'important');
+      toolbar.style.setProperty('right', 'auto', 'important');
+      toolbar.style.setProperty('bottom', 'auto', 'important');
+      toolbar.style.setProperty('flex', '0 0 auto', 'important');
+      toolbar.style.setProperty('z-index', '20', 'important');
+      toolbar.style.setProperty('pointer-events', 'auto', 'important');
+      toolbar.style.setProperty('transform', 'none', 'important');
+    }
 
     return toolbar;
   }
@@ -45,7 +74,20 @@
     var toolbar = pinToolbar();
     document.body.classList.add('has-presentation');
 
-    showGroup(document.getElementById('slide-controls'));
+    if (document.body.classList.contains('has-ppt')) {
+      showGroup(document.getElementById('slide-controls'));
+      var roomSep = toolbar && toolbar.querySelector('.tb-group-room + .tb-sep');
+      if (roomSep) {
+        roomSep.style.setProperty('display', 'block', 'important');
+        roomSep.style.setProperty('visibility', 'visible', 'important');
+        roomSep.style.setProperty('opacity', '1', 'important');
+      }
+    } else {
+      var nav = document.getElementById('slide-controls');
+      if (nav) nav.style.setProperty('display', 'none', 'important');
+      var hideSep = toolbar && toolbar.querySelector('.tb-group-room + .tb-sep');
+      if (hideSep) hideSep.style.setProperty('display', 'none', 'important');
+    }
     showGroup(document.getElementById('draw-tools'));
     showGroup(document.getElementById('av-tools'));
     var av = document.getElementById('av-tools');
@@ -72,7 +114,7 @@
       groups.style.setProperty('width', '100%', 'important');
     }
 
-    toolbar && toolbar.querySelectorAll('.tb-sep').forEach(function (sep) {
+    toolbar && toolbar.querySelectorAll('.tb-sep-draw, .tb-sep-session, .tb-sep-av').forEach(function (sep) {
       sep.style.setProperty('display', 'block', 'important');
       sep.style.setProperty('visibility', 'visible', 'important');
       sep.style.setProperty('opacity', '1', 'important');

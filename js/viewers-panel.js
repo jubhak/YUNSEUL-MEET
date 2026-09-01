@@ -1,8 +1,12 @@
 /**
  * 접속자 수 표시 + 명단 레이어 팝업
+ * 호스트: 목록 클릭으로 화면 공유 대상 선택
  * 닫기는 ✕ 버튼으로만
  */
 let latestViewers = [];
+let selectedId = null;
+let selectable = false;
+let onSelectParticipant = null;
 
 function ensurePopupDom() {
   let root = document.getElementById('viewers-popup');
@@ -19,6 +23,7 @@ function ensurePopupDom() {
         <button type="button" id="viewers-popup-close" class="btn-close" title="닫기">✕</button>
       </div>
       <p class="viewers-popup-sub"><span id="viewers-popup-count">0</span>명 접속 중</p>
+      <p id="viewers-popup-hint" class="viewers-popup-hint hidden">이름을 누르면 그 화면을 전원에게 보여줍니다. 호스트를 누르면 발표 화면으로 돌아갑니다.</p>
       <ul id="viewers-list" class="viewers-list"></ul>
     </div>
   `;
@@ -35,13 +40,26 @@ function ensurePopupDom() {
     e.stopPropagation();
   });
 
+  root.addEventListener('click', (e) => {
+    const item = e.target.closest?.('.viewers-item[data-id]');
+    if (!item || !selectable || !onSelectParticipant) return;
+    e.preventDefault();
+    const id = item.getAttribute('data-id');
+    const role = item.getAttribute('data-role') || 'viewer';
+    const name = item.getAttribute('data-name') || '';
+    if (!id) return;
+    onSelectParticipant({ id, role, name });
+  });
+
   return root;
 }
 
 function renderList(viewers) {
   const list = document.getElementById('viewers-list');
   const countEl = document.getElementById('viewers-popup-count');
+  const hint = document.getElementById('viewers-popup-hint');
   if (countEl) countEl.textContent = String(viewers.length);
+  if (hint) hint.classList.toggle('hidden', !selectable);
   if (!list) return;
 
   if (!viewers.length) {
@@ -52,11 +70,21 @@ function renderList(viewers) {
   list.innerHTML = viewers.map((v, i) => {
     const name = escapeHtml(v.name || `참가자 ${i + 1}`);
     const initial = escapeHtml((v.name || '참').trim().charAt(0) || '?');
+    const role = v.role === 'host' ? 'host' : 'viewer';
+    const tag = role === 'host' ? '호스트' : '참가';
+    const isSelected = selectedId && v.id === selectedId;
+    const classes = [
+      'viewers-item',
+      role === 'host' ? 'is-host' : '',
+      selectable ? 'is-selectable' : '',
+      isSelected ? 'is-selected' : '',
+    ].filter(Boolean).join(' ');
     return `
-      <li class="viewers-item">
+      <li class="${classes}" data-id="${escapeHtml(v.id || '')}" data-role="${role}" data-name="${name}" ${selectable ? 'role="button" tabindex="0"' : ''}>
         <span class="viewers-avatar" aria-hidden="true">${initial}</span>
         <span class="viewers-name">${name}</span>
-        <span class="viewers-tag">참가</span>
+        <span class="viewers-tag${role === 'host' ? ' is-host-tag' : ''}">${tag}</span>
+        ${isSelected ? '<span class="viewers-live">공유중</span>' : ''}
       </li>
     `;
   }).join('');
@@ -84,12 +112,22 @@ export function hideViewersPopup() {
   root?.setAttribute('aria-hidden', 'true');
 }
 
-export function setViewerCount(n, viewers) {
+export function setSelectedBroadcaster(id) {
+  selectedId = id || null;
+  if (!document.getElementById('viewers-popup')?.classList.contains('hidden')) {
+    renderList(latestViewers);
+  }
+}
+
+export function setViewerCount(n, viewers, opts = {}) {
   const count = Math.max(0, Number(n) || 0);
   if (Array.isArray(viewers)) {
     latestViewers = viewers;
   } else if (count === 0) {
     latestViewers = [];
+  }
+  if (opts.activeBroadcasterId !== undefined) {
+    selectedId = opts.activeBroadcasterId || null;
   }
 
   const el = document.getElementById('viewer-count');
@@ -109,15 +147,17 @@ export function setViewerCount(n, viewers) {
       link.removeAttribute('role');
       link.setAttribute('tabindex', '-1');
       link.title = '';
-      // 팝업이 열려 있는데 0명이 되면 목록만 갱신 (닫지는 않음 — 닫기는 ✕만)
-      if (!document.getElementById('viewers-popup')?.classList.contains('hidden')) {
-        renderList(latestViewers);
-      }
     }
+  }
+
+  if (!document.getElementById('viewers-popup')?.classList.contains('hidden')) {
+    renderList(latestViewers);
   }
 }
 
-export function setupViewersPanel() {
+export function setupViewersPanel(opts = {}) {
+  selectable = !!opts.selectable;
+  onSelectParticipant = typeof opts.onSelect === 'function' ? opts.onSelect : null;
   ensurePopupDom();
 
   const link = document.getElementById('viewer-count-link');

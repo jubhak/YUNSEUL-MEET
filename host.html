@@ -8,7 +8,7 @@
   <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
   <meta http-equiv="Pragma" content="no-cache">
   <title>호스트 - YUNSEUL PPT</title>
-  <link rel="stylesheet" href="css/style.css?v=20260715ba">
+  <link rel="stylesheet" href="css/style.css?v=20260819j">
   <style>
     /* 툴바 강제 · 아이콘 가시성 강제 (캐시된 CSS 이겨내기) */
     #main-toolbar.toolbar {
@@ -55,20 +55,33 @@
       background: rgba(148,163,184,0.45) !important;
       flex-shrink: 0 !important;
     }
-    body:not(.has-presentation) #main-toolbar .tb-sep,
-    body:not(.has-presentation) #main-toolbar .tb-group-nav,
-    body:not(.has-presentation) #main-toolbar .tb-group-draw,
-    body:not(.has-presentation) #main-toolbar .tb-group-av {
+    /* PPT 없어도 호스트 기본 메뉴(그리기·AV·세션)는 표시. 슬라이드 내비만 PPT 후 */
+    body:not(.has-ppt) #main-toolbar .tb-group-nav,
+    body:not(.has-ppt) #main-toolbar .tb-group-room + .tb-sep {
       display: none !important;
     }
-    body.has-presentation #main-toolbar .tb-sep {
+    body.presentation-page #main-toolbar .tb-sep-draw,
+    body.presentation-page #main-toolbar .tb-sep-session,
+    body.presentation-page #main-toolbar .tb-sep-av {
       display: block !important;
+      visibility: visible !important;
+      opacity: 1 !important;
     }
-    body.has-presentation #main-toolbar .tb-group-nav,
-    body.has-presentation #main-toolbar .tb-group-draw,
-    body.has-presentation #main-toolbar .tb-group-av,
-    body.has-presentation #main-toolbar #av-tools {
+    body.presentation-page #main-toolbar .tb-group-draw,
+    body.presentation-page #main-toolbar .tb-group-av,
+    body.presentation-page #main-toolbar #av-tools,
+    body.presentation-page #main-toolbar #draw-tools {
       display: inline-flex !important;
+      visibility: visible !important;
+      opacity: 1 !important;
+    }
+    body.has-ppt #main-toolbar .tb-group-nav {
+      display: inline-flex !important;
+      visibility: visible !important;
+      opacity: 1 !important;
+    }
+    body.has-ppt #main-toolbar .tb-group-room + .tb-sep {
+      display: block !important;
       visibility: visible !important;
       opacity: 1 !important;
     }
@@ -146,15 +159,21 @@
       background: none !important;
     }
     body.presentation-page #app {
-      position: absolute !important;
-      inset: 0 !important;
+      position: relative !important;
+      inset: auto !important;
+      flex: 1 1 auto !important;
+      min-height: 0 !important;
       width: 100% !important;
-      height: 100% !important;
+      height: auto !important;
       z-index: 1 !important;
     }
     body.presentation-page .stage-area {
-      position: absolute !important;
-      inset: 0 !important;
+      position: relative !important;
+      inset: auto !important;
+      flex: 1 1 auto !important;
+      min-height: 0 !important;
+      width: 100% !important;
+      height: auto !important;
       z-index: 1 !important;
     }
   </style>
@@ -229,13 +248,13 @@
   <div id="capture-root">
   <div id="app">
     <main class="stage-area">
-      <div id="upload-panel" class="upload-panel">
-        <div class="upload-box" id="upload-box" role="button" tabindex="0">
-          <h2>PPT 파일 업로드</h2>
-          <p>.pptx 파일을 선택하거나 이 영역에 드래그하세요</p>
+      <div id="upload-panel" class="upload-panel hidden">
+        <div class="upload-box ready-box share-prompt-box" id="upload-box">
+          <h2>화면 공유</h2>
+          <p>공유할 화면·창을 선택하면 참가자에게 바로 송출됩니다.</p>
+          <button type="button" id="btn-share-now" class="btn btn-primary btn-lg">화면 공유 시작</button>
           <input type="file" id="file-input" accept=".pptx,application/vnd.openxmlformats-officedocument.presentationml.presentation" hidden>
-          <label for="file-input" id="btn-select-file" class="btn btn-primary">파일 선택</label>
-          <p id="upload-status" class="upload-status">라이브러리 준비 중…</p>
+          <p id="upload-status" class="upload-status"></p>
         </div>
       </div>
 
@@ -278,17 +297,22 @@
   </div>
   </div><!-- /#capture-root -->
 
+  <div id="guest-share-stage" class="guest-share-stage hidden" aria-live="polite">
+    <video id="guest-share-video" class="guest-share-video" autoplay playsinline muted></video>
+    <p id="guest-share-label" class="guest-share-label">참가자 화면 공유 중</p>
+  </div>
+
   <div id="stream-options-gate" class="stream-options-gate hidden">
     <div class="stream-options-box">
       <h2>화면 송출</h2>
-      <p>참가자에게 이 탭 화면을 실시간으로 보냅니다.</p>
+      <p>참가자에게 PC 화면을 실시간으로 보냅니다. 브라우저를 내려도 코딩 화면이 그대로 나갑니다.</p>
       <div class="stream-opt-list">
         <label class="stream-opt-row">
           <input type="checkbox" id="opt-stream-mic">
           <span>마이크도 함께 송출</span>
         </label>
       </div>
-      <p class="stream-opt-hint">다음 화면에서 Chrome이 탭 공유·탭 오디오를 묻습니다. (브라우저 보안상 필수) PPT/동영상 소리는 거기에서 허용하면 됩니다.</p>
+      <p class="stream-opt-hint">다음 창에서 <strong>전체 화면</strong>(또는 공유할 창)을 고르세요. 「Chrome 탭」만 고르면 이 발표 탭만 보입니다.</p>
       <div class="stream-options-actions">
         <button type="button" id="btn-stream-cancel" class="btn btn-sm btn-ghost">취소</button>
         <button type="button" id="btn-stream-start" class="btn btn-sm btn-primary">시작</button>
@@ -317,15 +341,15 @@
   <div id="load-progress" aria-hidden="true"></div>
 
   <script src="/socket.io/socket.io.js"></script>
-  <script src="js/toolbar-pin.js?v=20260715ay"></script>
+  <script src="js/toolbar-pin.js?v=20260819c"></script>
   <script src="js/progress-bar.js?v=20260715w"></script>
-  <script src="js/host-upload.js?v=20260715w"></script>
+  <script src="js/host-upload.js?v=20260819c"></script>
   <script type="module" src="js/load-progress.js?v=20260715w"></script>
-  <script type="module" src="js/deps.js?v=20260715w"></script>
+  <script type="module" src="js/deps.js?v=20260826a"></script>
   <script type="module" src="js/host-ppt-loader.js?v=20260715ah"></script>
-  <script type="module" src="js/host.js?v=20260715az"></script>
+  <script type="module" src="js/host.js?v=20260826sfu19"></script>
   <script type="module">
-    import { setupDisplayMode } from './js/display-mode.js?v=20260715';
+    import { setupDisplayMode } from './js/display-mode.js?v=20260819e';
     setupDisplayMode({ autoPromptMobile: true });
   </script>
 </body>

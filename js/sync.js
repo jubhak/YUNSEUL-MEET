@@ -118,6 +118,10 @@ export class RoomSync {
       'stream-status',
       'peer-joined',
       'peer-left',
+      'request-screen-share',
+      'stop-screen-share',
+      'broadcaster-changed',
+      'screen-share-ended',
     ];
     types.forEach((type) => {
       this.socket.on(type, (payload) => {

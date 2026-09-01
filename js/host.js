@@ -1,26 +1,101 @@
 import { OverlayManager } from './overlay-manager.js?v=20260715ab';
 import { DrawCanvas } from './draw-canvas.js?v=20260715u';
-import { RoomSync } from './sync.js?v=20260715aj';
+import { RoomSync } from './sync.js?v=20260728b';
 import { goToSlide, getPptEngine } from './host-ppt-loader.js?v=20260715ah';
 import { findHttpLinkAt, findVideoHitAt } from './link-utils.js?v=20260715z';
-import { setViewerCount, setupViewersPanel } from './viewers-panel.js?v=20260715f';
+import {
+  setViewerCount,
+  setupViewersPanel,
+  setSelectedBroadcaster,
+  getLatestViewers,
+} from './viewers-panel.js?v=20260728b';
 import { WebrtcSignaling } from './webrtc/signaling.js?v=20260715j';
-import { HostPublisher } from './webrtc/host-publisher.js?v=20260715az';
+import { HostPublisher } from './webrtc/host-publisher.js?v=20260826sfu19';
 
 const params = new URLSearchParams(window.location.search);
 const roomCode = (params.get('code') || sessionStorage.getItem('roomCode') || '').toUpperCase();
 const hostToken = sessionStorage.getItem('hostToken');
+const hostName = sessionStorage.getItem('hostName') || '호스트';
 
 if (!roomCode || !hostToken) {
   window.location.href = './';
 }
 
 document.getElementById('room-code').textContent = roomCode;
-setupViewersPanel();
 
 let sync = null;
 let webrtcPublisher = null;
 let knownViewerIds = new Set();
+let activeBroadcasterId = null;
+
+const guestShareStage = document.getElementById('guest-share-stage');
+const guestShareVideo = document.getElementById('guest-share-video');
+const guestShareLabel = document.getElementById('guest-share-label');
+
+function showGuestShare(stream, name) {
+  if (guestShareVideo) {
+    guestShareVideo.srcObject = stream || null;
+    guestShareVideo.muted = true;
+    guestShareVideo.play?.().catch(() => {});
+  }
+  if (guestShareLabel) {
+    guestShareLabel.textContent = name
+      ? `${name}님 화면 공유 중 — 명단에서 호스트를 누르면 발표 화면으로 돌아갑니다`
+      : '참가자 화면 공유 중';
+  }
+  guestShareStage?.classList.remove('hidden');
+}
+
+function hideGuestShare() {
+  if (guestShareVideo) {
+    guestShareVideo.srcObject = null;
+  }
+  guestShareStage?.classList.add('hidden');
+}
+
+async function selectParticipant({ id, role, name }) {
+  if (!id || !sync) return;
+
+  // 호스트 자신 → 발표 화면 복귀
+  if (role === 'host' || id === sync.clientId) {
+    if (webrtcPublisher?.isRelaying) {
+      const prev = webrtcPublisher.relayPeerId;
+      if (prev) {
+        await sync.emit('stop-screen-share', { clientId: prev });
+      }
+      await webrtcPublisher.restoreOwnDisplay();
+    }
+    hideGuestShare();
+    activeBroadcasterId = sync.clientId;
+    setSelectedBroadcaster(sync.clientId);
+    await sync.emit('set-broadcaster', {
+      clientId: sync.clientId,
+      role: 'host',
+      name: hostName,
+    });
+    return;
+  }
+
+  if (!webrtcPublisher?.isActive) {
+    alert('참가자 화면을 공유하려면 먼저 「송출」을 시작해 주세요.');
+    return;
+  }
+
+  if (webrtcPublisher.relayPeerId && webrtcPublisher.relayPeerId !== id) {
+    await sync.emit('stop-screen-share', { clientId: webrtcPublisher.relayPeerId });
+    await webrtcPublisher.restoreOwnDisplay();
+    hideGuestShare();
+  }
+
+  activeBroadcasterId = id;
+  setSelectedBroadcaster(id);
+  await sync.emit('request-screen-share', { clientId: id, name });
+}
+
+setupViewersPanel({
+  selectable: true,
+  onSelect: (p) => { selectParticipant(p).catch((err) => console.warn(err)); },
+});
 const uploadStatus = document.getElementById('upload-status');
 const btnStream = document.getElementById('btn-stream');
 const btnPen = document.getElementById('btn-pen');
@@ -35,7 +110,7 @@ const MIC_PREF_KEY = 'yunseulStreamMic';
 const TAB_AUDIO_PREF_KEY = 'yunseulStreamTabAudio';
 
 let preferTabAudio = sessionStorage.getItem(TAB_AUDIO_PREF_KEY) !== '0';
-let preferMic = sessionStorage.getItem(MIC_PREF_KEY) === '1';
+let preferMic = sessionStorage.getItem(MIC_PREF_KEY) !== '0';
 
 function setStatus(msg) {
   if (uploadStatus && msg) uploadStatus.textContent = msg;
@@ -86,13 +161,38 @@ function updateStreamUi(active, withMic = false) {
   syncAvButtons();
 }
 
-function openStreamOptions() {
-  if (!sync?.socket || !webrtcPublisher) {
-    alert('방에 아직 연결되지 않았습니다.');
-    return;
+function hideSharePrompt() {
+  document.getElementById('upload-panel')?.classList.add('hidden');
+  showHostMenu();
+}
+
+function showSharePrompt(msg) {
+  const panel = document.getElementById('upload-panel');
+  const status = document.getElementById('upload-status');
+  panel?.classList.remove('hidden');
+  if (status) status.textContent = msg || '';
+}
+
+/** 페이지 진입 즉시 패널 숨김 — 공유 창 뜨기 전 PPT/안내 깜빡임 방지 */
+document.getElementById('upload-panel')?.classList.add('hidden');
+
+/** PPT 없이도 호스트 툴바(그리기·마이크·송출 등) 표시 */
+function showHostMenu() {
+  document.body.classList.add('has-presentation');
+  window.YunseulToolbar?.showTools?.();
+  const reloadBtn = document.getElementById('btn-reload-ppt');
+  if (reloadBtn) {
+    reloadBtn.style.display = '';
+    reloadBtn.textContent = document.body.classList.contains('has-ppt')
+      ? 'PPT 바꾸기'
+      : 'PPT 업로드';
   }
   syncAvButtons();
-  streamOptionsGate?.classList.remove('hidden');
+}
+
+function openStreamOptions() {
+  // 중간 설정 팝업 없이 바로 OS 화면 공유 창
+  startScreenShare();
 }
 
 function closeStreamOptions() {
@@ -100,32 +200,47 @@ function closeStreamOptions() {
 }
 
 async function startScreenShare() {
-  const withMic = !!optStreamMic?.checked;
-  // 탭 소리는 브라우저「탭 오디오도 허용」에서 결정 — 툴바 스피커는 시작 후 mute용
+  if (!sync?.socket || !webrtcPublisher) {
+    alert('방에 아직 연결되지 않았습니다.');
+    return;
+  }
+  const withMic = !!preferMic;
   const withTabAudio = preferTabAudio !== false;
-  preferMic = withMic;
-  sessionStorage.setItem(MIC_PREF_KEY, withMic ? '1' : '0');
   closeStreamOptions();
 
   if (btnStream) {
     btnStream.disabled = true;
     btnStream.textContent = '공유 창 선택…';
   }
+  const shareBtn = document.getElementById('btn-share-now');
+  if (shareBtn) {
+    shareBtn.disabled = true;
+    shareBtn.textContent = '공유 창 선택…';
+  }
   try {
     await webrtcPublisher.startDisplayCapture({ withMic, withTabAudio });
     updateStreamUi(true, (webrtcPublisher.kinds || []).includes('mic'));
+    hideSharePrompt();
     const ids = [...knownViewerIds];
-    if (ids.length) await webrtcPublisher.publishTo(ids);
+    // SFU 단일 경로: produce 재확인`r`n    if (ids.length) await webrtcPublisher.publishTo(ids);
   } catch (err) {
     console.warn('[stream]', err);
     updateStreamUi(false);
-    alert(err?.message?.includes('Permission') || err?.name === 'NotAllowedError'
-      ? '화면 공유가 취소되었습니다. 「송출」을 다시 눌러 주세요.'
-      : (`화면 송출을 시작할 수 없습니다.\n${err?.message || ''}`));
+    const cancelled = err?.message?.includes('Permission') || err?.name === 'NotAllowedError';
+    showSharePrompt(cancelled
+      ? '화면 공유가 취소되었습니다. 아래 버튼으로 다시 시작해 주세요.'
+      : (err?.message || '화면 송출을 시작할 수 없습니다.'));
+    if (!cancelled) {
+      alert(`화면 송출을 시작할 수 없습니다.\n${err?.message || ''}`);
+    }
   } finally {
     if (btnStream && !webrtcPublisher?.isActive) {
       btnStream.disabled = false;
       btnStream.textContent = '송출';
+    }
+    if (shareBtn) {
+      shareBtn.disabled = false;
+      shareBtn.textContent = '화면 공유 시작';
     }
     syncAvButtons();
   }
@@ -134,6 +249,7 @@ async function startScreenShare() {
 function stopScreenShare() {
   webrtcPublisher?.stop();
   updateStreamUi(false);
+  showSharePrompt('송출이 중지되었습니다. 다시 화면을 공유해 주세요.');
 }
 
 async function toggleTabAudio() {
@@ -172,11 +288,12 @@ async function toggleMic() {
 
 btnStream?.addEventListener('click', () => {
   if (webrtcPublisher?.isActive) stopScreenShare();
-  else openStreamOptions();
+  else startScreenShare();
 });
 
 btnStreamCancel?.addEventListener('click', () => closeStreamOptions());
 btnStreamStart?.addEventListener('click', () => startScreenShare());
+document.getElementById('btn-share-now')?.addEventListener('click', () => startScreenShare());
 
 optStreamMic?.addEventListener('change', () => {
   preferMic = !!optStreamMic.checked;
@@ -390,6 +507,8 @@ window.addEventListener('ppt-before-reload', () => {
 });
 
 window.addEventListener('ppt-ready', (e) => {
+  document.body.classList.add('has-ppt');
+  showHostMenu();
   const engine = getPptEngine();
   if (engine) {
     const size = engine.getSlideSize();
@@ -399,6 +518,8 @@ window.addEventListener('ppt-ready', (e) => {
     syncSlideAudio(0).catch((err) => console.warn('[slide-audio]', err));
   }
   document.getElementById('btn-reload-ppt')?.style.setProperty('display', '');
+  const reloadBtn = document.getElementById('btn-reload-ppt');
+  if (reloadBtn) reloadBtn.textContent = 'PPT 바꾸기';
   btnStream?.classList.remove('hidden');
   if (btnStream && !webrtcPublisher?.isActive) {
     btnStream.title = '참가자에게 화면 송출';
@@ -453,12 +574,25 @@ sync = new RoomSync({
   code: roomCode,
   role: 'host',
   hostToken,
+  name: hostName,
   onEvent: (type, payload) => {
     if (type === 'viewer-count') {
-      setViewerCount(payload.count ?? 0, payload.viewers);
-      (payload.viewers || []).forEach((v) => {
-        if (v?.id) knownViewerIds.add(v.id);
+      setViewerCount(payload.count ?? 0, payload.viewers, {
+        activeBroadcasterId: payload.activeBroadcasterId ?? activeBroadcasterId,
       });
+      (payload.viewers || []).forEach((v) => {
+        if (v?.id && v.role !== 'host') knownViewerIds.add(v.id);
+      });
+    }
+    if (type === 'broadcaster-changed') {
+      activeBroadcasterId = payload.clientId || sync?.clientId;
+      setSelectedBroadcaster(activeBroadcasterId);
+    }
+    if (type === 'screen-share-ended') {
+      if (webrtcPublisher?.relayPeerId === payload.clientId) {
+        webrtcPublisher.restoreOwnDisplay().catch(() => {});
+        hideGuestShare();
+      }
     }
   },
   // 재연결 후 송출 FLAG만 다시 올림 (피어 재생성 없음 — peer-joined가 처리)
@@ -475,9 +609,12 @@ sync = new RoomSync({
 
 sync.start()
   .then((data) => {
-    setViewerCount(data.state?.viewerCount ?? 0, data.state?.viewers);
+    activeBroadcasterId = data.state?.activeBroadcasterId || sync.clientId;
+    setViewerCount(data.state?.viewerCount ?? 0, data.state?.viewers, {
+      activeBroadcasterId,
+    });
     (data.state?.viewers || []).forEach((v) => {
-      if (v?.id) knownViewerIds.add(v.id);
+      if (v?.id && v.role !== 'host') knownViewerIds.add(v.id);
     });
     if (data.drawings) drawCanvas.loadStrokes(data.drawings);
     if (data.state?.presentation && getPptEngine()) {
@@ -488,11 +625,54 @@ sync.start()
     const signaling = new WebrtcSignaling(sync.socket, { localClientId: sync.clientId });
     webrtcPublisher = new HostPublisher({
       signaling,
-      onStatus: ({ active, withMic, kinds }) => {
+      onStatus: ({ active, withMic, kinds, audioShareMissing }) => {
         updateStreamUi(!!active, !!withMic || (kinds || []).includes('mic'));
         syncAvButtons();
+        if (active) {
+          hideSharePrompt();
+          if (audioShareMissing && !webrtcPublisher._audioWarned) {
+            webrtcPublisher._audioWarned = true;
+            alert(
+              '화면 소리는 캡처되지 않았습니다.\n\n'
+              + '공유 팝업에서 「오디오 공유」또는 「시스템 오디오」를 체크한 뒤\n'
+              + '다시 송출해 주세요.\n'
+              + '(Chrome: 전체 화면/창 공유 시 시스템 소리, 탭 공유 시 탭 소리)'
+            );
+          }
+        } else if (!document.getElementById('presentation-stage')
+          || document.getElementById('presentation-stage').classList.contains('hidden')) {
+          showSharePrompt('');
+        }
       },
     });
+    webrtcPublisher.onRelayChange = ({ peerId, active, stream }) => {
+      if (active && stream) {
+        const name = getLatestViewers().find((v) => v.id === peerId)?.name || '참가자';
+        showGuestShare(stream, name);
+        activeBroadcasterId = peerId;
+        setSelectedBroadcaster(peerId);
+        sync?.emit('set-broadcaster', {
+          clientId: peerId,
+          role: 'viewer',
+          name,
+        });
+      } else {
+        hideGuestShare();
+        activeBroadcasterId = sync.clientId;
+        setSelectedBroadcaster(sync.clientId);
+        sync?.emit('set-broadcaster', {
+          clientId: sync.clientId,
+          role: 'host',
+          name: hostName,
+        });
+      }
+    };
+
+    // 입장 직후 호스트 메뉴 표시 + 화면 공유 창
+    showHostMenu();
+    setTimeout(() => {
+      if (!webrtcPublisher?.isActive) startScreenShare();
+    }, 120);
   })
   .catch((err) => {
     console.warn('방 연결 실패:', err);
@@ -514,9 +694,11 @@ setInterval(() => {
     .then((r) => r.json())
     .then((state) => {
       if (state && typeof state.viewerCount === 'number') {
-        setViewerCount(state.viewerCount, state.viewers);
+        setViewerCount(state.viewerCount, state.viewers, {
+          activeBroadcasterId: state.activeBroadcasterId ?? activeBroadcasterId,
+        });
         (state.viewers || []).forEach((v) => {
-          if (v?.id) knownViewerIds.add(v.id);
+          if (v?.id && v.role !== 'host') knownViewerIds.add(v.id);
         });
       }
     })

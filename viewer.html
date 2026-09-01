@@ -6,7 +6,7 @@
   <meta name="mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <title>참가 - YUNSEUL PPT</title>
-  <link rel="stylesheet" href="css/style.css?v=20260715ba">
+  <link rel="stylesheet" href="css/style.css?v=20260819i">
   <style>
     #main-toolbar.toolbar {
       position: relative !important;
@@ -19,7 +19,7 @@
       display: flex !important;
       align-items: center !important;
       justify-content: space-between !important;
-      gap: 1rem !important;
+      gap: 0.75rem !important;
       opacity: 1 !important;
       visibility: visible !important;
       pointer-events: auto !important;
@@ -32,24 +32,46 @@
       -webkit-backdrop-filter: blur(10px);
       box-sizing: border-box !important;
     }
+    #main-toolbar .toolbar-meta {
+      display: inline-flex !important;
+      align-items: center !important;
+      gap: 0.45rem !important;
+      min-width: 0 !important;
+      flex: 1 1 auto !important;
+    }
     #main-toolbar .room-badge {
       display: inline-flex !important;
       align-items: center !important;
-      gap: 0.35rem !important;
-      padding: 0.28rem 0.7rem !important;
+      gap: 0.3rem !important;
+      padding: 0.28rem 0.65rem !important;
       border-radius: 8px !important;
       background: rgba(45,212,168,0.14) !important;
       border: 1px solid rgba(45,212,168,0.4) !important;
       color: #e8eaef !important;
-      font-size: 0.88rem !important;
+      font-size: 0.82rem !important;
       opacity: 1 !important;
       visibility: visible !important;
+      white-space: nowrap !important;
+      flex-shrink: 0 !important;
     }
     #main-toolbar .room-badge strong {
       color: #2dd4a8 !important;
-      font-size: 1.08rem !important;
-      letter-spacing: 0.14em !important;
+      font-size: 1rem !important;
+      letter-spacing: 0.12em !important;
       font-weight: 700 !important;
+    }
+    #main-toolbar .viewer-badge {
+      white-space: nowrap !important;
+      flex-shrink: 0 !important;
+      font-size: 0.82rem !important;
+    }
+    #main-toolbar .sync-status {
+      font-size: 0.72rem !important;
+      opacity: 0.85 !important;
+      white-space: nowrap !important;
+      overflow: hidden !important;
+      text-overflow: ellipsis !important;
+      max-width: 7rem !important;
     }
     body.viewer-page #app {
       position: relative !important;
@@ -72,24 +94,46 @@
     body.viewer-page .live-stage {
       position: absolute !important;
       inset: 0 !important;
-      display: block !important;
       background: #000 !important;
       margin: 0 !important;
       padding: 0 !important;
+      overflow: hidden !important;
+      touch-action: none !important;
+      -webkit-user-select: none !important;
+      user-select: none !important;
+    }
+    body.viewer-page .live-zoom {
+      position: absolute !important;
+      inset: 0 !important;
+      width: 100% !important;
+      height: 100% !important;
+      transform-origin: center center !important;
+      will-change: transform;
+    }
+    body.viewer-page .live-stage.hidden {
+      display: none !important;
+    }
+    body.viewer-page .live-stage:not(.hidden) {
+      display: block !important;
     }
     body.viewer-page .live-video {
       display: block !important;
       width: 100% !important;
       height: 100% !important;
-      /* 호스트와 동일: 가로·세로 중 먼저 닿는 쪽에 맞추고 비율 유지 (잘림 없음) */
       object-fit: contain !important;
       object-position: center center !important;
       background: #000 !important;
+      pointer-events: none !important;
     }
-    #main-toolbar .toolbar-right {
+    body.viewer-page .rotate-hint {
+      display: none !important;
+    }
+    #main-toolbar .toolbar-actions {
       display: inline-flex !important;
       align-items: center !important;
-      gap: 0.45rem !important;
+      justify-content: flex-end !important;
+      gap: 0.4rem !important;
+      flex-shrink: 0 !important;
     }
     #main-toolbar .tb-group-av {
       display: inline-flex !important;
@@ -111,8 +155,21 @@
       font-size: 1.15rem !important;
       line-height: 1 !important;
       cursor: pointer !important;
+      text-decoration: none !important;
+      box-sizing: border-box !important;
     }
     #main-toolbar .btn-icon .ico { display: block !important; font-size: 1.15rem !important; line-height: 1 !important; }
+    #main-toolbar .btn-toolbar-text {
+      width: auto !important;
+      min-width: 2.35rem !important;
+      padding: 0 0.7rem !important;
+      gap: 0.35rem !important;
+      font-size: 0.82rem !important;
+      font-weight: 600 !important;
+    }
+    #main-toolbar .btn-toolbar-text .btn-text {
+      display: inline !important;
+    }
     #main-toolbar .btn-av.is-active {
       background: rgba(45,212,168,0.2) !important;
       border-color: rgba(45,212,168,0.55) !important;
@@ -126,6 +183,58 @@
     #main-toolbar .btn-av .ico-off { display: none !important; }
     #main-toolbar .btn-av:not(.is-active) .ico-on { display: none !important; }
     #main-toolbar .btn-av:not(.is-active) .ico-off { display: block !important; }
+
+    /* 세로·좁은 화면: 위 메타 / 아래 아이콘 한 줄 */
+    @media (max-width: 720px), (orientation: portrait) and (max-width: 960px) {
+      #main-toolbar.toolbar {
+        flex-wrap: wrap !important;
+        align-items: center !important;
+        row-gap: 0.55rem !important;
+        column-gap: 0 !important;
+        padding: 0.55rem 0.7rem 0.65rem !important;
+      }
+      #main-toolbar .toolbar-meta {
+        flex: 1 1 100% !important;
+        width: 100% !important;
+        justify-content: flex-start !important;
+        gap: 0.4rem !important;
+      }
+      #main-toolbar .sync-status {
+        margin-left: auto !important;
+        max-width: none !important;
+        font-size: 0.7rem !important;
+      }
+      #main-toolbar .toolbar-actions {
+        flex: 1 1 100% !important;
+        width: 100% !important;
+        display: grid !important;
+        grid-template-columns: repeat(4, minmax(0, 1fr)) !important;
+        gap: 0.45rem !important;
+        justify-content: stretch !important;
+      }
+      #main-toolbar .tb-group-av {
+        display: contents !important;
+      }
+      #main-toolbar .btn-icon,
+      #main-toolbar .btn-toolbar-text,
+      #main-toolbar a.btn-toolbar-text,
+      #main-toolbar #btn-fullscreen {
+        width: 100% !important;
+        min-width: 0 !important;
+        height: 2.65rem !important;
+        flex: none !important;
+        border-radius: 11px !important;
+        padding: 0 !important;
+      }
+      #main-toolbar .btn-toolbar-text .btn-text {
+        display: none !important;
+      }
+      #main-toolbar .btn-toolbar-text .ico,
+      #main-toolbar .btn-icon .ico {
+        font-size: 1.2rem !important;
+      }
+    }
+
     .unmute-banner {
       position: fixed !important;
       left: 50% !important;
@@ -140,8 +249,8 @@
       font-size: 1.05rem !important;
       font-weight: 700 !important;
       box-shadow: 0 12px 40px rgba(0,0,0,0.45) !important;
-      cursor: default !important;
-      pointer-events: none !important;
+      cursor: pointer !important;
+      pointer-events: auto !important;
       animation: unmute-pulse 1.4s ease-in-out infinite !important;
     }
     .unmute-banner.is-off {
@@ -167,16 +276,16 @@
   </script>
 </head>
 <body class="presentation-page viewer-page">
-  <header class="toolbar" id="main-toolbar">
-    <div class="toolbar-left">
-      <span class="room-badge">참여 코드 <strong id="room-code"></strong></span>
-      <span class="viewer-badge">참가자 <a id="viewer-count-link" class="viewer-count-link"><strong id="viewer-count">0</strong>명</a></span>
-      <span id="sync-status" class="sync-status">연결 중...</span>
+  <header class="toolbar toolbar-viewer" id="main-toolbar">
+    <div class="toolbar-left toolbar-meta">
+      <span class="room-badge">코드 <strong id="room-code"></strong></span>
+      <span class="viewer-badge"><a id="viewer-count-link" class="viewer-count-link"><strong id="viewer-count">0</strong>명</a></span>
+      <span id="sync-status" class="sync-status" title="연결 상태">연결 중...</span>
     </div>
     <div class="toolbar-center" id="slide-controls" style="display:none">
       <span id="slide-indicator">1 / 1</span>
     </div>
-    <div class="toolbar-right">
+    <div class="toolbar-right toolbar-actions">
       <div class="tb-group tb-group-av" id="viewer-av-tools">
         <button type="button" id="btn-av-speaker" class="btn btn-icon btn-av" title="소리 꺼짐 — 클릭하여 켜기" aria-pressed="false" aria-label="소리">
           <span class="ico ico-on" aria-hidden="true">🔊</span>
@@ -187,8 +296,14 @@
           <span class="ico ico-off" aria-hidden="true">🚫</span>
         </button>
       </div>
-      <button type="button" id="btn-fullscreen" class="btn btn-sm" title="전체화면 (F)">전체화면</button>
-      <a href="./" class="btn btn-sm btn-ghost">나가기</a>
+      <button type="button" id="btn-fullscreen" class="btn btn-icon btn-toolbar-text" title="전체화면 (F)" aria-label="전체화면">
+        <span class="ico" aria-hidden="true">⛶</span>
+        <span class="btn-text">전체화면</span>
+      </button>
+      <a href="./" class="btn btn-icon btn-ghost btn-toolbar-text" title="나가기" aria-label="나가기">
+        <span class="ico" aria-hidden="true">✕</span>
+        <span class="btn-text">나가기</span>
+      </a>
     </div>
   </header>
 
@@ -203,7 +318,9 @@
       </div>
 
       <div id="live-stage" class="live-stage hidden">
-        <video id="live-video" class="live-video" playsinline autoplay></video>
+        <div class="live-zoom">
+          <video id="live-video" class="live-video" playsinline autoplay></video>
+        </div>
       </div>
 
       <!-- 레거시 DOM 유지(향후 하이브리드용), 기본은 숨김 -->
@@ -221,12 +338,12 @@
   <div id="mobile-fs-gate" class="mobile-fs-gate hidden">
     <div class="gate-box">
       <h2>전체화면으로 보기</h2>
-      <p>버튼을 누르면 전체화면으로 전환됩니다. 휴대폰은 가로로 돌려 주세요.</p>
+      <p>버튼을 누르면 전체화면으로 전환됩니다. 세로·가로 모두 시청할 수 있습니다.</p>
       <button type="button" id="btn-mobile-fs" class="btn btn-primary btn-lg">전체화면 시작</button>
     </div>
   </div>
 
-  <div id="rotate-hint" class="rotate-hint hidden">
+  <div id="rotate-hint" class="rotate-hint hidden" aria-hidden="true">
     <div>
       <span class="phone-icon">📱</span>
       <p>가로로 돌려 주세요</p>
@@ -257,7 +374,7 @@
   </div>
 
   <audio id="sync-audio" preload="auto" playsinline></audio>
-  <div id="unmute-banner" class="unmute-banner hidden" role="status" aria-live="polite">소리 켜기</div>
+  <div id="unmute-banner" class="unmute-banner hidden" role="button" tabindex="0" aria-live="polite">🔊 탭하여 소리 켜기</div>
 
   <div id="viewer-link-gate" class="viewer-link-gate hidden" aria-live="polite">
     <div class="viewer-link-box">
@@ -286,14 +403,14 @@
   <div id="load-progress" aria-hidden="true"></div>
 
   <script src="/socket.io/socket.io.js"></script>
-  <script src="js/toolbar-pin.js?v=20260715ay"></script>
+  <script src="js/toolbar-pin.js?v=20260819b"></script>
   <script src="js/progress-bar.js?v=20260715d"></script>
   <script type="module" src="js/load-progress.js?v=20260715d"></script>
   <script type="module" src="js/deps.js?v=20260715d"></script>
-  <script type="module" src="js/viewer.js?v=20260715av"></script>
+  <script type="module" src="js/viewer.js?v=20260826sfu20"></script>
   <script type="module">
-    import { setupDisplayMode } from './js/display-mode.js?v=20260715';
-    setupDisplayMode({ autoPromptMobile: true });
+    import { setupDisplayMode } from './js/display-mode.js?v=20260819e';
+    setupDisplayMode({ autoPromptMobile: false });
   </script>
 </body>
 </html>

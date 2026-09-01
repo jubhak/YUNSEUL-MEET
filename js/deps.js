@@ -10,6 +10,11 @@ const STATUS = {
 };
 
 function setUi(msg, isError) {
+  // 화면 공유 자동 시작 중에는 PPT 준비 문구를 올리지 않음 (팝업처럼 깜빡임 방지)
+  const panel = document.getElementById('upload-panel');
+  if (!panel || panel.classList.contains('hidden')) return;
+  if (panel.querySelector('.share-prompt-box') && !window.__yunseulShowDepsStatus) return;
+
   const el = document.getElementById('upload-status') || document.getElementById('sync-status');
   if (!el) return;
   const cur = el.textContent || '';
@@ -23,7 +28,7 @@ export async function ensurePptxReady() {
   if (STATUS.loading) return STATUS.loading;
   if (STATUS.error) throw STATUS.error;
 
-  setUi('PPT 라이브러리 준비 중…', false);
+      setUi('PPT 라이브러리 준비 중…', false);
 
   STATUS.loading = (async () => {
     try {
@@ -36,7 +41,7 @@ export async function ensurePptxReady() {
       STATUS.error = null;
       window.__yunseulPptxInit = mod.init;
       window.__yunseulDepsReady = true;
-      setUi('준비 완료 — 파일을 선택하거나 드래그하세요.', false);
+      setUi('준비 완료', false);
       return mod.init;
     } catch (err) {
       console.warn('[deps]', err);

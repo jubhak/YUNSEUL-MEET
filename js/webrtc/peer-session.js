@@ -33,6 +33,22 @@ export class PeerSession {
     this.pc.addTrack(track, stream);
   }
 
+  /**
+   * @param {'audio'|'video'} kind
+   * @param {MediaStreamTrack|null} track
+   */
+  async replaceTrack(kind, track) {
+    const sender = this.pc.getSenders().find((s) => {
+      if (s.track) return s.track.kind === kind;
+      return false;
+    });
+    if (sender) {
+      await sender.replaceTrack(track);
+      return true;
+    }
+    return false;
+  }
+
   async createOffer() {
     this._makingOffer = true;
     try {
