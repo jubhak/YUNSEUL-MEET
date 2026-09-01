@@ -218,12 +218,12 @@ export class SfuClient {
             videoGoogleStartBitrate: 1000,
           };
         } else if (track.kind === 'audio') {
-          try { track.contentHint = source === 'mic' ? 'speech' : 'music'; } catch { /* ignore */ }
+          try { track.contentHint = (source === 'mic' || source === 'viewer-mic') ? 'speech' : 'music'; } catch { /* ignore */ }
           produceOpts.codecOptions = {
-            opusStereo: source !== 'mic',
+            opusStereo: source !== 'mic' && source !== 'viewer-mic',
             opusFec: true,
-            opusDtx: source === 'mic',
-            opusMaxAverageBitrate: source === 'mic' ? 64000 : 128000,
+            opusDtx: source === 'mic' || source === 'viewer-mic',
+            opusMaxAverageBitrate: (source === 'mic' || source === 'viewer-mic') ? 64000 : 128000,
           };
         }
         const producer = await transport.produce(produceOpts);

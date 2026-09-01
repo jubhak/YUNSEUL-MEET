@@ -10,7 +10,7 @@ import {
   getLatestViewers,
 } from './viewers-panel.js?v=20260728b';
 import { WebrtcSignaling } from './webrtc/signaling.js?v=20260715j';
-import { HostPublisher } from './webrtc/host-publisher.js?v=20260826sfu19';
+import { HostPublisher } from './webrtc/host-publisher.js?v=20260826sfu23';
 
 const params = new URLSearchParams(window.location.search);
 const roomCode = (params.get('code') || sessionStorage.getItem('roomCode') || '').toUpperCase();

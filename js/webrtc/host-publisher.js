@@ -1,6 +1,5 @@
 import { TRACK_KIND } from './config.js';
-import { SfuClient } from './sfu-client.js?v=20260826sfu19';
-import { createMicPipeline } from './mic-pipeline.js?v=20260826sfu19';
+import { SfuClient } from './sfu-client.js?v=20260826sfu23';
 
 /**
  * Host -> SFU display share (+ optional tab audio / mic).
@@ -304,35 +303,19 @@ export class HostPublisher {
       const rawTrack = raw.getAudioTracks()[0];
       if (!rawTrack) return false;
 
-      this._micPipeline = await createMicPipeline(rawTrack, {
-        gateThreshold: 0.015,
-        gateHangMs: 280,
-        onLevel: (rms, open) => {
-          if (!this._hostMicLastReport || Date.now() - this._hostMicLastReport > 3000) {
-            this._hostMicLastReport = Date.now();
-            this.signaling?.socket?.emit?.('client-diag', {
-              kind: 'host-mic',
-              event: open ? 'level-hot' : 'level-silent',
-              detail: `rms=${rms.toFixed(4)} gated=${open}`,
-              enabled: true,
-              muted: false,
-            });
-          }
-        },
-      });
-
-      const processed = this._micPipeline.track;
-      processed.enabled = !!enabled;
-      this._micTracks = [processed];
-      if (this.localStream && !this.localStream.getAudioTracks().includes(processed)) {
-        try { this.localStream.addTrack(processed); } catch { /* ignore */ }
+      // 참가자와 동일: 원본 mic 트랙 그대로 produce (WebAudio 가공 트랙은 무음 송출됨)
+      rawTrack.enabled = !!enabled;
+      try { rawTrack.contentHint = 'speech'; } catch { /* ignore */ }
+      this._micTracks = [rawTrack];
+      if (this.localStream && !this.localStream.getAudioTracks().includes(rawTrack)) {
+        try { this.localStream.addTrack(rawTrack); } catch { /* ignore */ }
       }
       if (!this.kinds.includes(TRACK_KIND.MIC)) this.kinds.push(TRACK_KIND.MIC);
       this.micWanted = !!enabled;
       if (this.active) {
         try {
           const sfu = await this._ensureSfu();
-          await sfu.publishStream(new MediaStream([processed]), {
+          await sfu.publishStream(new MediaStream([rawTrack]), {
             source: 'mic',
             trackKind: TRACK_KIND.MIC,
           });
@@ -340,6 +323,7 @@ export class HostPublisher {
           console.warn('[HostPublisher] mic produce', err);
         }
       }
+      this._startHostMicLevelWatch(rawTrack);
       this._emitStatus();
       return true;
     } catch (err) {

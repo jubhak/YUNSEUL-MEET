@@ -9,7 +9,7 @@ import {
   setSelectedBroadcaster,
 } from './viewers-panel.js?v=20260728b';
 import { WebrtcSignaling } from './webrtc/signaling.js?v=20260715j';
-import { ViewerSubscriber } from './webrtc/viewer-subscriber.js?v=20260826sfu20';
+import { ViewerSubscriber } from './webrtc/viewer-subscriber.js?v=20260826sfu22';
 import { setupViewerZoom } from './viewer-zoom.js?v=20260819b';
 
 const params = new URLSearchParams(window.location.search);
@@ -189,12 +189,22 @@ btnAvMic?.addEventListener('click', async () => {
   const ok = await subscriber.setMicEnabled(next);
   btnAvMic.disabled = false;
   if (next && !ok) {
-    const secure = window.isSecureContext;
-    alert(
-      secure
-        ? '마이크 권한이 없거나 거부되었습니다.\n주소창 왼쪽 자물쇠 → 사이트 설정에서 마이크를 허용해 주세요.'
-        : '마이크는 HTTPS(보안 연결)에서만 사용할 수 있습니다.'
-    );
+    const err = subscriber._lastMicError;
+    const name = err?.name || '';
+    const msg = err?.message || String(err || '');
+    const permission =
+      name === 'NotAllowedError'
+      || name === 'PermissionDeniedError'
+      || /Permission|NotAllowed|denied/i.test(msg);
+    if (!window.isSecureContext) {
+      alert('마이크는 HTTPS(보안 연결)에서만 사용할 수 있습니다.');
+    } else if (permission) {
+      alert(
+        '마이크 권한이 없거나 거부되었습니다.\n주소창 왼쪽 자물쇠 → 사이트 설정에서 마이크를 허용해 주세요.'
+      );
+    } else {
+      alert(`마이크를 켤 수 없습니다.\n${msg || '알 수 없는 오류'}`);
+    }
   }
   syncAvButtons();
 });
