@@ -6,7 +6,7 @@
   <meta name="mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <title>참가 - YUNSEUL PPT</title>
-  <link rel="stylesheet" href="css/style.css?v=20260819i">
+  <link rel="stylesheet" href="css/style.css?v=20260826mic1">
   <style>
     #main-toolbar.toolbar {
       position: relative !important;
@@ -314,6 +314,7 @@
           <div class="spinner"></div>
           <h2 id="waiting-title">호스트 화면 송출 대기</h2>
           <p id="waiting-desc">호스트가 「송출」을 누르면 실시간으로 발표 화면이 보입니다.</p>
+          <button type="button" id="btn-stop-self-share" class="btn btn-primary hidden" style="margin-top:1rem">공유 중지</button>
         </div>
       </div>
 
@@ -407,7 +408,7 @@
   <script src="js/progress-bar.js?v=20260715d"></script>
   <script type="module" src="js/load-progress.js?v=20260715d"></script>
   <script type="module" src="js/deps.js?v=20260715d"></script>
-  <script type="module" src="js/viewer.js?v=20260826sfu22"></script>
+  <script type="module" src="js/viewer.js?v=20260826mic1"></script>
   <script type="module">
     import { setupDisplayMode } from './js/display-mode.js?v=20260819e';
     setupDisplayMode({ autoPromptMobile: false });

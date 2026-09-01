@@ -177,34 +177,13 @@ export class OverlayManager {
     }
   }
 
-  async showLink(url, title) {
-    if (!this.linkPopup) return;
+  async showLink(url) {
+    // 구 임베드/폴백 경로 제거 — 무조건 새 창
+    if (!url) return;
     this._currentLinkUrl = url;
-    this.popupTitle.textContent = title || url;
-    if (this.popupOpenExt) this.popupOpenExt.href = url;
-    if (this.popupFallbackOpen) this.popupFallbackOpen.href = url;
-
-    this.hideLinkFallback();
-    // 웹 조작을 위해 임시로 펜 OFF (선호값은 유지)
-    this.setPenMode(false, { remember: false });
-    this.linkPopup.classList.remove('hidden');
-    this.onLinkDrawSurface({ active: true, canvas: this.linkDrawCanvas });
-    requestAnimationFrame(() => {
-      window.__yunseulDrawCanvas?.resizeOverlaySurface?.();
-    });
-
-    const embed = await this.checkEmbeddable(url);
-    if (embed?.embeddable === false) {
-      this.showLinkFallback(url, '이 사이트는 보안 정책으로 발표 화면에 넣을 수 없습니다. 새 탭에서 열어 주세요.');
-      try {
-        window.open(url, '_blank', 'noopener,noreferrer');
-      } catch { /* ignore */ }
-      return;
-    }
-
-    this.popupIframe.classList.remove('hidden');
-    this.popupIframe.src = url;
-    this.watchIframeEmbed(url);
+    try {
+      window.open(url, '_blank', 'noopener,noreferrer');
+    } catch { /* ignore */ }
   }
 
   get isPenMode() {
@@ -249,58 +228,10 @@ export class OverlayManager {
 
   hideLinkFallback() {
     this.popupFallback?.classList.add('hidden');
-    this.popupIframe?.classList.remove('hidden');
     if (this._iframeWatch) {
       clearTimeout(this._iframeWatch);
       this._iframeWatch = null;
     }
-  }
-
-  showLinkFallback(url, message) {
-    if (this.popupIframe) {
-      this.popupIframe.src = 'about:blank';
-      this.popupIframe.classList.add('hidden');
-    }
-    if (this.popupFallbackMsg) this.popupFallbackMsg.textContent = message;
-    if (this.popupFallbackOpen) this.popupFallbackOpen.href = url;
-    this.popupFallback?.classList.remove('hidden');
-  }
-
-  async checkEmbeddable(url) {
-    try {
-      const res = await fetch('api/check-embed?url=' + encodeURIComponent(url));
-      return await res.json();
-    } catch {
-      return { embeddable: true, soft: true };
-    }
-  }
-
-  /** iframe이 차단 페이지로 뜨는 경우(로드는 되지만 내용 없음) 폴백 */
-  watchIframeEmbed(url) {
-    if (this._iframeWatch) clearTimeout(this._iframeWatch);
-    const iframe = this.popupIframe;
-    if (!iframe) return;
-
-    const fail = () => {
-      if (this._currentLinkUrl !== url) return;
-      if (this.linkPopup?.classList.contains('hidden')) return;
-      this.showLinkFallback(
-        url,
-        '이 사이트는 iframe 임베드를 막았습니다. 새 탭에서 열어 주세요.'
-      );
-      try {
-        window.open(url, '_blank', 'noopener,noreferrer');
-      } catch { /* ignore */ }
-    };
-
-    iframe.onerror = fail;
-    // 일부 사이트는 load 후에도 연결 거부 페이지 — 짧은 뒤 폴백 버튼은 항상 노출 유지
-    this._iframeWatch = setTimeout(() => {
-      // soft probe: 같은 origin이 아니면 contentDocument 접근 불가 — 헤더 재확인
-      this.checkEmbeddable(url).then((r) => {
-        if (r?.embeddable === false) fail();
-      });
-    }, 2500);
   }
 
   closeLink(broadcast = false) {
@@ -312,7 +243,6 @@ export class OverlayManager {
       this._currentLinkUrl = null;
       this.restorePreferredPen();
     }
-    // 이미 닫혀 있어도 참가자 오버레이 해제를 위해 항상 동기화
     if (broadcast && this.isHost) {
       this.onCloseLink();
     }
@@ -320,7 +250,7 @@ export class OverlayManager {
 
   handleRemoteOpenLink(data) {
     if (!data?.url) return;
-    this.showLink(data.url, data.title || data.url);
+    this.showLink(data.url);
   }
 
   handleRemoteCloseLink() {

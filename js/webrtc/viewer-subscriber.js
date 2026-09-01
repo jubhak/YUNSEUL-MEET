@@ -452,9 +452,19 @@ export class ViewerSubscriber {
   async startScreenShare() {
     if (this.sharingScreen) return true;
     try {
+      // 전체 화면(모니터) 공유 우선 — 코딩 PC 화면용
       const stream = await navigator.mediaDevices.getDisplayMedia({
-        video: true,
+        video: {
+          displaySurface: 'monitor',
+          frameRate: { ideal: 24, max: 30 },
+          width: { ideal: 1920 },
+          height: { ideal: 1080 },
+        },
         audio: false,
+        preferCurrentTab: false,
+        selfBrowserSurface: 'exclude',
+        monitorTypeSurfaces: 'include',
+        surfaceSwitching: 'include',
       });
       this._displayShareStream = stream;
       this.sharingScreen = true;
@@ -465,6 +475,7 @@ export class ViewerSubscriber {
         });
       }
       await sfu.publishStream(stream, { source: 'viewer-display' });
+      this.onStatus?.({ sharingScreen: true, playing: false });
       return true;
     } catch (err) {
       console.warn('[ViewerSubscriber] screen share', err);
@@ -475,11 +486,13 @@ export class ViewerSubscriber {
         }
         this._displayShareStream = null;
       }
+      this.onStatus?.({ sharingScreen: false });
       return false;
     }
   }
 
   async stopScreenShare() {
+    const wasSharing = this.sharingScreen;
     this.sharingScreen = false;
     const sfu = this.sfu;
     if (sfu) {
@@ -490,6 +503,13 @@ export class ViewerSubscriber {
         try { t.stop(); } catch { /* ignore */ }
       }
       this._displayShareStream = null;
+    }
+    if (wasSharing) {
+      this.onStatus?.({
+        sharingScreen: false,
+        streamActive: true,
+        playing: this.hasLiveVideo(),
+      });
     }
   }
 

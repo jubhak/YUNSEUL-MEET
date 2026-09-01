@@ -162,8 +162,11 @@ export async function loadPresentation(url, arrayBuffer = null, opts = {}) {
 
     let buffer = arrayBuffer;
     if (buffer) {
+      setStage('parse', isReload ? '로컬에서 새 PPT 준비…' : '로컬 PPT 렌더링…');
+      reportLoadProgress(isReload ? '로컬에서 새 PPT 준비…' : '로컬 PPT 렌더링…');
       slideCount = await pptEngine.loadFromArrayBuffer(buffer);
     } else {
+      if (!fullUrl) throw new Error('PPT 파일 정보가 없습니다.');
       slideCount = await pptEngine.loadFromUrl(fullUrl);
       buffer = pptEngine.sourceBuffer || null;
     }
@@ -245,7 +248,7 @@ window.addEventListener('ppt-uploaded', async (e) => {
     setStatus(hadPresentation ? '새 PPT 불러오는 중…' : 'PPT 라이브러리/슬라이드 불러오는 중…');
     const { ensurePptxReady } = await import('./deps.js');
     await ensurePptxReady();
-    await loadPresentation(url, buffer, { presentation });
+    await loadPresentation(url || '', buffer, { presentation });
     goToSlide(0);
   } catch (err) {
     console.error('[ppt-loader]', err);
@@ -258,6 +261,18 @@ window.addEventListener('ppt-uploaded', async (e) => {
       document.getElementById('presentation-stage')?.classList.add('hidden');
     }
   }
+});
+
+window.addEventListener('ppt-upload-saved', (e) => {
+  const presentation = e.detail?.presentation;
+  if (!presentation || !pptEngine?.sourceBuffer) return;
+  const code = currentRoomCode();
+  const fileKey = fileKeyFromPresentation(presentation);
+  if (!code || !fileKey) return;
+  putPptCache(code, fileKey, pptEngine.sourceBuffer, {
+    url: resolveUrl(presentation.url || ''),
+    originalName: presentation.originalName || '',
+  }).catch((err) => console.warn('[ppt-cache] save after upload', err));
 });
 
 // 새로고침: 로컬 캐시 우선, 없으면 서버 다운로드

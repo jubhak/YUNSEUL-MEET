@@ -1,4 +1,4 @@
-import { OverlayManager } from './overlay-manager.js?v=20260715ab';
+import { OverlayManager } from './overlay-manager.js?v=20260826link1';
 import { DrawCanvas } from './draw-canvas.js?v=20260715u';
 import { RoomSync } from './sync.js?v=20260728b';
 import { goToSlide, getPptEngine } from './host-ppt-loader.js?v=20260715ah';
@@ -8,7 +8,7 @@ import {
   setupViewersPanel,
   setSelectedBroadcaster,
   getLatestViewers,
-} from './viewers-panel.js?v=20260728b';
+} from './viewers-panel.js?v=20260826mic1';
 import { WebrtcSignaling } from './webrtc/signaling.js?v=20260715j';
 import { HostPublisher } from './webrtc/host-publisher.js?v=20260826sfu23';
 
@@ -53,26 +53,55 @@ function hideGuestShare() {
   guestShareStage?.classList.add('hidden');
 }
 
-async function selectParticipant({ id, role, name }) {
-  if (!id || !sync) return;
+async function returnToHostDisplay() {
+  if (!sync) return;
 
-  // 호스트 자신 → 발표 화면 복귀
-  if (role === 'host' || id === sync.clientId) {
-    if (webrtcPublisher?.isRelaying) {
-      const prev = webrtcPublisher.relayPeerId;
-      if (prev) {
-        await sync.emit('stop-screen-share', { clientId: prev });
-      }
-      await webrtcPublisher.restoreOwnDisplay();
+  const prevViewer = webrtcPublisher?.relayPeerId
+    || (activeBroadcasterId && activeBroadcasterId !== sync.clientId ? activeBroadcasterId : null);
+
+  // UI는 즉시 호스트 화면으로
+  hideGuestShare();
+  activeBroadcasterId = sync.clientId;
+  setSelectedBroadcaster(sync.clientId);
+
+  // 참가자 화면 공유 중지 (수락 전·공유 중 모두)
+  if (prevViewer) {
+    try {
+      await sync.emit('stop-screen-share', { clientId: prevViewer });
+    } catch (err) {
+      console.warn('[host] stop-screen-share', err);
     }
-    hideGuestShare();
-    activeBroadcasterId = sync.clientId;
-    setSelectedBroadcaster(sync.clientId);
+  }
+
+  // 송출 트랙을 호스트 화면으로 즉시 복구
+  if (webrtcPublisher) {
+    try {
+      await webrtcPublisher.restoreOwnDisplay();
+    } catch (err) {
+      console.warn('[host] restoreOwnDisplay', err);
+    }
+  }
+
+  try {
+    // stopClientId: stop-screen-share가 activeBroadcasterId를 먼저 비워도
+    // 서버가 공유 참가자에게 중지를 다시 보낼 수 있게 함
     await sync.emit('set-broadcaster', {
       clientId: sync.clientId,
       role: 'host',
       name: hostName,
+      stopClientId: prevViewer || undefined,
     });
+  } catch (err) {
+    console.warn('[host] set-broadcaster', err);
+  }
+}
+
+async function selectParticipant({ id, role, name }) {
+  if (!id || !sync) return;
+
+  // 호스트 자신(한 번 또는 두 번 클릭) → 참가자 공유 종료 + 발표 화면 즉시 복귀
+  if (role === 'host' || id === sync.clientId) {
+    await returnToHostDisplay();
     return;
   }
 
@@ -220,6 +249,7 @@ async function startScreenShare() {
   try {
     await webrtcPublisher.startDisplayCapture({ withMic, withTabAudio });
     updateStreamUi(true, (webrtcPublisher.kinds || []).includes('mic'));
+    emitMicStatus(webrtcPublisher.micEnabled ? 'on' : (withMic ? 'none' : 'off'));
     hideSharePrompt();
     const ids = [...knownViewerIds];
     // SFU 단일 경로: produce 재확인`r`n    if (ids.length) await webrtcPublisher.publishTo(ids);
@@ -277,13 +307,40 @@ async function toggleMic() {
       if (!ok) {
         preferMic = false;
         sessionStorage.setItem(MIC_PREF_KEY, '0');
-        alert('마이크 권한을 허용해 주세요.');
+        emitMicStatus('none');
+        alert('마이크를 사용할 수 없습니다. 권한·장치 연결을 확인해 주세요.');
+      } else {
+        emitMicStatus('on');
       }
     } else {
       webrtcPublisher.setMicEnabled(false);
+      emitMicStatus('off');
     }
+  } else {
+    emitMicStatus(preferMic ? 'off' : 'off');
   }
   syncAvButtons();
+}
+
+function emitMicStatus(state) {
+  try {
+    sync?.socket?.emit?.('mic-status', { state });
+  } catch { /* ignore */ }
+}
+
+function probeHostMicAvailability() {
+  if (!navigator.mediaDevices?.enumerateDevices) {
+    emitMicStatus(preferMic && webrtcPublisher?.micEnabled ? 'on' : 'off');
+    return;
+  }
+  navigator.mediaDevices.enumerateDevices()
+    .then((list) => {
+      const hasMic = list.some((d) => d.kind === 'audioinput');
+      if (!hasMic) emitMicStatus('none');
+      else if (webrtcPublisher?.hasMic && webrtcPublisher.micEnabled) emitMicStatus('on');
+      else emitMicStatus('off');
+    })
+    .catch(() => emitMicStatus('off'));
 }
 
 btnStream?.addEventListener('click', () => {
@@ -342,9 +399,12 @@ btnPen?.addEventListener('click', () => {
 
 function openSyncedLink(data) {
   if (!data?.url) return;
-  overlayManager.closeVideo(true);
-  overlayManager.showLink(data.url, data.title || data.url);
-  sync?.emit('open-link', { url: data.url, title: data.title || data.url });
+  // iframe/팝업 동기화 없음 — 새 창만 열고 화면 송출에 맡김
+  try {
+    window.open(data.url, '_blank', 'noopener,noreferrer');
+  } catch (err) {
+    console.warn('[host] open link', err);
+  }
 }
 
 async function openSyncedVideo(data) {
@@ -536,8 +596,11 @@ document.getElementById('btn-reload-ppt')?.addEventListener('click', () => {
     alert('이미 업로드/로딩 중입니다. 잠시만 기다려 주세요.');
     return;
   }
-  const ok = confirm('다른 PPTX 파일로 바꿀까요?\n현재 낙서는 지워지고 첫 슬라이드부터 다시 시작합니다.');
-  if (!ok) return;
+  // 이미 PPT가 있을 때만 교체 확인 — 첫 업로드에서는 바로 파일 선택
+  if (document.body.classList.contains('has-ppt')) {
+    const ok = confirm('다른 PPTX 파일로 바꿀까요?\n현재 낙서는 지워지고 첫 슬라이드부터 다시 시작합니다.');
+    if (!ok) return;
+  }
   if (!window.YunseulUpload?.pickPptFile?.()) {
     document.getElementById('file-input')?.click();
   }
@@ -629,6 +692,7 @@ sync.start()
         updateStreamUi(!!active, !!withMic || (kinds || []).includes('mic'));
         syncAvButtons();
         if (active) {
+          emitMicStatus(webrtcPublisher?.micEnabled ? 'on' : 'off');
           hideSharePrompt();
           if (audioShareMissing && !webrtcPublisher._audioWarned) {
             webrtcPublisher._audioWarned = true;
@@ -670,6 +734,7 @@ sync.start()
 
     // 입장 직후 호스트 메뉴 표시 + 화면 공유 창
     showHostMenu();
+    probeHostMicAvailability();
     setTimeout(() => {
       if (!webrtcPublisher?.isActive) startScreenShare();
     }, 120);

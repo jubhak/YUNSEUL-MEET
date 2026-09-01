@@ -76,6 +76,7 @@ function defaultRoom(code, hostToken) {
     hostSocketId: null,
     hostClientId: null,
     hostName: '호스트',
+    hostMicState: 'off', // on | off | none
     activeBroadcasterId: null,
     presentation: null,
     currentSlide: 0,
@@ -183,14 +184,19 @@ function viewersPayload(room) {
       name: room.hostName || '호스트',
       role: 'host',
       lastSeen: Date.now(),
+      micState: room.hostMicState === 'on' || room.hostMicState === 'none'
+        ? room.hostMicState
+        : 'off',
     });
   }
   for (const [id, v] of room.viewers.entries()) {
+    const micState = v.micState === 'on' || v.micState === 'none' ? v.micState : 'off';
     list.push({
       id,
       name: v.name || '참가자',
       role: 'viewer',
       lastSeen: v.lastSeen || 0,
+      micState,
     });
   }
   return list;
@@ -815,10 +821,12 @@ io.on('connection', (socket) => {
         }
       } else {
         cancelViewerLeave(room, clientId);
+        const prev = room.viewers.get(clientId);
         room.viewers.set(clientId, {
           name,
           socketId: socket.id,
           lastSeen: Date.now(),
+          micState: prev?.micState === 'on' || prev?.micState === 'none' ? prev.micState : 'off',
         });
         room.lastActivity = Date.now();
       }
@@ -1039,7 +1047,22 @@ io.on('connection', (socket) => {
         }
         case 'set-broadcaster': {
           const nextId = String(payload.clientId || room.hostClientId || '');
-          room.activeBroadcasterId = nextId || room.hostClientId;
+          const prevId = room.activeBroadcasterId || null;
+          const hostId = room.hostClientId || null;
+          const goingHost = !nextId || nextId === hostId;
+          // stop-screen-share가 먼저 activeBroadcasterId를 호스트로 바꿔도
+          // 호스트가 넘긴 stopClientId로 공유 참가자에게 중지 신호를 보장한다.
+          const stopId = String(payload.stopClientId || '');
+          const targetStop = goingHost
+            ? (stopId || (prevId && prevId !== hostId ? prevId : ''))
+            : '';
+          if (targetStop && targetStop !== hostId) {
+            const viewer = room.viewers.get(targetStop);
+            if (viewer?.socketId) {
+              io.to(viewer.socketId).emit('stop-screen-share', {});
+            }
+          }
+          room.activeBroadcasterId = goingHost ? hostId : (nextId || hostId);
           persistRoom(room);
           broadcastBroadcaster(io, room);
           broadcastViewerCount(io, room);
@@ -1076,6 +1099,31 @@ io.on('connection', (socket) => {
       const v = room.viewers.get(socket.data.clientId);
       v.lastSeen = now;
       v.socketId = socket.id;
+    }
+  });
+
+  /** 마이크 상태: on | off | none(장치 없음/인식 실패) */
+  socket.on('mic-status', (msg) => {
+    try {
+      const code = socket.data.roomCode;
+      const room = code ? getRoom(code) : null;
+      if (!room || !socket.data.clientId) return;
+      const raw = String(msg?.state || 'off');
+      const state = raw === 'on' || raw === 'none' ? raw : 'off';
+      if (socket.data.role === 'host') {
+        if (!requireHost(room, socket.data.hostToken)) return;
+        if (room.hostMicState === state) return;
+        room.hostMicState = state;
+      } else {
+        const viewer = room.viewers.get(socket.data.clientId);
+        if (!viewer) return;
+        if (viewer.micState === state) return;
+        viewer.micState = state;
+      }
+      room.lastActivity = Date.now();
+      broadcastViewerCount(io, room);
+    } catch (e) {
+      console.error('[mic-status]', e);
     }
   });
 

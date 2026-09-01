@@ -176,36 +176,49 @@
     }
 
     busy = true;
-    setStatus('업로드 중: ' + file.name + ' (' + formatMb(file.size) + ')…', false);
-    showUploadProgress(2, '준비 중… ' + file.name + ' (' + formatMb(file.size) + ')');
+    setStatus('로컬에서 PPT 여는 중: ' + file.name + ' (' + formatMb(file.size) + ')…', false);
+    showUploadProgress(8, '로컬 파일 읽는 중…');
 
-    var localBufferPromise = file.arrayBuffer();
+    file.arrayBuffer()
+      .then(function (buffer) {
+        var localPresentation = {
+          filename: 'local-' + String(file.lastModified || Date.now()) + '-' + String(file.size || 0),
+          originalName: file.name || 'presentation.pptx',
+          url: '',
+          slideCount: 1,
+          localOnly: true,
+        };
+        showUploadProgress(25, '슬라이드 렌더링…');
+        setStatus('슬라이드 준비 중…', false);
+        window.dispatchEvent(new CustomEvent('ppt-uploaded', {
+          detail: {
+            presentation: localPresentation,
+            buffer: buffer,
+          },
+        }));
 
-    uploadWithXhr(file, function (pct, label) {
-      showUploadProgress(pct, label);
-      setStatus(label, false);
-    })
-      .then(function (data) {
-        setStatus('업로드 완료 — PPT 불러오는 중…\n(' + data.presentation.originalName + ')', false);
-        showUploadProgress(75, '업로드 완료 — 슬라이드 준비…');
-        return localBufferPromise.then(function (buffer) {
-          window.dispatchEvent(new CustomEvent('ppt-uploaded', {
-            detail: {
-              presentation: data.presentation,
-              buffer: buffer,
-            },
-          }));
-        });
+        busy = false;
+        var input = document.getElementById('file-input');
+        if (input) input.value = '';
+
+        // 서버 업로드는 백그라운드(방 메타·새로고침용) — 렌더를 막지 않음
+        uploadWithXhr(file, function () { /* 조용히 */ })
+          .then(function (data) {
+            window.dispatchEvent(new CustomEvent('ppt-upload-saved', {
+              detail: { presentation: data.presentation },
+            }));
+          })
+          .catch(function (err) {
+            console.warn('[upload] background save failed', err);
+          });
       })
       .catch(function (err) {
-        console.error('[upload]', err);
-        var msg = '오류: ' + (err.message || '업로드 실패');
+        console.error('[upload] local open', err);
+        var msg = '오류: ' + (err.message || '파일을 열 수 없습니다');
         setStatus(msg, true);
         progressError(msg);
         var panel = document.getElementById('upload-panel');
         if (panel) panel.classList.remove('hidden');
-      })
-      .finally(function () {
         busy = false;
         var input = document.getElementById('file-input');
         if (input) input.value = '';

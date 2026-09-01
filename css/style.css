@@ -845,7 +845,25 @@ body.is-fullscreen.fs-chrome-open #main-toolbar {
   visibility: visible !important;
 }
 
-/* 핀치 줌 중에는 메뉴를 강제로 숨김 */
+/* 호스트: 전체화면에서도 툴바 항상 표시 */
+body.presentation-page.is-fullscreen #main-toolbar.toolbar,
+body.presentation-page.is-fullscreen #main-toolbar,
+body.presentation-page.is-fullscreen.fs-chrome-open #main-toolbar.toolbar,
+body.presentation-page.is-fullscreen.fs-chrome-open #main-toolbar,
+body.presentation-page.is-fullscreen.is-pinching #main-toolbar.toolbar,
+body.presentation-page.is-fullscreen.is-pinching #main-toolbar,
+body.presentation-page.is-fullscreen.is-pinching.fs-chrome-open #main-toolbar.toolbar,
+body.presentation-page.is-fullscreen.is-pinching.fs-chrome-open #main-toolbar {
+  transform: translate3d(0, 0, 0) !important;
+  pointer-events: auto !important;
+  visibility: visible !important;
+}
+
+body.presentation-page.is-fullscreen .btn-fs-chrome {
+  display: none !important;
+}
+
+/* 핀치 줌 중에는 메뉴를 강제로 숨김 (참가자) */
 body.is-fullscreen.is-pinching #main-toolbar.toolbar,
 body.is-fullscreen.is-pinching #main-toolbar,
 body.is-fullscreen.is-pinching.fs-chrome-open #main-toolbar.toolbar,
@@ -853,6 +871,15 @@ body.is-fullscreen.is-pinching.fs-chrome-open #main-toolbar {
   transform: translate3d(0, -120%, 0) !important;
   pointer-events: none !important;
   visibility: hidden !important;
+}
+
+body.presentation-page.is-fullscreen.is-pinching #main-toolbar.toolbar,
+body.presentation-page.is-fullscreen.is-pinching #main-toolbar,
+body.presentation-page.is-fullscreen.is-pinching.fs-chrome-open #main-toolbar.toolbar,
+body.presentation-page.is-fullscreen.is-pinching.fs-chrome-open #main-toolbar {
+  transform: translate3d(0, 0, 0) !important;
+  pointer-events: auto !important;
+  visibility: visible !important;
 }
 
 /* 모바일 전체화면 유도 */
@@ -1334,6 +1361,70 @@ body.has-ppt .tb-group-room + .tb-sep {
   flex-shrink: 0;
 }
 
+.viewers-mic {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.55rem;
+  height: 1.55rem;
+  flex-shrink: 0;
+  border-radius: 999px;
+  font-size: 0.95rem;
+  line-height: 1;
+}
+
+.viewers-mic .mic-ico {
+  display: block;
+  line-height: 1;
+}
+
+.viewers-mic.is-on {
+  color: #2dd4a8;
+  background: rgba(45, 212, 168, 0.16);
+  box-shadow: 0 0 0 1px rgba(45, 212, 168, 0.45);
+  filter: none;
+  opacity: 1;
+}
+
+.viewers-mic.is-off {
+  color: #8b93a7;
+  background: rgba(36, 40, 54, 0.9);
+  box-shadow: 0 0 0 1px rgba(58, 65, 88, 0.8);
+  opacity: 0.55;
+  filter: grayscale(1);
+}
+
+.viewers-mic.is-none {
+  color: #f87171;
+  background: rgba(248, 113, 113, 0.12);
+  box-shadow: 0 0 0 1px rgba(248, 113, 113, 0.4);
+  opacity: 0.9;
+}
+
+.viewers-mic.is-none .mic-ico {
+  filter: grayscale(0.4);
+  opacity: 0.85;
+}
+
+.viewers-mic.is-none .mic-x {
+  position: absolute;
+  right: -0.05rem;
+  bottom: -0.1rem;
+  width: 0.85rem;
+  height: 0.85rem;
+  border-radius: 999px;
+  background: #1a1d27;
+  color: #f87171;
+  font-size: 0.62rem;
+  font-weight: 800;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  line-height: 1;
+  box-shadow: 0 0 0 1px rgba(248, 113, 113, 0.55);
+}
+
 .viewers-empty {
   text-align: center;
   color: var(--text-muted);
@@ -1441,6 +1532,10 @@ body.has-ppt .tb-group-room + .tb-sep {
   width: 100%;
   height: 100%;
   z-index: 2;
+}
+
+.waiting-panel.is-self-sharing .spinner {
+  display: none !important;
 }
 
 .upload-box,

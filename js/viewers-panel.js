@@ -23,7 +23,7 @@ function ensurePopupDom() {
         <button type="button" id="viewers-popup-close" class="btn-close" title="닫기">✕</button>
       </div>
       <p class="viewers-popup-sub"><span id="viewers-popup-count">0</span>명 접속 중</p>
-      <p id="viewers-popup-hint" class="viewers-popup-hint hidden">이름을 누르면 그 화면을 전원에게 보여줍니다. 호스트를 누르면 발표 화면으로 돌아갑니다.</p>
+      <p id="viewers-popup-hint" class="viewers-popup-hint hidden">이름을 누르면 그 화면을 전원에게 보여줍니다. 호스트를 누르면 참가자 공유를 끄고 발표 화면으로 돌아갑니다.</p>
       <ul id="viewers-list" class="viewers-list"></ul>
     </div>
   `;
@@ -51,6 +51,17 @@ function ensurePopupDom() {
     onSelectParticipant({ id, role, name });
   });
 
+  // 호스트 항목 더블클릭도 동일하게 발표 화면 복귀
+  root.addEventListener('dblclick', (e) => {
+    const item = e.target.closest?.('.viewers-item[data-id][data-role="host"]');
+    if (!item || !selectable || !onSelectParticipant) return;
+    e.preventDefault();
+    const id = item.getAttribute('data-id');
+    const name = item.getAttribute('data-name') || '';
+    if (!id) return;
+    onSelectParticipant({ id, role: 'host', name });
+  });
+
   return root;
 }
 
@@ -73,6 +84,15 @@ function renderList(viewers) {
     const role = v.role === 'host' ? 'host' : 'viewer';
     const tag = role === 'host' ? '호스트' : '참가';
     const isSelected = selectedId && v.id === selectedId;
+    const micState = v.micState === 'on' || v.micState === 'none' ? v.micState : 'off';
+    const micTitle = micState === 'on'
+      ? '마이크 켜짐'
+      : micState === 'none'
+        ? '마이크 인식 안 됨'
+        : '마이크 꺼짐';
+    const micHtml = micState === 'none'
+      ? `<span class="viewers-mic is-none" title="${micTitle}" aria-label="${micTitle}"><span class="mic-ico" aria-hidden="true">🎙️</span><span class="mic-x" aria-hidden="true">✕</span></span>`
+      : `<span class="viewers-mic is-${micState}" title="${micTitle}" aria-label="${micTitle}"><span class="mic-ico" aria-hidden="true">🎙️</span></span>`;
     const classes = [
       'viewers-item',
       role === 'host' ? 'is-host' : '',
@@ -83,6 +103,7 @@ function renderList(viewers) {
       <li class="${classes}" data-id="${escapeHtml(v.id || '')}" data-role="${role}" data-name="${name}" ${selectable ? 'role="button" tabindex="0"' : ''}>
         <span class="viewers-avatar" aria-hidden="true">${initial}</span>
         <span class="viewers-name">${name}</span>
+        ${micHtml}
         <span class="viewers-tag${role === 'host' ? ' is-host-tag' : ''}">${tag}</span>
         ${isSelected ? '<span class="viewers-live">공유중</span>' : ''}
       </li>

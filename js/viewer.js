@@ -7,9 +7,9 @@ import {
   setViewerCount,
   setupViewersPanel,
   setSelectedBroadcaster,
-} from './viewers-panel.js?v=20260728b';
+} from './viewers-panel.js?v=20260826mic1';
 import { WebrtcSignaling } from './webrtc/signaling.js?v=20260715j';
-import { ViewerSubscriber } from './webrtc/viewer-subscriber.js?v=20260826sfu22';
+import { ViewerSubscriber } from './webrtc/viewer-subscriber.js?v=20260826share1';
 import { setupViewerZoom } from './viewer-zoom.js?v=20260819b';
 
 const params = new URLSearchParams(window.location.search);
@@ -102,18 +102,122 @@ viewerLinkGate?.addEventListener('click', (e) => {
   if (e.target === viewerLinkGate) dismissViewerLinkModal();
 });
 
+document.getElementById('btn-stop-self-share')?.addEventListener('click', () => {
+  restoreAfterSelfShare().catch((err) => console.warn('[viewer] restoreAfterSelfShare', err));
+});
+
 function setWaiting(title, desc) {
   waitingPanel?.classList.remove('hidden');
+  waitingPanel?.classList.remove('is-self-sharing');
   liveStage?.classList.add('hidden');
   document.body.classList.remove('has-presentation');
   if (waitingTitle) waitingTitle.textContent = title;
   if (waitingDesc) waitingDesc.textContent = desc;
+  document.getElementById('btn-stop-self-share')?.classList.add('hidden');
 }
 
 function showLive() {
+  if (subscriber?.sharingScreen) {
+    showSelfSharing();
+    return;
+  }
+  waitingPanel?.classList.remove('is-self-sharing');
   waitingPanel?.classList.add('hidden');
   liveStage?.classList.remove('hidden');
   document.body.classList.add('has-presentation');
+  document.getElementById('btn-stop-self-share')?.classList.add('hidden');
+}
+
+/** 내가 화면 공유 중 — 호스트 영상(자기 화면 에코) 숨기고 안내만 표시 */
+function showSelfSharing() {
+  liveStage?.classList.add('hidden');
+  waitingPanel?.classList.remove('hidden');
+  document.body.classList.remove('has-presentation');
+  waitingPanel?.classList.add('is-self-sharing');
+  if (waitingTitle) waitingTitle.textContent = '내 화면 공유 중…';
+  if (waitingDesc) {
+    waitingDesc.textContent = '회원님의 PC 화면이 호스트와 모든 참가자에게 보입니다. 코딩·작업 화면을 그대로 보여 주세요.';
+  }
+  const stopBtn = document.getElementById('btn-stop-self-share');
+  stopBtn?.classList.remove('hidden');
+  syncStatus.textContent = '내 화면 공유 중';
+}
+
+function hideSelfSharing() {
+  waitingPanel?.classList.remove('is-self-sharing');
+  document.getElementById('btn-stop-self-share')?.classList.add('hidden');
+  if (subscriber?.hasLiveVideo?.()) {
+    waitingPanel?.classList.add('hidden');
+    liveStage?.classList.remove('hidden');
+    document.body.classList.add('has-presentation');
+    syncStatus.textContent = '실시간 시청 중';
+  } else {
+    setWaiting(
+      '호스트 화면 연결 중…',
+      '화면 공유가 끝났습니다. 호스트 화면으로 돌아가는 중…'
+    );
+    subscriber?.watch?.().catch((err) => console.warn('[viewer] watch', err));
+  }
+}
+
+function isSelfSharingUi() {
+  return !!(subscriber?.sharingScreen || waitingPanel?.classList.contains('is-self-sharing'));
+}
+
+let _restoringSelfShare = false;
+
+/** 공유 종료 후 호스트 화면 UI·수신을 확실히 복구 */
+async function restoreAfterSelfShare() {
+  if (_restoringSelfShare) return;
+  _restoringSelfShare = true;
+  waitingPanel?.classList.remove('is-self-sharing');
+  document.getElementById('btn-stop-self-share')?.classList.add('hidden');
+
+  try {
+    try {
+      await subscriber?.stopScreenShare?.();
+    } catch (err) {
+      console.warn('[viewer] stopScreenShare', err);
+    }
+
+    const tryShowLive = () => {
+      if (subscriber?.sharingScreen) return false;
+      if (subscriber?.hasLiveVideo?.()) {
+        waitingPanel?.classList.add('hidden');
+        liveStage?.classList.remove('hidden');
+        document.body.classList.add('has-presentation');
+        syncStatus.textContent = '실시간 시청 중';
+        syncStatus.classList.add('connected');
+        return true;
+      }
+      return false;
+    };
+
+    if (tryShowLive()) return;
+
+    setWaiting(
+      '호스트 화면 연결 중…',
+      '화면 공유가 끝났습니다. 호스트 화면으로 돌아가는 중…'
+    );
+
+    const retryWatch = async () => {
+      if (subscriber?.sharingScreen) return;
+      try {
+        await subscriber?.watch?.();
+      } catch (err) {
+        console.warn('[viewer] watch', err);
+      }
+      tryShowLive();
+    };
+
+    await retryWatch();
+    if (!subscriber?.hasLiveVideo?.() && !subscriber?.sharingScreen) {
+      setTimeout(() => { retryWatch(); }, 600);
+      setTimeout(() => { retryWatch(); }, 1600);
+    }
+  } finally {
+    _restoringSelfShare = false;
+  }
 }
 
 function showSessionEnded(message) {
@@ -196,18 +300,45 @@ btnAvMic?.addEventListener('click', async () => {
       name === 'NotAllowedError'
       || name === 'PermissionDeniedError'
       || /Permission|NotAllowed|denied/i.test(msg);
+    const unavailable =
+      name === 'NotFoundError'
+      || name === 'DevicesNotFoundError'
+      || name === 'NotReadableError'
+      || /NotFound|device|found|no microphone/i.test(msg);
+    emitMicStatus(unavailable || permission ? 'none' : 'off');
     if (!window.isSecureContext) {
       alert('마이크는 HTTPS(보안 연결)에서만 사용할 수 있습니다.');
     } else if (permission) {
       alert(
         '마이크 권한이 없거나 거부되었습니다.\n주소창 왼쪽 자물쇠 → 사이트 설정에서 마이크를 허용해 주세요.'
       );
+    } else if (unavailable) {
+      alert('마이크 장치를 찾을 수 없습니다. PC/브라우저 마이크 연결을 확인해 주세요.');
     } else {
       alert(`마이크를 켤 수 없습니다.\n${msg || '알 수 없는 오류'}`);
     }
+  } else {
+    emitMicStatus(subscriber.micOn ? 'on' : 'off');
   }
   syncAvButtons();
 });
+
+function emitMicStatus(state) {
+  try {
+    sync?.socket?.emit?.('mic-status', { state });
+  } catch { /* ignore */ }
+}
+
+function probeMicAvailability() {
+  if (!navigator.mediaDevices?.enumerateDevices) return;
+  navigator.mediaDevices.enumerateDevices()
+    .then((list) => {
+      const hasMic = list.some((d) => d.kind === 'audioinput');
+      if (!hasMic) emitMicStatus('none');
+      else if (!subscriber?.micOn) emitMicStatus('off');
+    })
+    .catch(() => {});
+}
 
 function handleEvent(type, data) {
   switch (type) {
@@ -216,28 +347,39 @@ function handleEvent(type, data) {
         activeBroadcasterId: data.activeBroadcasterId,
       });
       break;
-    case 'broadcaster-changed':
-      setSelectedBroadcaster(data.clientId || null);
-      break;
     case 'request-screen-share': {
       const hostLabel = data.hostName || '호스트';
       const ok = window.confirm(
-        `${hostLabel}님이 회원님의 PC 화면을 모든 참가자에게 보여 달라고 요청했습니다.\n\n화면 공유를 허용할까요?`
+        `${hostLabel}님이 회원님의 PC 화면을 모든 참가자에게 보여 달라고 요청했습니다.\n\n`
+        + '허용하면 전체 화면 공유 창이 열립니다. 공유하는 동안 호스트 화면 대신 「내 화면 공유 중」만 표시됩니다.'
       );
       if (!ok) {
         syncStatus.textContent = '화면 공유 요청 거절';
         break;
       }
-      syncStatus.textContent = '화면 공유 창 선택…';
+      syncStatus.textContent = '전체 화면 선택…';
       subscriber?.startScreenShare().then((started) => {
-        syncStatus.textContent = started ? '내 화면 공유 중' : '화면 공유 취소됨';
+        if (started) {
+          showSelfSharing();
+        } else {
+          syncStatus.textContent = '화면 공유 취소됨';
+          hideSelfSharing();
+        }
       });
       break;
     }
     case 'stop-screen-share':
-      subscriber?.stopScreenShare().catch(() => {});
-      if (subscriber?.hasLiveVideo?.()) {
-        syncStatus.textContent = '실시간 시청 중';
+      restoreAfterSelfShare().catch((err) => console.warn('[viewer] restoreAfterSelfShare', err));
+      break;
+    case 'broadcaster-changed':
+      setSelectedBroadcaster(data.clientId || null);
+      // 호스트로 복귀했거나 내가 더 이상 방송자가 아니면 공유 UI·송출 정리
+      {
+        const backToHost = data.role === 'host' || data.clientId === data.hostClientId;
+        const iAmNotBroadcaster = !!(data.clientId && data.clientId !== sync?.clientId);
+        if (isSelfSharingUi() && (backToHost || iAmNotBroadcaster)) {
+          restoreAfterSelfShare().catch((err) => console.warn('[viewer] restoreAfterSelfShare', err));
+        }
       }
       break;
     case 'session-end':
@@ -245,7 +387,7 @@ function handleEvent(type, data) {
       showSessionEnded(data.message || '호스트가 발표를 종료했습니다.');
       break;
     case 'open-link':
-      showViewerLink(data.url, data.title || data.url, { modal: true });
+      // 링크는 호스트 새 창 + 화면 송출만 — 참가자 별도 모달 없음
       break;
     case 'close-link':
       clearHostLink();
@@ -257,6 +399,8 @@ function handleEvent(type, data) {
       clearHostLink();
       break;
     case 'stream-status':
+      // 내가 화면 공유 중이면 호스트 송출 FLAG로 UI를 덮어쓰지 않음
+      if (isSelfSharingUi()) break;
       if (data.active) {
         // 이미 실시간 시청 중이면 FLAG 주기 재방송으로「연결 중」으로 되돌리지 않음
         if (subscriber?.hasLiveVideo?.()) {
@@ -305,13 +449,39 @@ sync.start()
       videoEl: liveVideo,
       onStatus: (s) => {
         // needUnmute는 자동 배너로 쓰지 않음 — 스피커 토글 토스트만 사용
+        if (s.sharingScreen) {
+          showSelfSharing();
+          return;
+        }
+        if (s.sharingScreen === false && !subscriber?.sharingScreen) {
+          // stopScreenShare 후 — 영상 유무와 무관하게 공유 UI는 반드시 해제
+          waitingPanel?.classList.remove('is-self-sharing');
+          document.getElementById('btn-stop-self-share')?.classList.add('hidden');
+          if (s.playing || subscriber?.hasLiveVideo?.()) {
+            showLive();
+            syncStatus.textContent = '실시간 시청 중';
+            syncStatus.classList.add('connected');
+            return;
+          }
+          setWaiting(
+            '호스트 화면 연결 중…',
+            '화면 공유가 끝났습니다. 호스트 화면으로 돌아가는 중…'
+          );
+          subscriber?.watch?.().catch((err) => console.warn('[viewer] watch', err));
+          return;
+        }
         if (s.streamEnded || s.streamActive === false) {
+          if (subscriber?.sharingScreen) return;
           setWaiting(
             '호스트 화면 송출 대기',
             '호스트가 「송출」을 누르면 여기에서 실시간으로 보입니다.'
           );
           syncStatus.textContent = '송출 대기';
           unmuteBanner?.classList.add('hidden');
+          return;
+        }
+        if (subscriber?.sharingScreen) {
+          showSelfSharing();
           return;
         }
         if (s.playing) {
@@ -348,6 +518,7 @@ sync.start()
       subscriber.hostPeerId = data.state.hostClientId;
     }
     syncAvButtons();
+    probeMicAvailability();
 
     const unlockSound = () => {
       if (!subscriber?.speakerOn) return;
@@ -374,7 +545,8 @@ sync.start()
     });
 
     if (data.state?.popup?.url) {
-      showViewerLink(data.state.popup.url, data.state.popup.title || data.state.popup.url);
+      // 구버전 호스트 popup 상태 무시
+      clearHostLink();
     }
 
     if (data.state?.streamActive) {

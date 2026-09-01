@@ -1,7 +1,7 @@
 /**
  * 전체화면 · 모바일 가로 모드
- * 참가자(viewer)는 세로/가로 모두 허용 — 가로 강제·회전 안내 없음
- * 전체화면 시 상단 메뉴 숨김 + 우측 상단 토글로 슬라이드 표시
+ * 참가자(viewer): 전체화면 시 상단 메뉴 숨김 + ☰ 로 해제
+ * 호스트: 전체화면에서도 툴바 항상 표시
  */
 function isMobile() {
   return /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent)
@@ -10,6 +10,10 @@ function isMobile() {
 
 function isViewerPage() {
   return document.body.classList.contains('viewer-page');
+}
+
+function isHostPage() {
+  return document.body.classList.contains('presentation-page') || !isViewerPage();
 }
 
 function getFsElement() {
@@ -57,6 +61,9 @@ function applyChromeVisibility(open) {
     return;
   }
 
+  // 호스트는 전체화면에서도 툴바 고정 표시
+  if (isHostPage()) open = true;
+
   toolbar.style.setProperty('position', 'fixed', 'important');
   toolbar.style.setProperty('top', '0', 'important');
   toolbar.style.setProperty('left', '0', 'important');
@@ -76,26 +83,38 @@ function applyChromeVisibility(open) {
 }
 
 function setChromeOpen(open) {
-  // 핀치 줌 중/직후엔 메뉴를 열지 않음
-  if (open && recentlyPinching()) return;
+  // 핀치 줌 중/직후엔 메뉴를 열지 않음 (참가자만)
+  if (open && !isHostPage() && recentlyPinching()) return;
 
   const btn = ensureChromeBtn();
+  if (isHostPage() && document.body.classList.contains('is-fullscreen')) {
+    open = true;
+  }
   document.body.classList.toggle('fs-chrome-open', !!open);
   btn.setAttribute('aria-expanded', open ? 'true' : 'false');
   btn.title = '메뉴 열기';
   btn.setAttribute('aria-label', '메뉴 열기');
   const ico = btn.querySelector('.ico');
   if (ico) ico.textContent = '☰';
-  // 메뉴 열림 → 버튼 숨김 / 닫힘+전체화면 → 버튼 표시 (CSS)
-  btn.hidden = !!open || !document.body.classList.contains('is-fullscreen');
+  // 호스트: ☰ 불필요. 참가자: 메뉴 열림 → 버튼 숨김
+  if (isHostPage()) {
+    btn.hidden = true;
+  } else {
+    btn.hidden = !!open || !document.body.classList.contains('is-fullscreen');
+  }
   applyChromeVisibility(!!open);
 }
 
 function enterFsChrome() {
   document.body.classList.add('is-fullscreen');
-  setChromeOpen(false);
+  if (isHostPage()) {
+    setChromeOpen(true);
+  } else {
+    setChromeOpen(false);
+    applyChromeVisibility(false);
+  }
   window.YunseulToolbar?.pin?.();
-  applyChromeVisibility(false);
+  applyChromeVisibility(isHostPage());
 }
 
 function exitFsChrome() {
@@ -196,8 +215,13 @@ export function setupDisplayMode({ autoPromptMobile = false } = {}) {
   const chromeBtn = ensureChromeBtn();
 
   window.YunseulFsChrome = {
-    close: () => setChromeOpen(false),
-    apply: () => applyChromeVisibility(document.body.classList.contains('fs-chrome-open')),
+    close: () => {
+      if (isHostPage()) return;
+      setChromeOpen(false);
+    },
+    apply: () => applyChromeVisibility(
+      isHostPage() || document.body.classList.contains('fs-chrome-open')
+    ),
   };
 
   btn?.addEventListener('click', () => toggleFullscreen());
@@ -223,8 +247,9 @@ export function setupDisplayMode({ autoPromptMobile = false } = {}) {
     }
   }, { passive: false });
 
-  // 메뉴 바깥 탭 시 다시 숨김 (핀치 중 제외)
+  // 메뉴 바깥 탭 시 다시 숨김 (참가자만)
   document.addEventListener('pointerdown', (e) => {
+    if (isHostPage()) return;
     if (!document.body.classList.contains('fs-chrome-open')) return;
     if (recentlyPinching()) return;
     const toolbar = document.getElementById('main-toolbar');
@@ -236,9 +261,13 @@ export function setupDisplayMode({ autoPromptMobile = false } = {}) {
   document.addEventListener('fullscreenchange', onFullscreenChange);
   document.addEventListener('webkitfullscreenchange', onFullscreenChange);
 
-  // 줌/뷰포트 변화 후에도 숨김 상태 유지
-  const keepChromeHidden = () => {
+  // 줌/뷰포트 변화 후에도 상태 유지
+  const keepChromeState = () => {
     if (!document.body.classList.contains('is-fullscreen')) return;
+    if (isHostPage()) {
+      applyChromeVisibility(true);
+      return;
+    }
     if (document.body.classList.contains('fs-chrome-open') && recentlyPinching()) {
       setChromeOpen(false);
       return;
@@ -246,16 +275,16 @@ export function setupDisplayMode({ autoPromptMobile = false } = {}) {
     applyChromeVisibility(document.body.classList.contains('fs-chrome-open'));
   };
   window.addEventListener('resize', () => {
-    keepChromeHidden();
+    keepChromeState();
     if (isFullscreen() || document.body.classList.contains('is-presenting')) {
       updateRotateHint();
     }
   });
-  window.visualViewport?.addEventListener('resize', keepChromeHidden);
-  window.visualViewport?.addEventListener('scroll', keepChromeHidden);
+  window.visualViewport?.addEventListener('resize', keepChromeState);
+  window.visualViewport?.addEventListener('scroll', keepChromeState);
   window.addEventListener('orientationchange', () => {
     setTimeout(() => {
-      keepChromeHidden();
+      keepChromeState();
       updateRotateHint();
     }, 200);
   });
