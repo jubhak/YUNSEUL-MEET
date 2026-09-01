@@ -68,7 +68,11 @@ function makeRoomCode() {
   return code;
 }
 
-function defaultRoom(code, hostToken) {
+function normalizeInteractionMode(mode) {
+  return mode === 'unidirectional' ? 'unidirectional' : 'bidirectional';
+}
+
+function defaultRoom(code, hostToken, interactionMode = 'bidirectional') {
   return {
     code,
     hostToken,
@@ -78,6 +82,8 @@ function defaultRoom(code, hostToken) {
     hostName: '호스트',
     hostMicState: 'off', // on | off | none
     activeBroadcasterId: null,
+    // bidirectional: 기존 화상 미팅 / unidirectional: 대규모 시청(참가자 produce 없음)
+    interactionMode: normalizeInteractionMode(interactionMode),
     presentation: null,
     currentSlide: 0,
     drawings: {},
@@ -87,6 +93,7 @@ function defaultRoom(code, hostToken) {
     streamActive: false,
     streamKinds: [],
     viewers: new Map(), // clientId -> { name, socketId, lastSeen }
+    chatMessages: [], // 최근 채팅 (메모리만)
     ended: false,
     endedAt: 0,
     createdAt: Date.now(),
@@ -115,6 +122,7 @@ function persistRoom(room) {
     streamKinds: Array.isArray(room.streamKinds) ? room.streamKinds : [],
     hostName: room.hostName || '호스트',
     activeBroadcasterId: room.activeBroadcasterId || null,
+    interactionMode: normalizeInteractionMode(room.interactionMode),
     ended: room.ended,
     endedAt: room.endedAt,
     createdAt: room.createdAt,
@@ -130,7 +138,7 @@ function loadRoomFromDisk(code) {
   if (!fs.existsSync(p)) return null;
   try {
     const raw = JSON.parse(fs.readFileSync(p, 'utf8'));
-    const room = defaultRoom(raw.code, raw.hostToken);
+    const room = defaultRoom(raw.code, raw.hostToken, raw.interactionMode);
     Object.assign(room, {
       // 디스크의 hostConnected는 신뢰하지 않음 — 실제 소켓이 있을 때만 true
       hostConnected: false,
@@ -144,10 +152,12 @@ function loadRoomFromDisk(code) {
       streamKinds: Array.isArray(raw.streamKinds) ? raw.streamKinds : [],
       hostName: raw.hostName || '호스트',
       activeBroadcasterId: raw.activeBroadcasterId || null,
+      interactionMode: normalizeInteractionMode(raw.interactionMode),
       ended: !!raw.ended,
       endedAt: raw.endedAt || 0,
       createdAt: raw.createdAt || Date.now(),
       viewers: new Map(),
+      chatMessages: [],
     });
     room.hostSocketId = null;
     room.hostLastSeen = 0;
@@ -219,6 +229,7 @@ function publicState(room) {
     streamActive: !!room.streamActive,
     streamKinds: Array.isArray(room.streamKinds) ? room.streamKinds : [],
     popup: room.popup || null,
+    interactionMode: normalizeInteractionMode(room.interactionMode),
   };
 }
 
@@ -568,12 +579,13 @@ app.post('/api/create-room', (req, res) => {
   }
 
   const hostToken = crypto.randomBytes(16).toString('hex');
-  const room = defaultRoom(code, hostToken);
+  const interactionMode = normalizeInteractionMode(req.body?.interactionMode);
+  const room = defaultRoom(code, hostToken, interactionMode);
   rooms.set(code, room);
   persistRoom(room);
   // 호스트가 들어오지 않으면 유예 후 폐기
   maybeScheduleEmptyRoomDispose(room);
-  res.json({ code, hostToken });
+  res.json({ code, hostToken, interactionMode: room.interactionMode });
 });
 
 app.get('/api/get-room', (req, res) => {
@@ -708,11 +720,12 @@ app.post('/api/create-room.php', (req, res) => {
     }
   }
   const hostToken = crypto.randomBytes(16).toString('hex');
-  const room = defaultRoom(code, hostToken);
+  const interactionMode = normalizeInteractionMode(req.body?.interactionMode);
+  const room = defaultRoom(code, hostToken, interactionMode);
   rooms.set(code, room);
   persistRoom(room);
   maybeScheduleEmptyRoomDispose(room);
-  res.json({ code, hostToken });
+  res.json({ code, hostToken, interactionMode: room.interactionMode });
 });
 app.get('/api/get-room.php', (req, res) => {
   const room = getRoom(req.query.code);
@@ -781,6 +794,10 @@ io.on('connection', (socket) => {
     getRoomCode: () => socket.data.roomCode,
     getClientId: () => socket.data.clientId,
     getRole: () => socket.data.role,
+    getInteractionMode: () => {
+      const room = getRoom(socket.data.roomCode);
+      return normalizeInteractionMode(room?.interactionMode);
+    },
   });
 
   socket.on('join', (msg, ack) => {
@@ -857,6 +874,11 @@ io.on('connection', (socket) => {
       };
       if (typeof ack === 'function') ack(payload);
 
+      // 최근 채팅 히스토리 (입장 직후)
+      if (Array.isArray(room.chatMessages) && room.chatMessages.length) {
+        socket.emit('chat-history', { messages: room.chatMessages.slice(-80) });
+      }
+
       // 참가자 입장 → 호스트가 offer. 송출 중이면 상태도 즉시 전달
       if (role === 'viewer' && room.hostSocketId) {
         io.to(room.hostSocketId).emit('peer-joined', {
@@ -874,6 +896,63 @@ io.on('connection', (socket) => {
     } catch (e) {
       console.error('[join]', e);
       if (typeof ack === 'function') ack({ error: e.message || '참가 실패' });
+    }
+  });
+
+  socket.on('chat-send', (msg) => {
+    try {
+      const code = socket.data.roomCode;
+      const clientId = socket.data.clientId;
+      const role = socket.data.role === 'host' ? 'host' : 'viewer';
+      if (!code || !clientId) return;
+      const room = getRoom(code);
+      if (!room || room.ended) return;
+
+      const text = String(msg?.text || '').replace(/\s+/g, ' ').trim().slice(0, 400);
+      if (!text) return;
+
+      // 간단한 속도 제한
+      const now = Date.now();
+      if (!socket.data._chatTimes) socket.data._chatTimes = [];
+      socket.data._chatTimes = socket.data._chatTimes.filter((t) => now - t < 3000);
+      if (socket.data._chatTimes.length >= 6) return;
+      socket.data._chatTimes.push(now);
+
+      let name = '참가자';
+      if (role === 'host') {
+        name = room.hostName || '호스트';
+      } else {
+        name = room.viewers.get(clientId)?.name || '참가자';
+      }
+
+      const entry = {
+        id: crypto.randomBytes(6).toString('hex'),
+        clientId,
+        role,
+        name,
+        text,
+        at: now,
+      };
+      if (!Array.isArray(room.chatMessages)) room.chatMessages = [];
+      room.chatMessages.push(entry);
+      if (room.chatMessages.length > 120) {
+        room.chatMessages.splice(0, room.chatMessages.length - 120);
+      }
+      room.lastActivity = now;
+      io.to(code).emit('chat-message', entry);
+    } catch (e) {
+      console.error('[chat-send]', e);
+    }
+  });
+
+  socket.on('chat-request-history', () => {
+    try {
+      const room = getRoom(socket.data.roomCode);
+      if (!room) return;
+      const messages = Array.isArray(room.chatMessages) ? room.chatMessages.slice(-80) : [];
+      socket.emit('chat-history', { messages });
+    } catch (e) {
+      console.error('[chat-request-history]', e);
     }
   });
 
@@ -1022,6 +1101,9 @@ io.on('connection', (socket) => {
           payload.message = payload.message || '호스트가 발표를 종료했습니다.';
           break;
         case 'request-screen-share': {
+          if (normalizeInteractionMode(room.interactionMode) === 'unidirectional') {
+            return;
+          }
           const targetId = String(payload.clientId || '');
           const viewer = room.viewers.get(targetId);
           if (viewer?.socketId) {

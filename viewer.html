@@ -6,7 +6,7 @@
   <meta name="mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <title>참가 - YUNSEUL PPT</title>
-  <link rel="stylesheet" href="css/style.css?v=20260826mic1">
+  <link rel="stylesheet" href="css/style.css?v=20260901chat1">
   <style>
     #main-toolbar.toolbar {
       position: relative !important;
@@ -280,6 +280,7 @@
     <div class="toolbar-left toolbar-meta">
       <span class="room-badge">코드 <strong id="room-code"></strong></span>
       <span class="viewer-badge"><a id="viewer-count-link" class="viewer-count-link"><strong id="viewer-count">0</strong>명</a></span>
+      <span id="mode-badge" class="mode-badge" title="미팅 방식">양방향</span>
       <span id="sync-status" class="sync-status" title="연결 상태">연결 중...</span>
     </div>
     <div class="toolbar-center" id="slide-controls" style="display:none">
@@ -294,6 +295,10 @@
         <button type="button" id="btn-av-mic" class="btn btn-icon btn-av" title="마이크 꺼짐 — 클릭하여 켜기" aria-pressed="false" aria-label="마이크">
           <span class="ico ico-on" aria-hidden="true">🎙️</span>
           <span class="ico ico-off" aria-hidden="true">🚫</span>
+        </button>
+        <button type="button" id="btn-chat" class="btn btn-icon btn-chat" title="채팅 열기" aria-pressed="false" aria-label="채팅">
+          <span class="ico" aria-hidden="true">💬</span>
+          <span class="chat-unread hidden" aria-hidden="true"></span>
         </button>
       </div>
       <button type="button" id="btn-fullscreen" class="btn btn-icon btn-toolbar-text" title="전체화면 (F)" aria-label="전체화면">
@@ -408,7 +413,7 @@
   <script src="js/progress-bar.js?v=20260715d"></script>
   <script type="module" src="js/load-progress.js?v=20260715d"></script>
   <script type="module" src="js/deps.js?v=20260715d"></script>
-  <script type="module" src="js/viewer.js?v=20260826mic1"></script>
+  <script type="module" src="js/viewer.js?v=20260901chat1"></script>
   <script type="module">
     import { setupDisplayMode } from './js/display-mode.js?v=20260819e';
     setupDisplayMode({ autoPromptMobile: false });

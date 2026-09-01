@@ -11,6 +11,7 @@ import {
 } from './viewers-panel.js?v=20260826mic1';
 import { WebrtcSignaling } from './webrtc/signaling.js?v=20260715j';
 import { HostPublisher } from './webrtc/host-publisher.js?v=20260826sfu23';
+import { setupChatPanel } from './chat-panel.js?v=20260901chat1';
 
 const params = new URLSearchParams(window.location.search);
 const roomCode = (params.get('code') || sessionStorage.getItem('roomCode') || '').toUpperCase();
@@ -27,6 +28,30 @@ let sync = null;
 let webrtcPublisher = null;
 let knownViewerIds = new Set();
 let activeBroadcasterId = null;
+let interactionMode = sessionStorage.getItem('interactionMode') || 'bidirectional';
+let chatPanel = null;
+
+function applyInteractionMode(mode) {
+  interactionMode = mode === 'unidirectional' ? 'unidirectional' : 'bidirectional';
+  sessionStorage.setItem('interactionMode', interactionMode);
+  document.body.classList.toggle('is-unidirectional', interactionMode === 'unidirectional');
+  const badge = document.getElementById('mode-badge');
+  if (badge) {
+    badge.textContent = interactionMode === 'unidirectional' ? '단방향' : '양방향';
+    badge.classList.toggle('is-uni', interactionMode === 'unidirectional');
+    badge.title = interactionMode === 'unidirectional'
+      ? '단방향 대규모 시청 — 참가자는 시청·채팅만'
+      : '양방향 화상 미팅';
+  }
+  if (webrtcPublisher) webrtcPublisher.interactionMode = interactionMode;
+  // 단방향: 명단에서 참가자 화면 공유 선택 비활성
+  const hint = document.getElementById('viewers-popup-hint');
+  if (hint && interactionMode === 'unidirectional') {
+    hint.textContent = '단방향 모드에서는 참가자 화면 공유를 사용할 수 없습니다. 호스트를 누르면 발표 화면으로 돌아갑니다.';
+  }
+}
+
+applyInteractionMode(interactionMode);
 
 const guestShareStage = document.getElementById('guest-share-stage');
 const guestShareVideo = document.getElementById('guest-share-video');
@@ -102,6 +127,11 @@ async function selectParticipant({ id, role, name }) {
   // 호스트 자신(한 번 또는 두 번 클릭) → 참가자 공유 종료 + 발표 화면 즉시 복귀
   if (role === 'host' || id === sync.clientId) {
     await returnToHostDisplay();
+    return;
+  }
+
+  if (interactionMode === 'unidirectional') {
+    alert('단방향(대규모 시청) 모드에서는 참가자 화면 공유를 사용할 수 없습니다.');
     return;
   }
 
@@ -672,6 +702,9 @@ sync = new RoomSync({
 
 sync.start()
   .then((data) => {
+    if (data.state?.interactionMode) {
+      applyInteractionMode(data.state.interactionMode);
+    }
     activeBroadcasterId = data.state?.activeBroadcasterId || sync.clientId;
     setViewerCount(data.state?.viewerCount ?? 0, data.state?.viewers, {
       activeBroadcasterId,
@@ -684,6 +717,14 @@ sync.start()
       goToSlide(data.state.currentSlide || 0);
       drawCanvas.loadStrokes(data.drawings || {});
     }
+
+    chatPanel = setupChatPanel({
+      getSocket: () => sync?.socket,
+      clientId: sync.clientId,
+      displayName: hostName,
+      role: 'host',
+      toggleBtn: document.getElementById('btn-chat'),
+    });
 
     const signaling = new WebrtcSignaling(sync.socket, { localClientId: sync.clientId });
     webrtcPublisher = new HostPublisher({
@@ -709,6 +750,7 @@ sync.start()
         }
       },
     });
+    webrtcPublisher.interactionMode = interactionMode;
     webrtcPublisher.onRelayChange = ({ peerId, active, stream }) => {
       if (active && stream) {
         const name = getLatestViewers().find((v) => v.id === peerId)?.name || '참가자';

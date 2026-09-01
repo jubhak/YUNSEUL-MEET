@@ -16,6 +16,8 @@ export class HostPublisher {
     this.localStream = null;
     this.active = false;
     this.kinds = [];
+    /** bidirectional | unidirectional */
+    this.interactionMode = 'bidirectional';
     /** @type {MediaStreamTrack[]} */
     this._tabAudioTracks = [];
     /** @type {MediaStreamTrack[]} */
@@ -78,6 +80,7 @@ export class HostPublisher {
       role: 'host',
     });
     this.sfu.consumeFilter = (info) => {
+      if (this.interactionMode === 'unidirectional') return false;
       const source = info?.appData?.source || '';
       return source === 'viewer-display' || source === 'viewer-mic';
     };

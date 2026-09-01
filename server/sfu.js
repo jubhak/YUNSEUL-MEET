@@ -448,11 +448,19 @@ function attachSfuHandlers(socket, ctx) {
     try {
       const code = ctx.getRoomCode();
       const clientId = ctx.getClientId();
+      const role = ctx.getRole() || 'viewer';
+      const interactionMode = typeof ctx.getInteractionMode === 'function'
+        ? ctx.getInteractionMode()
+        : 'bidirectional';
+      // 단방향(대규모 시청): 참가자는 consume만 — produce 차단
+      if (interactionMode === 'unidirectional' && role === 'viewer') {
+        return cb?.({ error: 'unidirectional-room' });
+      }
       const room = sfuRooms.get(code);
       const peer = room?.peers.get(clientId);
       const transport = peer?.transports.get(msg?.transportId);
       if (!transport) return cb?.({ error: 'transport-not-found' });
-      peer.role = ctx.getRole() || peer.role;
+      peer.role = role || peer.role;
 
       const producer = await transport.produce({
         kind: msg.kind,

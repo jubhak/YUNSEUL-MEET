@@ -8,7 +8,7 @@
   <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
   <meta http-equiv="Pragma" content="no-cache">
   <title>호스트 - YUNSEUL PPT</title>
-  <link rel="stylesheet" href="css/style.css?v=20260826mic1">
+  <link rel="stylesheet" href="css/style.css?v=20260901chat1">
   <style>
     /* 툴바 강제 · 아이콘 가시성 강제 (캐시된 CSS 이겨내기) */
     #main-toolbar.toolbar {
@@ -197,6 +197,7 @@
       <div class="tb-group tb-group-room">
         <span class="room-badge">참여 코드 <strong id="room-code"></strong></span>
         <span class="viewer-badge">참가자 <a id="viewer-count-link" class="viewer-count-link"><strong id="viewer-count">0</strong>명</a></span>
+        <span id="mode-badge" class="mode-badge" title="미팅 방식">양방향</span>
       </div>
 
       <div class="tb-sep" role="separator" aria-hidden="true"></div>
@@ -226,6 +227,10 @@
         <button type="button" id="btn-reload-ppt" class="btn btn-sm" title="다른 PPTX 파일로 바꾸기" style="display:none">PPT 바꾸기</button>
         <button type="button" id="btn-stream" class="btn btn-sm btn-primary" title="참가자에게 화면 송출">송출</button>
         <button type="button" id="btn-fullscreen" class="btn btn-sm" title="전체화면 (F)">전체화면</button>
+        <button type="button" id="btn-chat" class="btn btn-icon btn-chat" title="채팅 열기" aria-pressed="false" aria-label="채팅">
+          <span class="ico" aria-hidden="true">💬</span>
+          <span class="chat-unread hidden" aria-hidden="true"></span>
+        </button>
         <button type="button" id="btn-end-session" class="btn btn-sm btn-ghost">종료</button>
       </div>
 
@@ -347,7 +352,7 @@
   <script type="module" src="js/load-progress.js?v=20260715w"></script>
   <script type="module" src="js/deps.js?v=20260826a"></script>
   <script type="module" src="js/host-ppt-loader.js?v=20260826local1"></script>
-  <script type="module" src="js/host.js?v=20260826mic1"></script>
+  <script type="module" src="js/host.js?v=20260901chat1"></script>
   <script type="module">
     import { setupDisplayMode } from './js/display-mode.js?v=20260826fs1';
     setupDisplayMode({ autoPromptMobile: true });

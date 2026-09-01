@@ -11,6 +11,7 @@ import {
 import { WebrtcSignaling } from './webrtc/signaling.js?v=20260715j';
 import { ViewerSubscriber } from './webrtc/viewer-subscriber.js?v=20260826share1';
 import { setupViewerZoom } from './viewer-zoom.js?v=20260819b';
+import { setupChatPanel } from './chat-panel.js?v=20260901chat1';
 
 const params = new URLSearchParams(window.location.search);
 const roomCode = (params.get('code') || sessionStorage.getItem('roomCode') || '').toUpperCase();
@@ -42,8 +43,28 @@ setupViewerZoom(liveStage);
 
 let sync = null;
 let subscriber = null;
+let chatPanel = null;
+let interactionMode = 'bidirectional';
 /** 호스트가 아직 링크를 열어 둔 동안 유지 */
 let activeHostLink = null; // { url, title }
+
+function applyInteractionMode(mode) {
+  interactionMode = mode === 'unidirectional' ? 'unidirectional' : 'bidirectional';
+  document.body.classList.toggle('is-unidirectional', interactionMode === 'unidirectional');
+  const badge = document.getElementById('mode-badge');
+  if (badge) {
+    badge.textContent = interactionMode === 'unidirectional' ? '단방향' : '양방향';
+    badge.classList.toggle('is-uni', interactionMode === 'unidirectional');
+    badge.title = interactionMode === 'unidirectional'
+      ? '단방향 대규모 시청 — 시청·채팅만 가능'
+      : '양방향 화상 미팅';
+  }
+  if (subscriber) subscriber.interactionMode = interactionMode;
+  if (interactionMode === 'unidirectional' && subscriber?.micOn) {
+    subscriber.setMicEnabled(false).catch(() => {});
+  }
+  if (typeof syncAvButtons === 'function') syncAvButtons();
+}
 
 function bindLinkTargets(url) {
   if (!url) return;
@@ -284,6 +305,10 @@ btnAvSpeaker?.addEventListener('click', () => {
 
 btnAvMic?.addEventListener('click', async () => {
   if (!subscriber) return;
+  if (interactionMode === 'unidirectional') {
+    alert('단방향(대규모 시청) 모드에서는 마이크를 사용할 수 없습니다.');
+    return;
+  }
   const next = !subscriber.micOn;
   if (next && !sync?.socket?.connected) {
     alert('방에 연결되지 않았습니다.');
@@ -348,6 +373,10 @@ function handleEvent(type, data) {
       });
       break;
     case 'request-screen-share': {
+      if (interactionMode === 'unidirectional') {
+        syncStatus.textContent = '단방향 모드 — 화면 공유 불가';
+        break;
+      }
       const hostLabel = data.hostName || '호스트';
       const ok = window.confirm(
         `${hostLabel}님이 회원님의 PC 화면을 모든 참가자에게 보여 달라고 요청했습니다.\n\n`
@@ -442,6 +471,10 @@ sync.start()
       return;
     }
 
+    if (data.state?.interactionMode) {
+      applyInteractionMode(data.state.interactionMode);
+    }
+
     // 시그널 수신을 먼저 열어 호스트 offer 유실 방지
     const signaling = new WebrtcSignaling(sync.socket, { localClientId: sync.clientId });
     subscriber = new ViewerSubscriber({
@@ -513,6 +546,7 @@ sync.start()
     // 기본: 소리 ON — 별도 <audio>로 재생 (첫 클릭 시 unlock)
     subscriber.speakerOn = true;
     subscriber.micOn = false;
+    subscriber.interactionMode = interactionMode;
     if (liveVideo) liveVideo.muted = true;
     if (data.state?.hostClientId) {
       subscriber.hostPeerId = data.state.hostClientId;
@@ -542,6 +576,14 @@ sync.start()
     syncStatus.classList.add('connected');
     setViewerCount(data.state?.viewerCount ?? 0, data.state?.viewers, {
       activeBroadcasterId: data.state?.activeBroadcasterId,
+    });
+
+    chatPanel = setupChatPanel({
+      getSocket: () => sync?.socket,
+      clientId: sync.clientId,
+      displayName: viewerName,
+      role: 'viewer',
+      toggleBtn: document.getElementById('btn-chat'),
     });
 
     if (data.state?.popup?.url) {

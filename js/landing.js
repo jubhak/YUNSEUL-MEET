@@ -48,10 +48,13 @@ document.getElementById('btn-create-room').addEventListener('click', async () =>
       throw new Error(checkData.error || '이미 사용 중인 참여 코드입니다. 다른 번호를 입력해 주세요.');
     }
 
+    const interactionMode = document.querySelector('input[name="interaction-mode"]:checked')?.value
+      || 'bidirectional';
+
     const res = await fetch(api('create-room'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ code }),
+      body: JSON.stringify({ code, interactionMode }),
     });
     const data = await res.json().catch(() => ({}));
     if (!res.ok) throw new Error(data.error || '방 생성 실패');
@@ -59,6 +62,7 @@ document.getElementById('btn-create-room').addEventListener('click', async () =>
     sessionStorage.setItem('hostToken', data.hostToken);
     sessionStorage.setItem('roomCode', data.code);
     sessionStorage.setItem('hostName', hostName);
+    sessionStorage.setItem('interactionMode', data.interactionMode || interactionMode);
     window.location.href = `host.html?code=${data.code}`;
   } catch (err) {
     btn.disabled = false;
@@ -102,6 +106,9 @@ document.getElementById('btn-join-room').addEventListener('click', async () => {
 
     sessionStorage.setItem('viewerName', name);
     sessionStorage.setItem('roomCode', code);
+    if (data.interactionMode) {
+      sessionStorage.setItem('interactionMode', data.interactionMode);
+    }
     window.location.href = `viewer.html?code=${code}`;
   } catch {
     errorEl.textContent = '서버에 연결할 수 없습니다. npm start 로 Node 서버를 실행하세요.';

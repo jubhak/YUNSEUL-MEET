@@ -27,6 +27,8 @@ export class ViewerSubscriber {
 
     this.speakerOn = true;
     this.micOn = false;
+    /** bidirectional | unidirectional */
+    this.interactionMode = 'bidirectional';
     /** @type {MediaStream|null} */
     this._micStream = null;
     this._audioUnlocked = false;
@@ -70,10 +72,14 @@ export class ViewerSubscriber {
         const source = info?.appData?.source || '';
         // 자기 화면 공유만 제외. 다른 참가자 마이크는 전원 청취(보이스 미팅)
         if (source === 'viewer-display') return false;
-        if (source === 'viewer-mic') return true;
+        if (source === 'viewer-mic') {
+          return this.interactionMode !== 'unidirectional';
+        }
         if (source === 'display' || source === 'tab-audio' || source === 'mic') return true;
         if (info?.role === 'host') return true;
-        if (info?.role === 'viewer' && info?.kind === 'audio') return true;
+        if (info?.role === 'viewer' && info?.kind === 'audio') {
+          return this.interactionMode !== 'unidirectional';
+        }
         return info?.kind === 'video' || info?.kind === 'audio';
       };
       sfu.onRemoteStream = (stream) => this._attachRemote(stream);
