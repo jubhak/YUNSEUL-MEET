@@ -2064,8 +2064,13 @@ body.pen-mode #link-popup .link-draw-canvas,
 /* —— 채팅 레이어 —— */
 .chat-layer {
   position: fixed;
-  inset: 0;
-  z-index: 9500;
+  z-index: 9700;
+  /* 전체 화면을 덮지 않음 — 패널만 배치 */
+  top: 0;
+  left: 0;
+  width: 0;
+  height: 0;
+  overflow: visible;
   pointer-events: none;
 }
 
@@ -2074,7 +2079,7 @@ body.pen-mode #link-popup .link-draw-canvas,
 }
 
 .chat-panel {
-  pointer-events: auto;
+  pointer-events: auto !important;
   position: fixed;
   width: min(340px, calc(100vw - 24px));
   height: min(460px, calc(100vh - 96px));
@@ -2102,6 +2107,7 @@ body.pen-mode #link-popup .link-draw-canvas,
   border-bottom: 1px solid var(--border);
   cursor: grab;
   touch-action: none;
+  flex-shrink: 0;
 }
 
 .chat-panel-title:active {
@@ -2118,7 +2124,8 @@ body.pen-mode #link-popup .link-draw-canvas,
   list-style: none;
   margin: 0;
   padding: 0.65rem 0.75rem;
-  flex: 1;
+  flex: 1 1 auto;
+  min-height: 0;
   overflow-y: auto;
   display: flex;
   flex-direction: column;
@@ -2127,16 +2134,48 @@ body.pen-mode #link-popup .link-draw-canvas,
 
 .chat-row-meta {
   display: flex;
-  justify-content: space-between;
+  align-items: center;
   gap: 0.5rem;
   font-size: 0.72rem;
   color: var(--text-muted);
-  margin-bottom: 0.15rem;
+  padding-bottom: 5px;
 }
 
 .chat-row-name {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
   font-weight: 650;
   color: #a5b4fc;
+  line-height: 1.15;
+}
+
+.chat-row-name-text {
+  display: inline-block;
+  line-height: 1.15;
+  vertical-align: middle;
+}
+
+.chat-row-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.05rem;
+  height: 1.05rem;
+  flex: 0 0 1.05rem;
+  font-size: 1.05rem;
+  line-height: 1;
+  vertical-align: middle;
+}
+
+.chat-row-person {
+  color: #bfdbfe;
+}
+
+.chat-row-person svg {
+  display: block;
+  width: 1.05rem;
+  height: 1.05rem;
 }
 
 .chat-row.is-host .chat-row-name {
@@ -2147,14 +2186,34 @@ body.pen-mode #link-popup .link-draw-canvas,
   color: #fda4af;
 }
 
+.chat-row.is-continued {
+  margin-top: -0.15rem;
+}
+
 .chat-row-text {
+  position: relative;
   font-size: 0.88rem;
   line-height: 1.4;
   word-break: break-word;
-  padding: 0.45rem 0.6rem;
+  padding: 0.55rem 2.6rem 0.5rem 0.65rem;
   border-radius: 10px;
   background: rgba(255, 255, 255, 0.04);
   border: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.chat-row-time {
+  position: absolute;
+  top: 0.4rem;
+  right: 0.5rem;
+  font-size: 0.68rem;
+  line-height: 1;
+  color: var(--text-muted);
+  opacity: 0.85;
+  pointer-events: none;
+}
+
+.chat-row-body {
+  display: block;
 }
 
 .chat-row.is-mine .chat-row-text {
@@ -2168,6 +2227,8 @@ body.pen-mode #link-popup .link-draw-canvas,
   padding: 0.65rem 0.75rem;
   border-top: 1px solid var(--border);
   background: var(--surface-2);
+  flex-shrink: 0;
+  pointer-events: auto !important;
 }
 
 .chat-panel-input {
@@ -2179,19 +2240,64 @@ body.pen-mode #link-popup .link-draw-canvas,
   background: var(--surface);
   color: var(--text);
   font-size: 0.9rem;
+  text-transform: none;
+  pointer-events: auto !important;
 }
 
 .chat-panel-send {
   flex-shrink: 0;
+  pointer-events: auto !important;
+  cursor: pointer;
+}
+
+.chat-panel-status {
+  margin: 0;
+  padding: 0.25rem 0.75rem 0.55rem;
+  font-size: 0.75rem;
+  color: #f87171;
+  flex-shrink: 0;
+}
+
+.chat-panel-status:empty {
+  display: none;
 }
 
 .btn-chat {
   position: relative;
 }
 
+.btn-chat .chat-ico {
+  display: inline-flex !important;
+  align-items: center;
+  justify-content: center;
+  line-height: 1 !important;
+}
+
+.btn-chat .chat-ico-bubble {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 1.35rem;
+  height: 1.37rem; /* 1.05rem × 1.3 */
+  padding: 0 0.28rem 0.08rem;
+  border-radius: 0.55rem 0.55rem 0.55rem 0.18rem;
+  border: 1.5px solid currentColor;
+  background: rgba(255, 255, 255, 0.08);
+  color: inherit;
+  font-size: 0.78rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  line-height: 1;
+  box-sizing: border-box;
+}
+
 .btn-chat.is-active {
   background: rgba(94, 234, 212, 0.18) !important;
   color: #5eead4 !important;
+}
+
+.btn-chat.is-active .chat-ico-bubble {
+  background: rgba(94, 234, 212, 0.16);
 }
 
 .chat-unread {

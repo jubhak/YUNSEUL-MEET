@@ -34,11 +34,12 @@ const ROOT = path.join(__dirname, '..');
 const DATA_DIR = path.join(ROOT, 'data');
 const ROOMS_DIR = path.join(DATA_DIR, 'rooms');
 const UPLOADS_DIR = path.join(ROOT, 'uploads');
+const LOGS_DIR = path.join(ROOT, 'logs');
 
 const PORT = Number(process.env.PORT || 3000);
 const HOST = process.env.HOST || '127.0.0.1';
 
-for (const dir of [DATA_DIR, ROOMS_DIR, UPLOADS_DIR]) {
+for (const dir of [DATA_DIR, ROOMS_DIR, UPLOADS_DIR, LOGS_DIR]) {
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
 }
 
@@ -99,7 +100,94 @@ function defaultRoom(code, hostToken, interactionMode = 'bidirectional') {
     createdAt: Date.now(),
     hostLastSeen: 0,
     lastActivity: Date.now(),
+    logDir: null, // logs/날짜/순번_시간_방코드
   };
+}
+
+/** Asia/Seoul 기준 날짜·시각 조각 */
+function kstParts(ts = Date.now()) {
+  const parts = Object.fromEntries(
+    new Intl.DateTimeFormat('en-GB', {
+      timeZone: 'Asia/Seoul',
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+      hour12: false,
+    })
+      .formatToParts(new Date(ts))
+      .filter((p) => p.type !== 'literal')
+      .map((p) => [p.type, p.value])
+  );
+  const date = `${parts.year}-${parts.month}-${parts.day}`;
+  const timeCompact = `${parts.hour}${parts.minute}${parts.second}`;
+  const timeDisplay = `${parts.hour}:${parts.minute}:${parts.second}`;
+  return { date, timeCompact, timeDisplay, datetime: `${date} ${timeDisplay}` };
+}
+
+function nextLogSeqForDate(dateDir) {
+  if (!fs.existsSync(dateDir)) return 1;
+  let max = 0;
+  for (const name of fs.readdirSync(dateDir, { withFileTypes: true })) {
+    if (!name.isDirectory()) continue;
+    const m = /^(\d+)_/.exec(name.name);
+    if (!m) continue;
+    const n = Number(m[1]);
+    if (Number.isFinite(n) && n > max) max = n;
+  }
+  return max + 1;
+}
+
+/** 방 전용 로그 폴더 생성: logs/YYYY-MM-DD/{순번}_{HHMMSS}_{방코드}/ */
+function ensureRoomLogDir(room) {
+  if (!room) return null;
+  if (room.logDir) {
+    const abs = path.isAbsolute(room.logDir)
+      ? room.logDir
+      : path.join(ROOT, room.logDir);
+    if (!fs.existsSync(abs)) fs.mkdirSync(abs, { recursive: true });
+    room.logDir = path.relative(ROOT, abs).split(path.sep).join('/');
+    return abs;
+  }
+
+  const created = room.createdAt || Date.now();
+  const { date, timeCompact } = kstParts(created);
+  const dateDir = path.join(LOGS_DIR, date);
+  fs.mkdirSync(dateDir, { recursive: true });
+  const seq = nextLogSeqForDate(dateDir);
+  const folderName = `${String(seq).padStart(3, '0')}_${timeCompact}_${room.code}`;
+  const abs = path.join(dateDir, folderName);
+  fs.mkdirSync(abs, { recursive: true });
+  room.logDir = path.relative(ROOT, abs).split(path.sep).join('/');
+  return abs;
+}
+
+function appendRoomLog(room, fileName, line) {
+  try {
+    const dir = ensureRoomLogDir(room);
+    if (!dir) return;
+    const file = path.join(dir, fileName);
+    fs.appendFileSync(file, `${line}\n`, 'utf8');
+  } catch (err) {
+    console.warn('[room-log]', err?.message || err);
+  }
+}
+
+function logRoomJoin(room, { role, name, clientId }) {
+  const { datetime } = kstParts();
+  const safeName = String(name || '').replace(/[\r\n\t]+/g, ' ').trim() || '-';
+  const line = [datetime, role || 'viewer', safeName, clientId || '-'].join('\t');
+  appendRoomLog(room, 'join_member.log', line);
+}
+
+function logRoomChat(room, { role, name, text, clientId }) {
+  const { datetime } = kstParts();
+  const safeName = String(name || '').replace(/[\r\n\t]+/g, ' ').trim() || '-';
+  const safeText = String(text || '').replace(/[\r\n]+/g, ' ').trim();
+  const line = [datetime, role || 'viewer', safeName, clientId || '-', safeText].join('\t');
+  appendRoomLog(room, 'chats.log', line);
 }
 
 function roomPath(code) {
@@ -126,6 +214,7 @@ function persistRoom(room) {
     ended: room.ended,
     endedAt: room.endedAt,
     createdAt: room.createdAt,
+    logDir: room.logDir || null,
     viewers: Object.fromEntries(
       [...room.viewers.entries()].map(([id, v]) => [id, { name: v.name, lastSeen: v.lastSeen }])
     ),
@@ -156,6 +245,7 @@ function loadRoomFromDisk(code) {
       ended: !!raw.ended,
       endedAt: raw.endedAt || 0,
       createdAt: raw.createdAt || Date.now(),
+      logDir: raw.logDir || null,
       viewers: new Map(),
       chatMessages: [],
     });
@@ -581,6 +671,7 @@ app.post('/api/create-room', (req, res) => {
   const hostToken = crypto.randomBytes(16).toString('hex');
   const interactionMode = normalizeInteractionMode(req.body?.interactionMode);
   const room = defaultRoom(code, hostToken, interactionMode);
+  ensureRoomLogDir(room);
   rooms.set(code, room);
   persistRoom(room);
   // 호스트가 들어오지 않으면 유예 후 폐기
@@ -722,6 +813,7 @@ app.post('/api/create-room.php', (req, res) => {
   const hostToken = crypto.randomBytes(16).toString('hex');
   const interactionMode = normalizeInteractionMode(req.body?.interactionMode);
   const room = defaultRoom(code, hostToken, interactionMode);
+  ensureRoomLogDir(room);
   rooms.set(code, room);
   persistRoom(room);
   maybeScheduleEmptyRoomDispose(room);
@@ -862,6 +954,7 @@ io.on('connection', (socket) => {
       cancelEmptyRoomDispose(room);
       persistRoom(room);
       broadcastViewerCount(io, room);
+      logRoomJoin(room, { role, name, clientId });
 
       const payload = {
         clientId,
@@ -899,23 +992,40 @@ io.on('connection', (socket) => {
     }
   });
 
-  socket.on('chat-send', (msg) => {
+  socket.on('chat-send', (msg, ack) => {
+    const reply = (payload) => {
+      if (typeof ack === 'function') {
+        try { ack(payload); } catch { /* ignore */ }
+      }
+    };
     try {
       const code = socket.data.roomCode;
       const clientId = socket.data.clientId;
       const role = socket.data.role === 'host' ? 'host' : 'viewer';
-      if (!code || !clientId) return;
+      if (!code || !clientId) {
+        reply({ error: '방에 참가되지 않았습니다. 새로고침 후 다시 시도해 주세요.' });
+        return;
+      }
       const room = getRoom(code);
-      if (!room || room.ended) return;
+      if (!room || room.ended) {
+        reply({ error: '유효하지 않은 방입니다.' });
+        return;
+      }
 
       const text = String(msg?.text || '').replace(/\s+/g, ' ').trim().slice(0, 400);
-      if (!text) return;
+      if (!text) {
+        reply({ error: '빈 메시지는 보낼 수 없습니다.' });
+        return;
+      }
 
       // 간단한 속도 제한
       const now = Date.now();
       if (!socket.data._chatTimes) socket.data._chatTimes = [];
       socket.data._chatTimes = socket.data._chatTimes.filter((t) => now - t < 3000);
-      if (socket.data._chatTimes.length >= 6) return;
+      if (socket.data._chatTimes.length >= 8) {
+        reply({ error: '메시지를 너무 빠르게 보내고 있습니다.' });
+        return;
+      }
       socket.data._chatTimes.push(now);
 
       let name = '참가자';
@@ -940,8 +1050,11 @@ io.on('connection', (socket) => {
       }
       room.lastActivity = now;
       io.to(code).emit('chat-message', entry);
+      logRoomChat(room, { role, name, text, clientId });
+      reply({ ok: true, message: entry });
     } catch (e) {
       console.error('[chat-send]', e);
+      reply({ error: e.message || '채팅 전송 실패' });
     }
   });
 

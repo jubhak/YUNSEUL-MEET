@@ -25,7 +25,7 @@ function formatTime(ts) {
 
 /**
  * @param {{
- *   socket: import('socket.io-client').Socket | null,
+ *   socket?: any,
  *   getSocket?: () => any,
  *   clientId: string,
  *   displayName: string,
@@ -50,6 +50,7 @@ export function setupChatPanel(opts) {
   let dragging = false;
   let dragOffsetX = 0;
   let dragOffsetY = 0;
+  let sending = false;
 
   const root = ensureDom();
   const panel = root.querySelector('.chat-panel');
@@ -57,7 +58,9 @@ export function setupChatPanel(opts) {
   const listEl = root.querySelector('.chat-panel-list');
   const formEl = root.querySelector('.chat-panel-form');
   const inputEl = root.querySelector('.chat-panel-input');
+  const sendBtn = root.querySelector('.chat-panel-send');
   const closeBtn = root.querySelector('.chat-panel-close');
+  const statusEl = root.querySelector('.chat-panel-status');
   const unreadEl = toggleBtn?.querySelector('.chat-unread');
 
   restorePosition(panel);
@@ -66,9 +69,14 @@ export function setupChatPanel(opts) {
     return getSocket?.() || socket || opts.socket || null;
   }
 
+  function setStatus(text) {
+    if (statusEl) statusEl.textContent = text || '';
+  }
+
   function bindSocket() {
     const s = currentSocket();
-    if (!s || s === boundSocket) return;
+    if (!s) return;
+    if (s === boundSocket) return;
     if (boundSocket) {
       boundSocket.off('chat-message', onMessage);
       boundSocket.off('chat-history', onHistory);
@@ -81,17 +89,33 @@ export function setupChatPanel(opts) {
 
   function onHistory(payload) {
     const msgs = Array.isArray(payload?.messages) ? payload.messages : [];
+    // 서버 히스토리로 교체하되, 아직 ack 안 된 로컬 메시지는 유지
+    const locals = buffer.filter((m) => m && m._local);
     buffer.length = 0;
     for (const m of msgs) pushBuffer(m);
+    for (const m of locals) {
+      const exists = buffer.some((x) => x.clientId === m.clientId && x.text === m.text && !x._local);
+      if (!exists) pushBuffer(m);
+    }
     if (open) renderAll();
   }
 
   function onMessage(msg) {
     if (!msg?.text) return;
+    // 낙관적 로컬 메시지와 서버 echo 병합
+    const localIdx = buffer.findIndex(
+      (m) => m && m._local && m.clientId === msg.clientId && m.text === msg.text
+    );
+    if (localIdx >= 0) {
+      buffer[localIdx] = msg;
+      if (open) renderAll();
+      return;
+    }
+    if (msg.id && buffer.some((m) => m && m.id === msg.id)) return;
     pushBuffer(msg);
     if (open) {
       appendRow(msg, true);
-    } else {
+    } else if (msg.clientId !== clientId) {
       unread += 1;
       syncUnread();
     }
@@ -128,11 +152,14 @@ export function setupChatPanel(opts) {
       bindSocket();
       unread = 0;
       syncUnread();
+      setStatus('');
       renderAll();
-      requestAnimationFrame(() => inputEl?.focus());
+      requestAnimationFrame(() => {
+        try { inputEl?.focus({ preventScroll: true }); } catch { inputEl?.focus(); }
+      });
     } else {
-      // 닫힘: DOM은 유지하되 리스트 비워 렌더 부하·메모리 완화 (버퍼는 유지)
       if (listEl) listEl.innerHTML = '';
+      setStatus('');
     }
     syncToggleBtn();
   }
@@ -141,21 +168,44 @@ export function setupChatPanel(opts) {
     if (!listEl) return;
     listEl.innerHTML = '';
     const slice = buffer.slice(-MAX_RENDER);
-    for (const m of slice) appendRow(m, false);
+    let prevClientId = null;
+    for (const m of slice) {
+      appendRow(m, false, prevClientId);
+      prevClientId = m.clientId || null;
+    }
     listEl.scrollTop = listEl.scrollHeight;
   }
 
-  function appendRow(msg, scroll) {
+  function appendRow(msg, scroll, prevClientId) {
     if (!listEl) return;
+    if (prevClientId === undefined) {
+      const last = listEl.lastElementChild;
+      prevClientId = last?.getAttribute('data-client-id') || null;
+    }
     const mine = msg.clientId && msg.clientId === clientId;
+    const sameAuthor = !!(msg.clientId && prevClientId && msg.clientId === prevClientId);
     const row = document.createElement('li');
-    row.className = 'chat-row' + (mine ? ' is-mine' : '') + (msg.role === 'host' ? ' is-host' : '');
+    row.className = 'chat-row'
+      + (mine ? ' is-mine' : '')
+      + (msg.role === 'host' ? ' is-host' : '')
+      + (sameAuthor ? ' is-continued' : '');
+    if (msg.clientId) row.setAttribute('data-client-id', msg.clientId);
+    const nameHtml = sameAuthor
+      ? ''
+      : `<div class="chat-row-meta"><span class="chat-row-name">${
+          msg.role === 'host'
+            ? '<span class="chat-row-icon chat-row-crown" aria-hidden="true">👑</span>'
+            : '<span class="chat-row-icon chat-row-person" aria-hidden="true">'
+              + '<svg viewBox="0 0 24 24" width="16" height="16" focusable="false">'
+              + '<path fill="currentColor" d="M12 12c2.7 0 4.8-2.1 4.8-4.8S14.7 2.4 12 2.4 7.2 4.5 7.2 7.2 9.3 12 12 12zm0 2.4c-3.2 0-9.6 1.6-9.6 4.8v1.2c0 .7.5 1.2 1.2 1.2h16.8c.7 0 1.2-.5 1.2-1.2V19.2c0-3.2-6.4-4.8-9.6-4.8z"/>'
+              + '</svg></span>'
+        }<span class="chat-row-name-text">${escapeHtml(msg.name || '참가자')}</span></span></div>`;
     row.innerHTML =
-      `<div class="chat-row-meta">`
-      + `<span class="chat-row-name">${escapeHtml(msg.name || '참가자')}</span>`
+      nameHtml
+      + `<div class="chat-row-text">`
       + `<span class="chat-row-time">${escapeHtml(formatTime(msg.at))}</span>`
-      + `</div>`
-      + `<div class="chat-row-text">${escapeHtml(msg.text)}</div>`;
+      + `<span class="chat-row-body">${escapeHtml(msg.text)}</span>`
+      + `</div>`;
     listEl.appendChild(row);
     while (listEl.children.length > MAX_RENDER) {
       listEl.removeChild(listEl.firstChild);
@@ -165,16 +215,90 @@ export function setupChatPanel(opts) {
 
   function send() {
     const text = (inputEl?.value || '').trim();
-    if (!text) return;
+    if (!text || sending) return;
+
     bindSocket();
     const s = currentSocket();
-    if (!s?.connected) return;
-    s.emit('chat-send', { text });
+    if (!s) {
+      setStatus('소켓이 없습니다. 페이지를 새로고침해 주세요.');
+      return;
+    }
+    if (!s.connected) {
+      setStatus('서버와 연결이 끊겼습니다. 잠시 후 다시 시도해 주세요.');
+      return;
+    }
+
+    sending = true;
+    if (sendBtn) sendBtn.disabled = true;
+    setStatus('');
+
+    const localMsg = {
+      id: `local-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`,
+      clientId,
+      role,
+      name: displayName || '참가자',
+      text,
+      at: Date.now(),
+      _local: true,
+    };
+    pushBuffer(localMsg);
+    if (open) appendRow(localMsg, true);
     if (inputEl) inputEl.value = '';
+
+    let settled = false;
+    const finish = (errText) => {
+      if (settled) return;
+      settled = true;
+      sending = false;
+      if (sendBtn) sendBtn.disabled = false;
+      if (errText) setStatus(errText);
+      try { inputEl?.focus({ preventScroll: true }); } catch { inputEl?.focus(); }
+    };
+
+    try {
+      s.timeout(8000).emit('chat-send', { text }, (err, res) => {
+        if (err) {
+          finish('전송 시간 초과. 서버를 재시작했는지 확인해 주세요.');
+          return;
+        }
+        if (res?.error) {
+          finish(String(res.error));
+          return;
+        }
+        if (res?.message) onMessage(res.message);
+        finish('');
+      });
+    } catch {
+      // timeout() 미지원 구형 클라이언트 대비
+      s.emit('chat-send', { text }, (res) => {
+        if (res?.error) {
+          finish(String(res.error));
+          return;
+        }
+        if (res?.message) onMessage(res.message);
+        finish('');
+      });
+      setTimeout(() => finish(''), 500);
+    }
   }
 
   formEl?.addEventListener('submit', (e) => {
     e.preventDefault();
+    e.stopPropagation();
+    send();
+  });
+
+  sendBtn?.addEventListener('click', (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    send();
+  });
+
+  inputEl?.addEventListener('keydown', (e) => {
+    if (e.key !== 'Enter') return;
+    if (e.isComposing || e.keyCode === 229) return;
+    e.preventDefault();
+    e.stopPropagation();
     send();
   });
 
@@ -270,8 +394,9 @@ function ensureDom() {
         <button type="button" class="btn-close chat-panel-close" title="닫기" aria-label="채팅 닫기">✕</button>
       </div>
       <ul class="chat-panel-list" aria-live="polite"></ul>
-      <form class="chat-panel-form">
-        <input type="text" class="chat-panel-input" maxlength="400" placeholder="메시지 입력…" autocomplete="off">
+      <p class="chat-panel-status" aria-live="polite"></p>
+      <form class="chat-panel-form" action="#" autocomplete="off">
+        <input type="text" class="chat-panel-input" maxlength="400" placeholder="메시지 입력…" autocomplete="off" enterkeyhint="send">
         <button type="submit" class="btn btn-sm btn-primary chat-panel-send">전송</button>
       </form>
     </div>
@@ -328,7 +453,6 @@ function restorePosition(panel) {
       }
     }
   } catch { /* ignore */ }
-  // 기본: 우측
   panel.style.right = '16px';
   panel.style.top = '72px';
   panel.style.left = 'auto';

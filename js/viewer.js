@@ -11,7 +11,7 @@ import {
 import { WebrtcSignaling } from './webrtc/signaling.js?v=20260715j';
 import { ViewerSubscriber } from './webrtc/viewer-subscriber.js?v=20260826share1';
 import { setupViewerZoom } from './viewer-zoom.js?v=20260819b';
-import { setupChatPanel } from './chat-panel.js?v=20260901chat1';
+import { setupChatPanel } from './chat-panel.js?v=20260902chat8';
 
 const params = new URLSearchParams(window.location.search);
 const roomCode = (params.get('code') || sessionStorage.getItem('roomCode') || '').toUpperCase();
