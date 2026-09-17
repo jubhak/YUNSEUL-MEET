@@ -6,7 +6,7 @@
   <meta name="mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <title>참가 - YUNSEUL PPT</title>
-  <link rel="stylesheet" href="css/style.css?v=20260902chat12">
+  <link rel="stylesheet" href="css/style.css?v=20260902compose2">
   <style>
     #main-toolbar.toolbar {
       position: relative !important;
@@ -296,9 +296,12 @@
           <span class="ico ico-on" aria-hidden="true">🎙️</span>
           <span class="ico ico-off" aria-hidden="true">🚫</span>
         </button>
-        <button type="button" id="btn-chat" class="btn btn-icon btn-chat" title="채팅 열기" aria-pressed="false" aria-label="채팅">
+        <button type="button" id="btn-av-cam" class="btn btn-icon btn-av" title="카메라 꺼짐 — 클릭하여 켜기" aria-pressed="false" aria-label="카메라">
+          <span class="ico ico-on" aria-hidden="true">📹</span>
+          <span class="ico ico-off" aria-hidden="true">📷</span>
+        </button>
+        <button type="button" id="btn-chat" class="btn btn-icon btn-chat" title="메시지 보내기" aria-pressed="false" aria-label="메시지 보내기">
           <span class="ico chat-ico" aria-hidden="true"><span class="chat-ico-bubble">···</span></span>
-          <span class="chat-unread hidden" aria-hidden="true"></span>
         </button>
       </div>
       <button type="button" id="btn-fullscreen" class="btn btn-icon btn-toolbar-text" title="전체화면 (F)" aria-label="전체화면">
@@ -340,6 +343,7 @@
       </div>
     </main>
   </div>
+  <div id="cam-overlay-container" class="cam-overlay-container"></div>
 
   <div id="mobile-fs-gate" class="mobile-fs-gate hidden">
     <div class="gate-box">
@@ -406,6 +410,18 @@
     </div>
   </div>
 
+  <div id="mic-required-gate" class="mic-required-gate hidden" aria-live="polite">
+    <div class="mic-required-box">
+      <span class="mic-required-icon" aria-hidden="true">🎙️🚫</span>
+      <h2>마이크 사용 필수 미팅</h2>
+      <p id="mic-required-message">이 미팅은 마이크 사용이 필수입니다.<br>마이크가 연결되고 권한이 활성화된 참가자만 입장할 수 있습니다.</p>
+      <div class="mic-required-actions">
+        <button type="button" id="btn-mic-retry" class="btn btn-primary">마이크 허용 후 다시 시도</button>
+        <a href="./" class="btn btn-ghost">나가기</a>
+      </div>
+    </div>
+  </div>
+
   <div id="load-progress" aria-hidden="true"></div>
 
   <script src="/socket.io/socket.io.js"></script>
@@ -413,7 +429,7 @@
   <script src="js/progress-bar.js?v=20260715d"></script>
   <script type="module" src="js/load-progress.js?v=20260715d"></script>
   <script type="module" src="js/deps.js?v=20260715d"></script>
-  <script type="module" src="js/viewer.js?v=20260902chat8"></script>
+  <script type="module" src="js/viewer.js?v=20260916v1"></script>
   <script type="module">
     import { setupDisplayMode } from './js/display-mode.js?v=20260819e';
     setupDisplayMode({ autoPromptMobile: false });

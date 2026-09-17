@@ -8,7 +8,7 @@
   <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
   <meta http-equiv="Pragma" content="no-cache">
   <title>호스트 - YUNSEUL PPT</title>
-  <link rel="stylesheet" href="css/style.css?v=20260902chat12">
+  <link rel="stylesheet" href="css/style.css?v=20260902compose2">
   <style>
     /* 툴바 강제 · 아이콘 가시성 강제 (캐시된 CSS 이겨내기) */
     #main-toolbar.toolbar {
@@ -245,6 +245,10 @@
           <span class="ico ico-on" aria-hidden="true">🎙️</span>
           <span class="ico ico-off" aria-hidden="true">🚫</span>
         </button>
+        <button type="button" id="btn-av-cam" class="btn btn-icon btn-av" title="카메라 꺼짐 — 클릭하여 켜기" aria-pressed="false" aria-label="카메라">
+          <span class="ico ico-on" aria-hidden="true">📹</span>
+          <span class="ico ico-off" aria-hidden="true">📷</span>
+        </button>
       </div>
     </div>
   </header>
@@ -255,9 +259,12 @@
     <main class="stage-area">
       <div id="upload-panel" class="upload-panel hidden">
         <div class="upload-box ready-box share-prompt-box" id="upload-box">
-          <h2>화면 공유</h2>
-          <p>공유할 화면·창을 선택하면 참가자에게 바로 송출됩니다.</p>
-          <button type="button" id="btn-share-now" class="btn btn-primary btn-lg">화면 공유 시작</button>
+          <h2 id="share-prompt-title">화면 공유</h2>
+          <p id="share-prompt-desc">공유할 화면·창을 선택하면 참가자에게 바로 송출됩니다.</p>
+          <div class="share-prompt-actions">
+            <button type="button" id="btn-share-now" class="btn btn-primary btn-lg">화면 공유 시작</button>
+            <button type="button" id="btn-camera-share" class="btn btn-secondary btn-lg hidden">카메라로 송출</button>
+          </div>
           <input type="file" id="file-input" accept=".pptx,application/vnd.openxmlformats-officedocument.presentationml.presentation" hidden>
           <p id="upload-status" class="upload-status"></p>
         </div>
@@ -273,6 +280,7 @@
       </div>
     </main>
   </div><!-- /#app -->
+  <div id="cam-overlay-container" class="cam-overlay-container"></div>
 
   <div id="link-popup" class="overlay hidden">
     <div class="popup-window">
@@ -352,7 +360,7 @@
   <script type="module" src="js/load-progress.js?v=20260715w"></script>
   <script type="module" src="js/deps.js?v=20260826a"></script>
   <script type="module" src="js/host-ppt-loader.js?v=20260826local1"></script>
-  <script type="module" src="js/host.js?v=20260902chat8"></script>
+  <script type="module" src="js/host.js?v=20260902compose2"></script>
   <script type="module">
     import { setupDisplayMode } from './js/display-mode.js?v=20260826fs1';
     setupDisplayMode({ autoPromptMobile: true });

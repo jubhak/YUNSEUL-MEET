@@ -6,3 +6,14 @@ logs/
 .env
 *.log
 .DS_Store
+
+# Python & Build
+__pycache__/
+*.py[cod]
+build/
+dist/
+*.spec
+*.exe
+
+# IDE
+.vscode/

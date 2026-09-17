@@ -7,6 +7,7 @@
 const MAX_BUFFER = 120;
 const MAX_RENDER = 80;
 const POS_KEY = 'yunseul-chat-pos';
+const POS_KEY_COMPOSE = 'yunseul-chat-compose-pos';
 
 function escapeHtml(s) {
   return String(s || '')
@@ -42,6 +43,9 @@ export function setupChatPanel(opts) {
     toggleBtn = null,
   } = opts;
 
+  // 클라이언트: 채팅 목록 없이 작성·전송만 (호스트만 전체 채팅창)
+  const composeOnly = role === 'viewer';
+
   let socket = opts.socket || null;
   const buffer = [];
   let open = false;
@@ -52,7 +56,7 @@ export function setupChatPanel(opts) {
   let dragOffsetY = 0;
   let sending = false;
 
-  const root = ensureDom();
+  const root = ensureDom({ composeOnly });
   const panel = root.querySelector('.chat-panel');
   const titleEl = root.querySelector('.chat-panel-title');
   const listEl = root.querySelector('.chat-panel-list');
@@ -61,16 +65,28 @@ export function setupChatPanel(opts) {
   const sendBtn = root.querySelector('.chat-panel-send');
   const closeBtn = root.querySelector('.chat-panel-close');
   const statusEl = root.querySelector('.chat-panel-status');
-  const unreadEl = toggleBtn?.querySelector('.chat-unread');
+  const unreadEl = composeOnly ? null : toggleBtn?.querySelector('.chat-unread');
 
-  restorePosition(panel);
+  if (composeOnly && toggleBtn) {
+    const badge = toggleBtn.querySelector('.chat-unread');
+    if (badge) {
+      badge.classList.add('hidden');
+      badge.setAttribute('aria-hidden', 'true');
+    }
+    toggleBtn.title = '메시지 보내기';
+    toggleBtn.setAttribute('aria-label', '메시지 보내기');
+  }
+
+  restorePosition(panel, composeOnly);
 
   function currentSocket() {
     return getSocket?.() || socket || opts.socket || null;
   }
 
   function setStatus(text) {
-    if (statusEl) statusEl.textContent = text || '';
+    if (!statusEl) return;
+    statusEl.textContent = text || '';
+    statusEl.classList.toggle('is-ok', text === '전송됨');
   }
 
   function bindSocket() {
@@ -82,12 +98,17 @@ export function setupChatPanel(opts) {
       boundSocket.off('chat-history', onHistory);
     }
     boundSocket = s;
+    if (composeOnly) {
+      // 클라이언트는 수신/히스토리 없이 전송만
+      return;
+    }
     s.on('chat-message', onMessage);
     s.on('chat-history', onHistory);
     try { s.emit('chat-request-history'); } catch { /* ignore */ }
   }
 
   function onHistory(payload) {
+    if (composeOnly) return;
     const msgs = Array.isArray(payload?.messages) ? payload.messages : [];
     // 서버 히스토리로 교체하되, 아직 ack 안 된 로컬 메시지는 유지
     const locals = buffer.filter((m) => m && m._local);
@@ -102,6 +123,7 @@ export function setupChatPanel(opts) {
 
   function onMessage(msg) {
     if (!msg?.text) return;
+    if (composeOnly) return;
     // 낙관적 로컬 메시지와 서버 echo 병합
     const localIdx = buffer.findIndex(
       (m) => m && m._local && m.clientId === msg.clientId && m.text === msg.text
@@ -115,7 +137,8 @@ export function setupChatPanel(opts) {
     pushBuffer(msg);
     if (open) {
       appendRow(msg, true);
-    } else if (msg.clientId !== clientId) {
+    } else if (!msg.clientId || msg.clientId !== clientId) {
+      // 채팅창 닫힘: 다른 사람 새 글 수 배지
       unread += 1;
       syncUnread();
     }
@@ -127,13 +150,26 @@ export function setupChatPanel(opts) {
   }
 
   function syncUnread() {
-    if (!unreadEl) return;
+    if (composeOnly || !unreadEl) return;
     if (unread > 0 && !open) {
-      unreadEl.textContent = unread > 99 ? '99+' : String(unread);
+      const label = unread > 99 ? '99+' : String(unread);
+      unreadEl.textContent = label;
       unreadEl.classList.remove('hidden');
+      unreadEl.setAttribute('aria-hidden', 'false');
+      unreadEl.setAttribute('aria-label', `새 채팅 ${label}개`);
+      if (toggleBtn) {
+        toggleBtn.setAttribute('data-unread', label);
+        toggleBtn.title = `채팅 열기 (새 메시지 ${label})`;
+      }
     } else {
       unreadEl.textContent = '';
       unreadEl.classList.add('hidden');
+      unreadEl.setAttribute('aria-hidden', 'true');
+      unreadEl.removeAttribute('aria-label');
+      if (toggleBtn) {
+        toggleBtn.removeAttribute('data-unread');
+        if (!open) toggleBtn.title = '채팅 열기';
+      }
     }
   }
 
@@ -141,7 +177,11 @@ export function setupChatPanel(opts) {
     if (!toggleBtn) return;
     toggleBtn.classList.toggle('is-active', open);
     toggleBtn.setAttribute('aria-pressed', open ? 'true' : 'false');
-    toggleBtn.title = open ? '채팅 닫기' : '채팅 열기';
+    if (composeOnly) {
+      toggleBtn.title = open ? '메시지 닫기' : '메시지 보내기';
+    } else {
+      toggleBtn.title = open ? '채팅 닫기' : '채팅 열기';
+    }
   }
 
   function setOpen(next) {
@@ -153,7 +193,7 @@ export function setupChatPanel(opts) {
       unread = 0;
       syncUnread();
       setStatus('');
-      renderAll();
+      if (!composeOnly) renderAll();
       requestAnimationFrame(() => {
         try { inputEl?.focus({ preventScroll: true }); } catch { inputEl?.focus(); }
       });
@@ -232,17 +272,19 @@ export function setupChatPanel(opts) {
     if (sendBtn) sendBtn.disabled = true;
     setStatus('');
 
-    const localMsg = {
-      id: `local-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`,
-      clientId,
-      role,
-      name: displayName || '참가자',
-      text,
-      at: Date.now(),
-      _local: true,
-    };
-    pushBuffer(localMsg);
-    if (open) appendRow(localMsg, true);
+    if (!composeOnly) {
+      const localMsg = {
+        id: `local-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`,
+        clientId,
+        role,
+        name: displayName || '참가자',
+        text,
+        at: Date.now(),
+        _local: true,
+      };
+      pushBuffer(localMsg);
+      if (open) appendRow(localMsg, true);
+    }
     if (inputEl) inputEl.value = '';
 
     let settled = false;
@@ -251,7 +293,12 @@ export function setupChatPanel(opts) {
       settled = true;
       sending = false;
       if (sendBtn) sendBtn.disabled = false;
-      if (errText) setStatus(errText);
+      if (errText) {
+        setStatus(errText);
+      } else if (composeOnly) {
+        setStatus('전송됨');
+        setTimeout(() => { if (statusEl?.textContent === '전송됨') setStatus(''); }, 1500);
+      }
       try { inputEl?.focus({ preventScroll: true }); } catch { inputEl?.focus(); }
     };
 
@@ -265,7 +312,7 @@ export function setupChatPanel(opts) {
           finish(String(res.error));
           return;
         }
-        if (res?.message) onMessage(res.message);
+        if (!composeOnly && res?.message) onMessage(res.message);
         finish('');
       });
     } catch {
@@ -275,7 +322,7 @@ export function setupChatPanel(opts) {
           finish(String(res.error));
           return;
         }
-        if (res?.message) onMessage(res.message);
+        if (!composeOnly && res?.message) onMessage(res.message);
         finish('');
       });
       setTimeout(() => finish(''), 500);
@@ -297,6 +344,8 @@ export function setupChatPanel(opts) {
   inputEl?.addEventListener('keydown', (e) => {
     if (e.key !== 'Enter') return;
     if (e.isComposing || e.keyCode === 229) return;
+    // textarea: Shift+Enter 줄바꿈, Enter 전송
+    if (composeOnly && e.shiftKey) return;
     e.preventDefault();
     e.stopPropagation();
     send();
@@ -336,7 +385,7 @@ export function setupChatPanel(opts) {
     dragging = false;
     panel.classList.remove('is-dragging');
     try { titleEl.releasePointerCapture?.(e.pointerId); } catch { /* ignore */ }
-    savePosition(panel);
+    savePosition(panel, composeOnly);
   };
   titleEl?.addEventListener('pointerup', endDrag);
   titleEl?.addEventListener('pointercancel', endDrag);
@@ -344,7 +393,7 @@ export function setupChatPanel(opts) {
   window.addEventListener('resize', () => {
     if (!open || !panel) return;
     clampPanel(panel);
-    savePosition(panel);
+    savePosition(panel, composeOnly);
   });
 
   // 소켓이 나중에 붙는 경우 대비
@@ -379,7 +428,7 @@ export function setupChatPanel(opts) {
   };
 }
 
-function ensureDom() {
+function ensureDom({ composeOnly = false } = {}) {
   let root = document.getElementById('chat-layer');
   if (root) return root;
 
@@ -387,20 +436,42 @@ function ensureDom() {
   root.id = 'chat-layer';
   root.className = 'chat-layer hidden';
   root.setAttribute('aria-hidden', 'true');
-  root.innerHTML = `
-    <div class="chat-panel" role="dialog" aria-labelledby="chat-panel-title">
-      <div class="chat-panel-title" id="chat-panel-titlebar">
-        <h3 id="chat-panel-title">채팅</h3>
-        <button type="button" class="btn-close chat-panel-close" title="닫기" aria-label="채팅 닫기">✕</button>
+
+  if (composeOnly) {
+    root.innerHTML = `
+      <div class="chat-panel chat-panel--compose" role="dialog" aria-labelledby="chat-panel-title">
+        <div class="chat-panel-title" id="chat-panel-titlebar">
+          <h3 id="chat-panel-title">메시지 보내기</h3>
+          <button type="button" class="btn-close chat-panel-close" title="닫기" aria-label="닫기">✕</button>
+        </div>
+        <p class="chat-panel-hint">입력한 메시지는 호스트 채팅창으로 전달됩니다.</p>
+        <form class="chat-panel-form chat-panel-compose-form" action="#" autocomplete="off">
+          <div class="chat-panel-body">
+            <textarea class="chat-panel-input" maxlength="400" placeholder="메시지를 입력하세요…" rows="8" autocomplete="off" enterkeyhint="send"></textarea>
+          </div>
+          <p class="chat-panel-status" aria-live="polite"></p>
+          <div class="chat-panel-actions">
+            <button type="submit" class="btn btn-sm btn-primary chat-panel-send">전송</button>
+          </div>
+        </form>
       </div>
-      <ul class="chat-panel-list" aria-live="polite"></ul>
-      <p class="chat-panel-status" aria-live="polite"></p>
-      <form class="chat-panel-form" action="#" autocomplete="off">
-        <input type="text" class="chat-panel-input" maxlength="400" placeholder="메시지 입력…" autocomplete="off" enterkeyhint="send">
-        <button type="submit" class="btn btn-sm btn-primary chat-panel-send">전송</button>
-      </form>
-    </div>
-  `;
+    `;
+  } else {
+    root.innerHTML = `
+      <div class="chat-panel" role="dialog" aria-labelledby="chat-panel-title">
+        <div class="chat-panel-title" id="chat-panel-titlebar">
+          <h3 id="chat-panel-title">채팅</h3>
+          <button type="button" class="btn-close chat-panel-close" title="닫기" aria-label="채팅 닫기">✕</button>
+        </div>
+        <ul class="chat-panel-list" aria-live="polite"></ul>
+        <p class="chat-panel-status" aria-live="polite"></p>
+        <form class="chat-panel-form" action="#" autocomplete="off">
+          <input type="text" class="chat-panel-input" maxlength="400" placeholder="메시지 입력…" autocomplete="off" enterkeyhint="send">
+          <button type="submit" class="btn btn-sm btn-primary chat-panel-send">전송</button>
+        </form>
+      </div>
+    `;
+  }
   document.body.appendChild(root);
   return root;
 }
@@ -430,17 +501,19 @@ function clampPanel(panel) {
   panel.style.bottom = 'auto';
 }
 
-function savePosition(panel) {
+function savePosition(panel, composeOnly = false) {
   try {
     const rect = panel.getBoundingClientRect();
-    sessionStorage.setItem(POS_KEY, JSON.stringify({ left: rect.left, top: rect.top }));
+    const key = composeOnly ? POS_KEY_COMPOSE : POS_KEY;
+    sessionStorage.setItem(key, JSON.stringify({ left: rect.left, top: rect.top }));
   } catch { /* ignore */ }
 }
 
-function restorePosition(panel) {
+function restorePosition(panel, composeOnly = false) {
   if (!panel) return;
+  const key = composeOnly ? POS_KEY_COMPOSE : POS_KEY;
   try {
-    const raw = sessionStorage.getItem(POS_KEY);
+    const raw = sessionStorage.getItem(key);
     if (raw) {
       const pos = JSON.parse(raw);
       if (Number.isFinite(pos.left) && Number.isFinite(pos.top)) {

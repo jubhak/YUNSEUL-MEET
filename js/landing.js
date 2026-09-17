@@ -11,7 +11,7 @@ document.getElementById('btn-create-room').addEventListener('click', async () =>
   const errorEl = document.getElementById('host-error');
   const hostName = document.getElementById('host-name').value.trim();
   const roomCodeEl = document.getElementById('host-room-code');
-  const code = (roomCodeEl?.value || '').replace(/[^0-9]/g, '').slice(0, 4);
+  let code = (roomCodeEl?.value || '').replace(/[^0-9]/g, '').slice(0, 4);
 
   if (errorEl) {
     errorEl.textContent = '';
@@ -29,6 +29,11 @@ document.getElementById('btn-create-room').addEventListener('click', async () =>
     return;
   }
 
+  // 모바일에서 코드 자동채움 전에 누르면 실패하던 경우 방지
+  if (!code || code.length !== 4) {
+    await suggestHostRoomCode();
+    code = (roomCodeEl?.value || '').replace(/[^0-9]/g, '').slice(0, 4);
+  }
   if (!code || code.length !== 4) {
     if (errorEl) {
       errorEl.textContent = '참여 코드는 4자리 숫자여야 합니다.';
@@ -50,20 +55,40 @@ document.getElementById('btn-create-room').addEventListener('click', async () =>
 
     const interactionMode = document.querySelector('input[name="interaction-mode"]:checked')?.value
       || 'bidirectional';
+    const requireMic = interactionMode === 'bidirectional' && !!document.getElementById('require-mic')?.checked;
 
     const res = await fetch(api('create-room'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ code, interactionMode }),
+      body: JSON.stringify({ code, interactionMode, requireMic }),
     });
     const data = await res.json().catch(() => ({}));
     if (!res.ok) throw new Error(data.error || '방 생성 실패');
 
-    sessionStorage.setItem('hostToken', data.hostToken);
-    sessionStorage.setItem('roomCode', data.code);
-    sessionStorage.setItem('hostName', hostName);
-    sessionStorage.setItem('interactionMode', data.interactionMode || interactionMode);
-    window.location.href = `host.html?code=${data.code}`;
+    const token = data.hostToken || '';
+    const room = data.code || code;
+    const mode = data.interactionMode || interactionMode;
+    const reqMic = !!(data.requireMic ?? requireMic);
+
+    // 일부 모바일 브라우저에서 sessionStorage만으로 다음 페이지 전달이 실패할 수 있어 URL 백업 사용
+    try {
+      sessionStorage.setItem('hostToken', token);
+      sessionStorage.setItem('roomCode', room);
+      sessionStorage.setItem('hostName', hostName);
+      sessionStorage.setItem('interactionMode', mode);
+      sessionStorage.setItem('requireMic', reqMic ? 'true' : 'false');
+    } catch (storageErr) {
+      console.warn('[create-room] sessionStorage', storageErr);
+    }
+
+    const q = new URLSearchParams({
+      code: room,
+      ht: token,
+      hn: hostName,
+      mode,
+      rm: reqMic ? '1' : '0',
+    });
+    window.location.href = `host.html?${q.toString()}`;
   } catch (err) {
     btn.disabled = false;
     btn.textContent = '새 방 만들기';
@@ -109,6 +134,7 @@ document.getElementById('btn-join-room').addEventListener('click', async () => {
     if (data.interactionMode) {
       sessionStorage.setItem('interactionMode', data.interactionMode);
     }
+    sessionStorage.setItem('requireMic', data.requireMic ? 'true' : 'false');
     window.location.href = `viewer.html?code=${code}`;
   } catch {
     errorEl.textContent = '서버에 연결할 수 없습니다. npm start 로 Node 서버를 실행하세요.';
@@ -186,6 +212,15 @@ document.getElementById('link-show-host')?.addEventListener('click', (e) => {
 document.getElementById('link-show-join')?.addEventListener('click', (e) => {
   e.preventDefault();
   showJoinCard();
+});
+
+const micRequiredWrap = document.getElementById('mic-required-wrap');
+document.querySelectorAll('input[name="interaction-mode"]').forEach((radio) => {
+  radio.addEventListener('change', (e) => {
+    if (micRequiredWrap) {
+      micRequiredWrap.classList.toggle('hidden', e.target.value === 'unidirectional');
+    }
+  });
 });
 
 /* ── 진행 중 미팅 자동완성 (입력 방해 없이 아래로 리스트) ── */

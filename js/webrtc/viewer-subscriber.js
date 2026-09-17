@@ -39,6 +39,17 @@ export class ViewerSubscriber {
     this._remoteAudioEl = null;
     /** @type {MediaStream|null} */
     this._remoteAudioStream = null;
+    /** @type {MediaStream|null} */
+    this.cameraStream = null;
+    this.cameraWanted = false;
+    /** @type {Set<string>} */
+    this._cameraTrackIds = new Set();
+    /** @type {((info: { active: boolean, stream?: MediaStream|null }) => void)|null} */
+    this.onCameraChange = null;
+    /** @type {((info: { clientId: string, stream: MediaStream, role?: string }) => void)|null} */
+    this.onRemoteCamera = null;
+    /** @type {((clientId: string) => void)|null} */
+    this.onRemoteCameraClosed = null;
 
     this._unsubStatus = signaling.onStreamStatus((msg) => {
       if (!msg.active) {
@@ -59,6 +70,14 @@ export class ViewerSubscriber {
     });
   }
 
+  get hasCamera() {
+    return !!this.cameraStream && this.cameraStream.getVideoTracks().some((t) => t && t.readyState === 'live');
+  }
+
+  get cameraEnabled() {
+    return this.hasCamera && this.cameraStream.getVideoTracks().some((t) => t.enabled);
+  }
+
   async _ensureSfu() {
     if (this.sfu && !this.sfu._closed) return this.sfu;
     if (this._sfuReady) return this._sfuReady;
@@ -70,11 +89,15 @@ export class ViewerSubscriber {
       });
       sfu.consumeFilter = (info) => {
         const source = info?.appData?.source || '';
-        // 자기 화면 공유만 제외. 다른 참가자 마이크는 전원 청취(보이스 미팅)
-        if (source === 'viewer-display') return false;
+        // 자기 화면 공유 및 자기 카메라는 제외
+        if (source === 'viewer-display' || (source === 'viewer-camera' && info?.clientId === this.signaling.localClientId)) return false;
         if (source === 'viewer-mic') {
           return this.interactionMode !== 'unidirectional';
         }
+        if (source === 'viewer-camera') {
+          return this.interactionMode !== 'unidirectional';
+        }
+        if (source === 'camera') return true; // 호스트 카메라는 단방향/양방향 모두 수신
         if (source === 'display' || source === 'tab-audio' || source === 'mic') return true;
         if (info?.role === 'host') return true;
         if (info?.role === 'viewer' && info?.kind === 'audio') {
@@ -82,8 +105,31 @@ export class ViewerSubscriber {
         }
         return info?.kind === 'video' || info?.kind === 'audio';
       };
+      sfu.onConsumed = (info, consumer) => {
+        const source = info?.appData?.source || '';
+        const clientId = info?.clientId || info?.appData?.clientId;
+        if (source === 'camera' || source === 'viewer-camera') {
+          if (consumer.track) {
+            this._cameraTrackIds.add(consumer.track.id);
+            const camStream = new MediaStream([consumer.track]);
+            this.onRemoteCamera?.({
+              clientId,
+              stream: camStream,
+              role: info?.role || (source === 'camera' ? 'host' : 'viewer')
+            });
+            consumer.track.addEventListener('ended', () => {
+              this._cameraTrackIds.delete(consumer.track.id);
+              this.onRemoteCameraClosed?.(clientId);
+            });
+          }
+        }
+      };
       sfu.onRemoteStream = (stream) => this._attachRemote(stream);
-      sfu.onProducerClosed = () => {
+      sfu.onProducerClosed = (msg) => {
+        const clientId = msg?.clientId;
+        if (clientId) {
+          this.onRemoteCameraClosed?.(clientId);
+        }
         if (!this.hasLiveVideo()) this._notifyIfStreamDead();
       };
       await sfu.init();
@@ -278,7 +324,11 @@ export class ViewerSubscriber {
     const video = this.videoEl;
     if (!video) return;
 
-    const vtracks = (stream.getVideoTracks() || []).filter((t) => t && t.readyState !== 'ended');
+    const vtracks = (stream.getVideoTracks() || []).filter((t) => {
+      if (!t || t.readyState === 'ended') return false;
+      if (this._cameraTrackIds.has(t.id)) return false;
+      return true;
+    });
     const hasAudio = (stream.getAudioTracks() || []).some((t) => t && t.readyState !== 'ended');
 
     // 영상 먼저 연결 — 오디오 오류와 분리해서 송출 대기 고착 방지
@@ -519,9 +569,78 @@ export class ViewerSubscriber {
     }
   }
 
+  async setCameraEnabled(wanted = true) {
+    if (this.interactionMode === 'unidirectional' && wanted) {
+      throw new Error('단방향 모드에서는 카메라를 송출할 수 없습니다.');
+    }
+    this.cameraWanted = !!wanted;
+    if (!wanted) {
+      this.stopCamera();
+      return true;
+    }
+    if (this.hasCamera) {
+      this.cameraStream.getVideoTracks().forEach((t) => { t.enabled = true; });
+      this.onCameraChange?.({ active: true, stream: this.cameraStream });
+      return true;
+    }
+    if (!navigator.mediaDevices?.getUserMedia) {
+      throw new Error('이 기기/브라우저에서는 카메라를 지원하지 않습니다.');
+    }
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: {
+          facingMode: 'user',
+          width: { ideal: 640 },
+          height: { ideal: 480 },
+          frameRate: { ideal: 24, max: 30 },
+        },
+        audio: false,
+      });
+      this.cameraStream = stream;
+      const vt = stream.getVideoTracks()[0];
+      if (vt) {
+        vt.addEventListener('ended', () => {
+          this.stopCamera();
+        });
+      }
+      const sfu = await this._ensureSfu();
+      await sfu.publishStream(stream, {
+        source: 'viewer-camera',
+        trackKind: 'camera',
+      });
+      this.onCameraChange?.({ active: true, stream });
+      return true;
+    } catch (err) {
+      console.warn('[ViewerSubscriber] camera error:', err);
+      this.cameraWanted = false;
+      this.cameraStream = null;
+      this.onCameraChange?.({ active: false, stream: null });
+      return false;
+    }
+  }
+
+  stopCamera() {
+    if (this.cameraStream) {
+      this.cameraStream.getTracks().forEach((t) => {
+        try { t.stop(); } catch { /* ignore */ }
+      });
+      this.cameraStream = null;
+    }
+    this.cameraWanted = false;
+    if (this.sfu) {
+      this.sfu.stopPublishing({ source: 'viewer-camera' }).catch(() => {});
+    }
+    this.onCameraChange?.({ active: false, stream: null });
+  }
+
+  async toggleCamera() {
+    return await this.setCameraEnabled(!this.cameraEnabled);
+  }
+
   destroy() {
     try { this._unsubStatus?.(); } catch { /* ignore */ }
     this.clearRemote();
+    this.stopCamera();
     this._stopMic().catch(() => {});
     this.stopScreenShare().catch(() => {});
     try { this.sfu?.close?.(); } catch { /* ignore */ }

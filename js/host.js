@@ -10,16 +10,35 @@ import {
   getLatestViewers,
 } from './viewers-panel.js?v=20260826mic1';
 import { WebrtcSignaling } from './webrtc/signaling.js?v=20260715j';
-import { HostPublisher } from './webrtc/host-publisher.js?v=20260826sfu23';
-import { setupChatPanel } from './chat-panel.js?v=20260902chat8';
+import { HostPublisher } from './webrtc/host-publisher.js?v=20260902mobile1';
+import { setupChatPanel } from './chat-panel.js?v=20260902compose2';
 
 const params = new URLSearchParams(window.location.search);
-const roomCode = (params.get('code') || sessionStorage.getItem('roomCode') || '').toUpperCase();
-const hostToken = sessionStorage.getItem('hostToken');
-const hostName = sessionStorage.getItem('hostName') || '호스트';
+const roomCode = (params.get('code') || sessionStorage.getItem('roomCode') || '').replace(/[^0-9]/g, '').slice(0, 4);
+const hostToken = params.get('ht') || sessionStorage.getItem('hostToken') || '';
+const hostName = params.get('hn') || sessionStorage.getItem('hostName') || '호스트';
+const urlMode = params.get('mode');
 
 if (!roomCode || !hostToken) {
   window.location.href = './';
+}
+
+try {
+  sessionStorage.setItem('hostToken', hostToken);
+  sessionStorage.setItem('roomCode', roomCode);
+  sessionStorage.setItem('hostName', hostName);
+  if (urlMode) sessionStorage.setItem('interactionMode', urlMode);
+} catch { /* ignore */ }
+
+// URL에 남은 토큰 제거 (주소창 정리)
+if (params.has('ht') || params.has('hn') || params.has('mode')) {
+  try {
+    const clean = new URL(window.location.href);
+    clean.searchParams.delete('ht');
+    clean.searchParams.delete('hn');
+    clean.searchParams.delete('mode');
+    window.history.replaceState({}, '', clean.pathname + clean.search);
+  } catch { /* ignore */ }
 }
 
 document.getElementById('room-code').textContent = roomCode;
@@ -28,20 +47,31 @@ let sync = null;
 let webrtcPublisher = null;
 let knownViewerIds = new Set();
 let activeBroadcasterId = null;
-let interactionMode = sessionStorage.getItem('interactionMode') || 'bidirectional';
+let interactionMode = urlMode || sessionStorage.getItem('interactionMode') || 'bidirectional';
+let requireMic = params.get('rm') === '1' || sessionStorage.getItem('requireMic') === 'true';
 let chatPanel = null;
 
-function applyInteractionMode(mode) {
+function applyInteractionMode(mode, isRequireMic = requireMic) {
   interactionMode = mode === 'unidirectional' ? 'unidirectional' : 'bidirectional';
-  sessionStorage.setItem('interactionMode', interactionMode);
+  requireMic = interactionMode === 'bidirectional' && !!isRequireMic;
+  try {
+    sessionStorage.setItem('interactionMode', interactionMode);
+    sessionStorage.setItem('requireMic', requireMic ? 'true' : 'false');
+  } catch { /* ignore */ }
   document.body.classList.toggle('is-unidirectional', interactionMode === 'unidirectional');
   const badge = document.getElementById('mode-badge');
   if (badge) {
-    badge.textContent = interactionMode === 'unidirectional' ? '단방향' : '양방향';
-    badge.classList.toggle('is-uni', interactionMode === 'unidirectional');
-    badge.title = interactionMode === 'unidirectional'
-      ? '단방향 대규모 시청 — 참가자는 시청·채팅만'
-      : '양방향 화상 미팅';
+    if (interactionMode === 'unidirectional') {
+      badge.textContent = '단방향';
+      badge.classList.add('is-uni');
+      badge.title = '단방향 대규모 시청 — 참가자는 시청·채팅만';
+    } else {
+      badge.textContent = requireMic ? '양방향 · 마이크 필수' : '양방향';
+      badge.classList.remove('is-uni');
+      badge.title = requireMic
+        ? '양방향 화상 미팅 (마이크 필수)'
+        : '양방향 화상 미팅';
+    }
   }
   if (webrtcPublisher) webrtcPublisher.interactionMode = interactionMode;
   // 단방향: 명단에서 참가자 화면 공유 선택 비활성
@@ -51,7 +81,7 @@ function applyInteractionMode(mode) {
   }
 }
 
-applyInteractionMode(interactionMode);
+applyInteractionMode(interactionMode, requireMic);
 
 const guestShareStage = document.getElementById('guest-share-stage');
 const guestShareVideo = document.getElementById('guest-share-video');
@@ -160,6 +190,44 @@ const btnStream = document.getElementById('btn-stream');
 const btnPen = document.getElementById('btn-pen');
 const btnAvSpeaker = document.getElementById('btn-av-speaker');
 const btnAvMic = document.getElementById('btn-av-mic');
+const btnAvCam = document.getElementById('btn-av-cam');
+const camOverlayContainer = document.getElementById('cam-overlay-container');
+
+function updateCameraPip(id, stream, { label = '카메라', isMirror = false, isHost = false } = {}) {
+  if (!camOverlayContainer) return;
+  let box = document.getElementById(`cam-box-${id}`);
+  if (!stream) {
+    if (box) box.remove();
+    return;
+  }
+  if (!box) {
+    box = document.createElement('div');
+    box.id = `cam-box-${id}`;
+    box.className = 'cam-pip-box';
+    const video = document.createElement('video');
+    video.autoplay = true;
+    video.playsInline = true;
+    video.muted = true;
+    video.className = `cam-pip-video${isMirror ? ' is-mirror' : ''}`;
+    const badge = document.createElement('span');
+    badge.className = `cam-pip-badge${isHost ? ' is-host' : ''}`;
+    badge.textContent = label;
+    box.appendChild(video);
+    box.appendChild(badge);
+    camOverlayContainer.appendChild(box);
+  }
+  const v = box.querySelector('video');
+  if (v && v.srcObject !== stream) {
+    v.srcObject = stream;
+    v.play?.().catch(() => {});
+  }
+}
+
+function removeCameraPip(id) {
+  const box = document.getElementById(`cam-box-${id}`);
+  if (box) box.remove();
+}
+
 const streamOptionsGate = document.getElementById('stream-options-gate');
 const optStreamMic = document.getElementById('opt-stream-mic');
 const btnStreamStart = document.getElementById('btn-stream-start');
@@ -192,6 +260,7 @@ function syncAvButtons() {
   const micOn = webrtcPublisher?.isActive
     ? (webrtcPublisher.hasMic ? webrtcPublisher.micEnabled : preferMic)
     : preferMic;
+  const camOn = webrtcPublisher?.hasCamera ? webrtcPublisher.cameraEnabled : false;
 
   if (btnAvSpeaker) {
     btnAvSpeaker.classList.toggle('is-active', !!tabOn);
@@ -205,8 +274,27 @@ function syncAvButtons() {
     btnAvMic.setAttribute('aria-pressed', micOn ? 'true' : 'false');
     btnAvMic.title = micOn ? '마이크 켜짐' : '마이크 꺼짐';
   }
+  if (btnAvCam) {
+    btnAvCam.classList.toggle('is-active', !!camOn);
+    btnAvCam.setAttribute('aria-pressed', camOn ? 'true' : 'false');
+    btnAvCam.title = camOn ? '카메라 켜짐 — 클릭하여 끄기' : '카메라 꺼짐 — 클릭하여 켜기';
+  }
   if (optStreamMic) optStreamMic.checked = !!preferMic;
 }
+
+async function toggleCamera() {
+  if (!webrtcPublisher) return;
+  btnAvCam.disabled = true;
+  const next = !webrtcPublisher.cameraEnabled;
+  const ok = await webrtcPublisher.ensureCamera(next);
+  btnAvCam.disabled = false;
+  if (next && !ok) {
+    alert('카메라를 켤 수 없습니다. 브라우저 카메라 권한 및 연결을 확인해 주세요.');
+  }
+  syncAvButtons();
+}
+
+btnAvCam?.addEventListener('click', toggleCamera);
 
 function updateStreamUi(active, withMic = false) {
   if (!btnStream) return;
@@ -225,9 +313,46 @@ function hideSharePrompt() {
   showHostMenu();
 }
 
+function isMobileHostEnv() {
+  return /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent)
+    || (window.matchMedia && window.matchMedia('(max-width: 900px) and (pointer: coarse)').matches);
+}
+
+function canDisplayCapture() {
+  return !!(navigator.mediaDevices && typeof navigator.mediaDevices.getDisplayMedia === 'function');
+}
+
+function configureSharePromptUi() {
+  const title = document.getElementById('share-prompt-title');
+  const desc = document.getElementById('share-prompt-desc');
+  const shareBtn = document.getElementById('btn-share-now');
+  const camBtn = document.getElementById('btn-camera-share');
+  const mobile = isMobileHostEnv();
+  const hasDisplay = canDisplayCapture();
+
+  if (camBtn) camBtn.classList.toggle('hidden', !(mobile || !hasDisplay));
+  if (shareBtn) {
+    shareBtn.classList.toggle('hidden', !hasDisplay);
+    if (!hasDisplay) shareBtn.classList.add('hidden');
+  }
+
+  if (mobile || !hasDisplay) {
+    if (title) title.textContent = '송출 시작';
+    if (desc) {
+      desc.textContent = hasDisplay
+        ? '휴대폰에서는 화면 공유가 제한될 수 있습니다. 카메라로 송출하거나, 지원되면 화면 공유를 선택하세요.'
+        : '이 기기에서는 화면 공유를 지원하지 않습니다. 카메라로 송출해 주세요.';
+    }
+  } else {
+    if (title) title.textContent = '화면 공유';
+    if (desc) desc.textContent = '공유할 화면·창을 선택하면 참가자에게 바로 송출됩니다.';
+  }
+}
+
 function showSharePrompt(msg) {
   const panel = document.getElementById('upload-panel');
   const status = document.getElementById('upload-status');
+  configureSharePromptUi();
   panel?.classList.remove('hidden');
   if (status) status.textContent = msg || '';
 }
@@ -250,7 +375,11 @@ function showHostMenu() {
 }
 
 function openStreamOptions() {
-  // 중간 설정 팝업 없이 바로 OS 화면 공유 창
+  // 모바일은 안내 패널에서 카메라/화면공유를 고르게 함
+  if (isMobileHostEnv() || !canDisplayCapture()) {
+    showSharePrompt('');
+    return;
+  }
   startScreenShare();
 }
 
@@ -261,6 +390,10 @@ function closeStreamOptions() {
 async function startScreenShare() {
   if (!sync?.socket || !webrtcPublisher) {
     alert('방에 아직 연결되지 않았습니다.');
+    return;
+  }
+  if (!canDisplayCapture()) {
+    showSharePrompt('이 기기에서는 화면 공유를 지원하지 않습니다. 「카메라로 송출」을 사용해 주세요.');
     return;
   }
   const withMic = !!preferMic;
@@ -282,15 +415,20 @@ async function startScreenShare() {
     emitMicStatus(webrtcPublisher.micEnabled ? 'on' : (withMic ? 'none' : 'off'));
     hideSharePrompt();
     const ids = [...knownViewerIds];
-    // SFU 단일 경로: produce 재확인`r`n    if (ids.length) await webrtcPublisher.publishTo(ids);
+    // SFU 단일 경로: produce 재확인
+    if (ids.length) await webrtcPublisher.publishTo(ids);
   } catch (err) {
     console.warn('[stream]', err);
     updateStreamUi(false);
-    const cancelled = err?.message?.includes('Permission') || err?.name === 'NotAllowedError';
+    const cancelled = /Permission|NotAllowed|Abort|cancel/i.test(String(err?.name || '') + String(err?.message || ''));
+    const unsupported = /NotSupported|undefined|getDisplayMedia/i.test(String(err?.name || '') + String(err?.message || ''));
     showSharePrompt(cancelled
       ? '화면 공유가 취소되었습니다. 아래 버튼으로 다시 시작해 주세요.'
-      : (err?.message || '화면 송출을 시작할 수 없습니다.'));
-    if (!cancelled) {
+      : (unsupported
+        ? '이 기기에서는 화면 공유가 어렵습니다. 「카메라로 송출」을 사용해 주세요.'
+        : (err?.message || '화면 송출을 시작할 수 없습니다.')));
+    // 모바일/자동 팝업 차단은 alert로 흐름을 끊지 않음
+    if (!cancelled && !isMobileHostEnv() && !unsupported) {
       alert(`화면 송출을 시작할 수 없습니다.\n${err?.message || ''}`);
     }
   } finally {
@@ -301,6 +439,50 @@ async function startScreenShare() {
     if (shareBtn) {
       shareBtn.disabled = false;
       shareBtn.textContent = '화면 공유 시작';
+    }
+    syncAvButtons();
+  }
+}
+
+async function startCameraShare() {
+  if (!sync?.socket || !webrtcPublisher) {
+    alert('방에 아직 연결되지 않았습니다.');
+    return;
+  }
+  const withMic = preferMic !== false;
+  closeStreamOptions();
+
+  if (btnStream) {
+    btnStream.disabled = true;
+    btnStream.textContent = '카메라 준비…';
+  }
+  const camBtn = document.getElementById('btn-camera-share');
+  if (camBtn) {
+    camBtn.disabled = true;
+    camBtn.textContent = '카메라 준비…';
+  }
+  try {
+    await webrtcPublisher.startCameraCapture({ withMic, facingMode: 'environment' });
+    updateStreamUi(true, (webrtcPublisher.kinds || []).includes('mic'));
+    emitMicStatus(webrtcPublisher.micEnabled ? 'on' : (withMic ? 'none' : 'off'));
+    hideSharePrompt();
+    const ids = [...knownViewerIds];
+    if (ids.length) await webrtcPublisher.publishTo(ids);
+  } catch (err) {
+    console.warn('[camera-stream]', err);
+    updateStreamUi(false);
+    const cancelled = /Permission|NotAllowed|Abort|cancel/i.test(String(err?.name || '') + String(err?.message || ''));
+    showSharePrompt(cancelled
+      ? '카메라 권한이 거부되었습니다. 브라우저 설정에서 카메라를 허용한 뒤 다시 시도해 주세요.'
+      : (err?.message || '카메라 송출을 시작할 수 없습니다.'));
+  } finally {
+    if (btnStream && !webrtcPublisher?.isActive) {
+      btnStream.disabled = false;
+      btnStream.textContent = '송출';
+    }
+    if (camBtn) {
+      camBtn.disabled = false;
+      camBtn.textContent = '카메라로 송출';
     }
     syncAvButtons();
   }
@@ -375,12 +557,14 @@ function probeHostMicAvailability() {
 
 btnStream?.addEventListener('click', () => {
   if (webrtcPublisher?.isActive) stopScreenShare();
+  else if (isMobileHostEnv() || !canDisplayCapture()) showSharePrompt('');
   else startScreenShare();
 });
 
 btnStreamCancel?.addEventListener('click', () => closeStreamOptions());
 btnStreamStart?.addEventListener('click', () => startScreenShare());
 document.getElementById('btn-share-now')?.addEventListener('click', () => startScreenShare());
+document.getElementById('btn-camera-share')?.addEventListener('click', () => startCameraShare());
 
 optStreamMic?.addEventListener('change', () => {
   preferMic = !!optStreamMic.checked;
@@ -702,8 +886,8 @@ sync = new RoomSync({
 
 sync.start()
   .then((data) => {
-    if (data.state?.interactionMode) {
-      applyInteractionMode(data.state.interactionMode);
+    if (data.state?.interactionMode || data.state?.requireMic !== undefined) {
+      applyInteractionMode(data.state?.interactionMode || interactionMode, !!data.state?.requireMic);
     }
     activeBroadcasterId = data.state?.activeBroadcasterId || sync.clientId;
     setViewerCount(data.state?.viewerCount ?? 0, data.state?.viewers, {
@@ -751,6 +935,23 @@ sync.start()
       },
     });
     webrtcPublisher.interactionMode = interactionMode;
+    webrtcPublisher.onCameraChange = ({ active, stream }) => {
+      if (active && stream) {
+        updateCameraPip('local', stream, { label: `${hostName} (내 카메라)`, isMirror: true, isHost: true });
+      } else {
+        removeCameraPip('local');
+      }
+      syncAvButtons();
+    };
+    webrtcPublisher.onRemoteCamera = ({ clientId, stream }) => {
+      const viewers = getLatestViewers() || [];
+      const v = viewers.find((x) => x.clientId === clientId || x.id === clientId);
+      const label = v ? `${v.name || '참가자'}` : '참가자';
+      updateCameraPip(clientId, stream, { label, isMirror: false, isHost: false });
+    };
+    webrtcPublisher.onRemoteCameraClosed = (clientId) => {
+      removeCameraPip(clientId);
+    };
     webrtcPublisher.onRelayChange = ({ peerId, active, stream }) => {
       if (active && stream) {
         const name = getLatestViewers().find((v) => v.id === peerId)?.name || '참가자';
@@ -774,12 +975,17 @@ sync.start()
       }
     };
 
-    // 입장 직후 호스트 메뉴 표시 + 화면 공유 창
+    // 입장 직후 호스트 메뉴 표시
+    // 모바일: 자동 화면공유는 사용자 제스처 없이 실패하므로 안내만 표시
     showHostMenu();
     probeHostMicAvailability();
-    setTimeout(() => {
-      if (!webrtcPublisher?.isActive) startScreenShare();
-    }, 120);
+    if (isMobileHostEnv() || !canDisplayCapture()) {
+      showSharePrompt('');
+    } else {
+      setTimeout(() => {
+        if (!webrtcPublisher?.isActive) startScreenShare();
+      }, 120);
+    }
   })
   .catch((err) => {
     console.warn('방 연결 실패:', err);

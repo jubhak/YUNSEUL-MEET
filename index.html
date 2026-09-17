@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>YUNSEUL PPT - 실시간 발표 공유</title>
-  <link rel="stylesheet" href="css/style.css?v=20260902chat2">
+  <link rel="stylesheet" href="css/style.css?v=20260916opt1">
 </head>
 <body class="landing-page">
   <div class="landing-container">
@@ -46,20 +46,28 @@
           <legend>미팅 방식</legend>
           <label class="room-mode-option">
             <input type="radio" name="interaction-mode" value="bidirectional" checked>
-            <span>
-              <strong>양방향</strong>
-              <small>화상 미팅 — 마이크·화면 공유(기존 방식)</small>
+            <span class="room-mode-text">
+              <span class="room-mode-title">양방향</span>
+              <span class="room-mode-desc">화상 미팅 — 마이크·화면 공유(기존 방식)</span>
             </span>
           </label>
           <label class="room-mode-option">
             <input type="radio" name="interaction-mode" value="unidirectional">
-            <span>
-              <strong>단방향</strong>
-              <small>대규모 시청(약 1000명) — 호스트 송출만, 채팅은 동일</small>
+            <span class="room-mode-text">
+              <span class="room-mode-title">단방향</span>
+              <span class="room-mode-desc">대규모 시청(약 1000명) — 호스트 송출만, 채팅은 동일</span>
             </span>
           </label>
         </fieldset>
-        <button id="btn-create-room" class="btn btn-primary btn-lg">새 방 만들기</button>
+        <div id="mic-required-wrap" class="form-group mic-required-group">
+          <label class="checkbox-option">
+            <input type="checkbox" id="require-mic" name="require-mic">
+            <span class="checkbox-text">
+              <span class="checkbox-title">마이크 사용 필수</span>
+              <span class="checkbox-desc">마이크가 연결되고 활성화된 참가자만 입장 가능</span>
+            </span>
+          </label>
+        </div>
         <div class="form-group host-code-group">
           <label for="host-room-code">참여 코드</label>
           <div class="host-code-row">
@@ -68,15 +76,17 @@
           </div>
           <p id="host-code-hint" class="host-code-hint">참가자에게 알려줄 4자리 코드입니다. 직접 바꿀 수 있어요.</p>
         </div>
+        <hr class="host-divider">
+        <button id="btn-create-room" class="btn btn-primary btn-lg">새 방 만들기</button>
         <p id="host-error" class="error-text hidden"></p>
-        <p class="landing-switch">
-          <a href="#join" id="link-show-join">방 참가하기</a>
+        <p class="landing-switch host-landing-switch">
+          <a href="#join" id="link-show-join">방 참가하기로 돌아가기</a>
         </p>
       </section>
     </main>
 
   </div>
 
-  <script type="module" src="js/landing.js?v=20260901mode1"></script>
+  <script type="module" src="js/landing.js?v=20260902mobile2"></script>
 </body>
 </html>

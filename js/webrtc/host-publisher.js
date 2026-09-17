@@ -40,6 +40,15 @@ export class HostPublisher {
     this._viewerAudioMix = null;
     /** @type {((info: { peerId: string|null, active: boolean, stream?: MediaStream|null }) => void)|null} */
     this.onRelayChange = null;
+    /** @type {MediaStream|null} */
+    this.cameraStream = null;
+    this.cameraWanted = false;
+    /** @type {((info: { active: boolean, stream?: MediaStream|null }) => void)|null} */
+    this.onCameraChange = null;
+    /** @type {((info: { clientId: string, stream: MediaStream, role?: string }) => void)|null} */
+    this.onRemoteCamera = null;
+    /** @type {((clientId: string) => void)|null} */
+    this.onRemoteCameraClosed = null;
 
     this._unsubLeft = signaling.onPeerLeft((msg) => this._onPeerLeft(msg));
   }
@@ -58,6 +67,14 @@ export class HostPublisher {
 
   get hasTabAudio() {
     return this._tabAudioTracks.some((t) => t && t.readyState === 'live');
+  }
+
+  get hasCamera() {
+    return !!this.cameraStream && this.cameraStream.getVideoTracks().some((t) => t && t.readyState === 'live');
+  }
+
+  get cameraEnabled() {
+    return this.hasCamera && this.cameraStream.getVideoTracks().some((t) => t.enabled);
   }
 
   get hasMic() {
@@ -82,7 +99,7 @@ export class HostPublisher {
     this.sfu.consumeFilter = (info) => {
       if (this.interactionMode === 'unidirectional') return false;
       const source = info?.appData?.source || '';
-      return source === 'viewer-display' || source === 'viewer-mic';
+      return source === 'viewer-display' || source === 'viewer-mic' || source === 'viewer-camera';
     };
     this.sfu.onConsumed = (info, consumer) => this._onRemoteConsumed(info, consumer);
     this.sfu.onProducerClosed = (msg) => this._onRemoteProducerClosed(msg);
@@ -103,6 +120,15 @@ export class HostPublisher {
     const source = info?.appData?.source || '';
     const clientId = info?.clientId || info?.appData?.clientId;
     if (!clientId || clientId === this.signaling.localClientId) return;
+
+    if (source === 'viewer-camera') {
+      const ms = new MediaStream([consumer.track]);
+      this.onRemoteCamera?.({ clientId, stream: ms, role: 'viewer' });
+      consumer.track.addEventListener('ended', () => {
+        this.onRemoteCameraClosed?.(clientId);
+      });
+      return;
+    }
 
     if (source === 'viewer-display' || (consumer.kind === 'video' && info?.role === 'viewer')) {
       let ms = this._viewerDisplayStreams.get(clientId);
@@ -133,6 +159,7 @@ export class HostPublisher {
     }
     if (clientId) {
       this._viewerDisplayStreams.delete(clientId);
+      this.onRemoteCameraClosed?.(clientId);
     }
   }
 
@@ -219,6 +246,60 @@ export class HostPublisher {
     return stream;
   }
 
+  /**
+   * 모바일 등 화면공유 미지원 환경용 — 카메라(+선택 마이크) 송출
+   * @param {{ withMic?: boolean, facingMode?: 'user' | 'environment' }} opts
+   */
+  async startCameraCapture({ withMic = true, facingMode = 'environment' } = {}) {
+    if (this.localStream) this.stopCaptureOnly();
+
+    this.tabAudioWanted = false;
+    this.micWanted = !!withMic;
+    this._tabAudioTracks = [];
+    this._micTracks = [];
+    this._audioShareMissing = false;
+
+    if (!navigator.mediaDevices?.getUserMedia) {
+      throw new Error('이 기기/브라우저에서는 카메라 송출을 지원하지 않습니다.');
+    }
+
+    const stream = await navigator.mediaDevices.getUserMedia({
+      video: {
+        facingMode: { ideal: facingMode },
+        width: { ideal: 1280 },
+        height: { ideal: 720 },
+        frameRate: { ideal: 24, max: 30 },
+      },
+      audio: false,
+    });
+
+    this.kinds = [TRACK_KIND.DISPLAY];
+    this.localStream = stream;
+    this._ownStream = stream;
+    this._relayStream = null;
+    this._relayPeerId = null;
+    this.active = true;
+
+    const vt = stream.getVideoTracks()[0];
+    if (vt) {
+      try { vt.contentHint = 'motion'; } catch { /* ignore */ }
+      vt.addEventListener('ended', () => {
+        this.stop();
+      });
+    }
+
+    if (withMic) {
+      await this.ensureMic(true);
+    }
+
+    await this._publishToSfu();
+    this._ensureSfuRecv().catch((err) => {
+      console.warn('[HostPublisher] sfu recv', err);
+    });
+    this._emitStatus();
+    return stream;
+  }
+
   async _publishToSfu() {
     const sfu = await this._ensureSfu();
     const video =
@@ -268,6 +349,93 @@ export class HostPublisher {
         console.warn('[HostPublisher] mic produce', err);
       }
     }
+
+    if (this.cameraWanted && this.cameraStream) {
+      const camTracks = this.cameraStream.getVideoTracks().filter((t) => t?.readyState === 'live');
+      if (camTracks.length) {
+        try {
+          await sfu.publishStream(new MediaStream(camTracks), {
+            source: 'camera',
+            trackKind: TRACK_KIND.CAMERA,
+          });
+        } catch (err) {
+          console.warn('[HostPublisher] camera produce', err);
+        }
+      }
+    }
+  }
+
+  async ensureCamera(wanted = true) {
+    this.cameraWanted = !!wanted;
+    if (!wanted) {
+      this.stopCamera();
+      return false;
+    }
+    if (this.hasCamera) {
+      this.cameraStream.getVideoTracks().forEach((t) => { t.enabled = true; });
+      this.onCameraChange?.({ active: true, stream: this.cameraStream });
+      return true;
+    }
+    if (!navigator.mediaDevices?.getUserMedia) {
+      throw new Error('이 기기/브라우저에서는 카메라를 지원하지 않습니다.');
+    }
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: {
+          facingMode: 'user',
+          width: { ideal: 640 },
+          height: { ideal: 480 },
+          frameRate: { ideal: 24, max: 30 },
+        },
+        audio: false,
+      });
+      this.cameraStream = stream;
+      const vt = stream.getVideoTracks()[0];
+      if (vt) {
+        vt.addEventListener('ended', () => {
+          this.stopCamera();
+        });
+      }
+
+      // SFU가 이미 준비되어 있다면 송출
+      if (this.sfu && this.sfu.sendTransport) {
+        try {
+          await this.sfu.publishStream(stream, {
+            source: 'camera',
+            trackKind: TRACK_KIND.CAMERA,
+          });
+        } catch (err) {
+          console.warn('[HostPublisher] publish camera failed:', err);
+        }
+      }
+      this.onCameraChange?.({ active: true, stream });
+      return true;
+    } catch (err) {
+      console.warn('[HostPublisher] ensureCamera failed:', err);
+      this.cameraWanted = false;
+      this.cameraStream = null;
+      this.onCameraChange?.({ active: false, stream: null });
+      return false;
+    }
+  }
+
+  stopCamera() {
+    if (this.cameraStream) {
+      this.cameraStream.getTracks().forEach((t) => {
+        try { t.stop(); } catch { /* ignore */ }
+      });
+      this.cameraStream = null;
+    }
+    this.cameraWanted = false;
+    if (this.sfu) {
+      this.sfu.stopPublishing({ source: 'camera' }).catch(() => {});
+    }
+    this.onCameraChange?.({ active: false, stream: null });
+  }
+
+  async toggleCamera() {
+    const next = !this.cameraEnabled;
+    return await this.ensureCamera(next);
   }
 
   async _cropToCaptureRoot(stream, el) {
@@ -559,6 +727,7 @@ export class HostPublisher {
   }
 
   stopCaptureOnly() {
+    this.stopCamera();
     if (this._hostMicLevelTimer) {
       clearInterval(this._hostMicLevelTimer);
       this._hostMicLevelTimer = null;

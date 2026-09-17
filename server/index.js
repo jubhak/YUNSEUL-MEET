@@ -59,6 +59,9 @@ function isCodeTaken(code) {
 }
 
 function makeRoomCode() {
+  // 기본 선호 코드: 비어 있으면 1324 우선
+  if (!isCodeTaken('1324')) return '1324';
+
   let code;
   let attempts = 0;
   do {
@@ -73,7 +76,8 @@ function normalizeInteractionMode(mode) {
   return mode === 'unidirectional' ? 'unidirectional' : 'bidirectional';
 }
 
-function defaultRoom(code, hostToken, interactionMode = 'bidirectional') {
+function defaultRoom(code, hostToken, interactionMode = 'bidirectional', requireMic = false) {
+  const normMode = normalizeInteractionMode(interactionMode);
   return {
     code,
     hostToken,
@@ -84,7 +88,8 @@ function defaultRoom(code, hostToken, interactionMode = 'bidirectional') {
     hostMicState: 'off', // on | off | none
     activeBroadcasterId: null,
     // bidirectional: 기존 화상 미팅 / unidirectional: 대규모 시청(참가자 produce 없음)
-    interactionMode: normalizeInteractionMode(interactionMode),
+    interactionMode: normMode,
+    requireMic: normMode === 'bidirectional' && !!requireMic,
     presentation: null,
     currentSlide: 0,
     drawings: {},
@@ -195,6 +200,7 @@ function roomPath(code) {
 }
 
 function persistRoom(room) {
+  const normMode = normalizeInteractionMode(room.interactionMode);
   const data = {
     code: room.code,
     hostToken: room.hostToken,
@@ -210,7 +216,8 @@ function persistRoom(room) {
     streamKinds: Array.isArray(room.streamKinds) ? room.streamKinds : [],
     hostName: room.hostName || '호스트',
     activeBroadcasterId: room.activeBroadcasterId || null,
-    interactionMode: normalizeInteractionMode(room.interactionMode),
+    interactionMode: normMode,
+    requireMic: normMode === 'bidirectional' && !!room.requireMic,
     ended: room.ended,
     endedAt: room.endedAt,
     createdAt: room.createdAt,
@@ -227,7 +234,8 @@ function loadRoomFromDisk(code) {
   if (!fs.existsSync(p)) return null;
   try {
     const raw = JSON.parse(fs.readFileSync(p, 'utf8'));
-    const room = defaultRoom(raw.code, raw.hostToken, raw.interactionMode);
+    const normMode = normalizeInteractionMode(raw.interactionMode);
+    const room = defaultRoom(raw.code, raw.hostToken, normMode, !!raw.requireMic);
     Object.assign(room, {
       // 디스크의 hostConnected는 신뢰하지 않음 — 실제 소켓이 있을 때만 true
       hostConnected: false,
@@ -241,7 +249,8 @@ function loadRoomFromDisk(code) {
       streamKinds: Array.isArray(raw.streamKinds) ? raw.streamKinds : [],
       hostName: raw.hostName || '호스트',
       activeBroadcasterId: raw.activeBroadcasterId || null,
-      interactionMode: normalizeInteractionMode(raw.interactionMode),
+      interactionMode: normMode,
+      requireMic: normMode === 'bidirectional' && !!raw.requireMic,
       ended: !!raw.ended,
       endedAt: raw.endedAt || 0,
       createdAt: raw.createdAt || Date.now(),
@@ -304,6 +313,7 @@ function viewersPayload(room) {
 
 function publicState(room) {
   const broadcasterId = room.activeBroadcasterId || room.hostClientId || null;
+  const normMode = normalizeInteractionMode(room.interactionMode);
   return {
     code: room.code,
     hostConnected: !!room.hostConnected,
@@ -319,7 +329,8 @@ function publicState(room) {
     streamActive: !!room.streamActive,
     streamKinds: Array.isArray(room.streamKinds) ? room.streamKinds : [],
     popup: room.popup || null,
-    interactionMode: normalizeInteractionMode(room.interactionMode),
+    interactionMode: normMode,
+    requireMic: normMode === 'bidirectional' && !!room.requireMic,
   };
 }
 
@@ -670,13 +681,18 @@ app.post('/api/create-room', (req, res) => {
 
   const hostToken = crypto.randomBytes(16).toString('hex');
   const interactionMode = normalizeInteractionMode(req.body?.interactionMode);
-  const room = defaultRoom(code, hostToken, interactionMode);
-  ensureRoomLogDir(room);
+  const requireMic = interactionMode === 'bidirectional' && !!req.body?.requireMic;
+  const room = defaultRoom(code, hostToken, interactionMode, requireMic);
+  try {
+    ensureRoomLogDir(room);
+  } catch (err) {
+    console.warn('[create-room] log dir', err);
+  }
   rooms.set(code, room);
   persistRoom(room);
   // 호스트가 들어오지 않으면 유예 후 폐기
   maybeScheduleEmptyRoomDispose(room);
-  res.json({ code, hostToken, interactionMode: room.interactionMode });
+  res.json({ code, hostToken, interactionMode: room.interactionMode, requireMic: !!room.requireMic });
 });
 
 app.get('/api/get-room', (req, res) => {
@@ -812,12 +828,17 @@ app.post('/api/create-room.php', (req, res) => {
   }
   const hostToken = crypto.randomBytes(16).toString('hex');
   const interactionMode = normalizeInteractionMode(req.body?.interactionMode);
-  const room = defaultRoom(code, hostToken, interactionMode);
-  ensureRoomLogDir(room);
+  const requireMic = interactionMode === 'bidirectional' && !!req.body?.requireMic;
+  const room = defaultRoom(code, hostToken, interactionMode, requireMic);
+  try {
+    ensureRoomLogDir(room);
+  } catch (err) {
+    console.warn('[create-room.php] log dir', err);
+  }
   rooms.set(code, room);
   persistRoom(room);
   maybeScheduleEmptyRoomDispose(room);
-  res.json({ code, hostToken, interactionMode: room.interactionMode });
+  res.json({ code, hostToken, interactionMode: room.interactionMode, requireMic: !!room.requireMic });
 });
 app.get('/api/get-room.php', (req, res) => {
   const room = getRoom(req.query.code);
