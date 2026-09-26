@@ -100,11 +100,6 @@
       av.style.setProperty('visibility', 'visible', 'important');
       av.style.setProperty('opacity', '1', 'important');
     }
-    var reloadBtn = document.getElementById('btn-reload-ppt');
-    if (reloadBtn) {
-      reloadBtn.style.setProperty('display', '', 'important');
-      reloadBtn.style.setProperty('visibility', 'visible', 'important');
-    }
     toolbar && toolbar.querySelectorAll('#btn-pen, #btn-av-speaker, #btn-av-mic').forEach(function (btn) {
       btn.style.setProperty('display', 'inline-flex', 'important');
       btn.style.setProperty('visibility', 'visible', 'important');

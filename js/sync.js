@@ -51,14 +51,19 @@ export class RoomSync {
       path: '/socket.io',
       transports: ['websocket', 'polling'],
       reconnection: true,
-      reconnectionDelay: 500,
+      reconnectionDelay: 300,
+      reconnectionDelayMax: 1500,
       reconnectionAttempts: Infinity,
+      timeout: 8000,
     });
+
+    let hasConnectedOnce = false;
 
     await new Promise((resolve, reject) => {
       const t = setTimeout(() => reject(new Error('서버 연결 시간 초과. Node 서버가 실행 중인지 확인하세요.')), 12000);
       this.socket.once('connect', () => {
         clearTimeout(t);
+        hasConnectedOnce = true;
         resolve();
       });
       this.socket.once('connect_error', (err) => {
@@ -67,18 +72,30 @@ export class RoomSync {
       });
     });
 
+    this.bindEvents();
     const data = await this._emitJoin();
     this.joined = data;
-    this.bindEvents();
 
-    // 서버 재시작 후 방·FLAG 복구용 (피어 재생성 없음)
-    this.socket.on('reconnect', () => {
+    // 1차 안전망: Socket.IO v4 재접속 시 자동 방 재체결 (이벤트 유실 완전 방지)
+    this.socket.on('connect', () => {
+      if (hasConnectedOnce) {
+        console.log('[RoomSync] socket reconnected -> rejoining...');
+        this._rejoin();
+      }
+    });
+    this.socket.io?.on('reconnect', () => {
+      console.log('[RoomSync] socket.io manager reconnect -> rejoining...');
       this._rejoin();
     });
 
+    // 4초 주기 고속 하트비트 및 소켓 생존 모니터링
     this.heartbeatTimer = setInterval(() => {
-      if (this.socket?.connected) this.socket.emit('heartbeat');
-    }, 10000);
+      if (this.socket?.connected) {
+        this.socket.emit('heartbeat');
+      } else if (this.socket && !this.socket.connected) {
+        try { this.socket.connect(); } catch { /* ignore */ }
+      }
+    }, 4000);
 
     return data;
   }
@@ -88,9 +105,10 @@ export class RoomSync {
     this._rejoining = true;
     try {
       this.joined = await this._emitJoin();
+      console.log('[RoomSync] successfully rejoined room:', this.code);
       this.onRejoined(this.joined);
     } catch (err) {
-      console.warn('[RoomSync] rejoin', err);
+      console.warn('[RoomSync] rejoin retry error', err);
     } finally {
       this._rejoining = false;
     }
@@ -115,6 +133,7 @@ export class RoomSync {
       'presentation-ready',
       'viewer-count',
       'session-end',
+      'start-meeting-countdown',
       'stream-status',
       'peer-joined',
       'peer-left',
@@ -128,6 +147,13 @@ export class RoomSync {
         this.onEvent(type, payload || {});
       });
     });
+    if (typeof this.socket.onAny === 'function') {
+      this.socket.onAny((type, payload) => {
+        if (!types.includes(type)) {
+          this.onEvent(type, payload || {});
+        }
+      });
+    }
   }
 
   async emit(type, payload = {}) {

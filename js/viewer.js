@@ -2,16 +2,20 @@
  * 참가자: WebRTC로 호스트 화면을 시청 (화상회의 수신 모드)
  * PPT ZIP/동영상 추출 없음 — 추후 다자 화상 UI를 같은 레이어에 확장 가능
  */
-import { RoomSync } from './sync.js?v=20260728b';
+import { RoomSync } from './sync.js?v=20260919failsafe1';
 import {
   setViewerCount,
   setupViewersPanel,
   setSelectedBroadcaster,
 } from './viewers-panel.js?v=20260826mic1';
 import { WebrtcSignaling } from './webrtc/signaling.js?v=20260715j';
-import { ViewerSubscriber } from './webrtc/viewer-subscriber.js?v=20260826share1';
+import { ViewerSubscriber } from './webrtc/viewer-subscriber.js?v=20260919clean1';
 import { setupViewerZoom } from './viewer-zoom.js?v=20260819b';
-import { setupChatPanel } from './chat-panel.js?v=20260902compose2';
+import { setupChatPanel } from './chat-panel.js?v=20260918fix2';
+import { CamFocusManager, VoiceActivityMonitor } from './cam-focus-manager.js?v=20260918focus1';
+import { TarotLoungeManager } from './tarot-lounge-manager.js?v=20260918pen2';
+import { DrawCanvas } from './draw-canvas.js?v=20260918pen2';
+import { attachVideoFreezeWatchdog } from './webrtc/video-freeze-watchdog.js?v=20260925smooth1';
 
 const params = new URLSearchParams(window.location.search);
 const roomCode = (params.get('code') || sessionStorage.getItem('roomCode') || '').toUpperCase();
@@ -29,6 +33,7 @@ const waitingTitle = document.getElementById('waiting-title');
 const waitingDesc = document.getElementById('waiting-desc');
 const liveStage = document.getElementById('live-stage');
 const liveVideo = document.getElementById('live-video');
+const viewerDrawCanvasEl = document.getElementById('viewer-draw-canvas');
 const syncStatus = document.getElementById('sync-status');
 const unmuteBanner = document.getElementById('unmute-banner');
 const viewerLinkGate = document.getElementById('viewer-link-gate');
@@ -37,6 +42,20 @@ const viewerLinkOpen = document.getElementById('viewer-link-open');
 const viewerLinkClose = document.getElementById('viewer-link-close');
 const viewerLinkDismiss = document.getElementById('viewer-link-dismiss');
 const viewerLinkChip = document.getElementById('viewer-link-chip');
+
+let streamOfflineTimer = null;
+let viewerDrawCanvas = null;
+if (viewerDrawCanvasEl) {
+  viewerDrawCanvas = new DrawCanvas(viewerDrawCanvasEl, {
+    isHost: false,
+  });
+}
+
+if (liveVideo) {
+  liveVideo.addEventListener('loadedmetadata', () => viewerDrawCanvas?.resize());
+  liveVideo.addEventListener('play', () => viewerDrawCanvas?.resize());
+}
+window.addEventListener('resize', () => viewerDrawCanvas?.resize());
 
 /** 로컬 핀치 줌 — 호스트 화면 전환과 무관하게 유지 */
 setupViewerZoom(liveStage);
@@ -48,6 +67,8 @@ let interactionMode = 'bidirectional';
 let requireMic = sessionStorage.getItem('requireMic') === 'true';
 /** 호스트가 아직 링크를 열어 둔 동안 유지 */
 let activeHostLink = null; // { url, title }
+let isMeetingStarted = false;
+let currentViewers = [];
 
 function applyInteractionMode(mode, isRequireMic = requireMic) {
   interactionMode = mode === 'unidirectional' ? 'unidirectional' : 'bidirectional';
@@ -71,7 +92,12 @@ function applyInteractionMode(mode, isRequireMic = requireMic) {
         : '양방향 화상 미팅';
     }
   }
-  if (subscriber) subscriber.interactionMode = interactionMode;
+  if (subscriber) {
+    subscriber.interactionMode = interactionMode;
+    if (interactionMode === 'bidirectional') {
+      subscriber.ensureReceiving?.().catch(() => {});
+    }
+  }
   if (interactionMode === 'unidirectional' && subscriber?.micOn) {
     subscriber.setMicEnabled(false).catch(() => {});
   }
@@ -154,11 +180,18 @@ function showLive() {
     showSelfSharing();
     return;
   }
+  // 호스트가 미팅 시작하기를 누르기 전에는 실시간 화면을 노출하지 않고 타로 대기실(카드 배치) 유지
+  if (!isMeetingStarted) {
+    showTarotLounge();
+    return;
+  }
+  tarotLounge.hide();
   waitingPanel?.classList.remove('is-self-sharing');
   waitingPanel?.classList.add('hidden');
   liveStage?.classList.remove('hidden');
   document.body.classList.add('has-presentation');
   document.getElementById('btn-stop-self-share')?.classList.add('hidden');
+  viewerDrawCanvas?.resize();
 }
 
 /** 내가 화면 공유 중 — 호스트 영상(자기 화면 에코) 숨기고 안내만 표시 */
@@ -287,6 +320,54 @@ document.getElementById('btn-session-end-ok')?.addEventListener('click', () => {
   window.location.href = './';
 });
 
+function initFullscreenPrompt() {
+  const gate = document.getElementById('fullscreen-prompt-gate');
+  const btnYes = document.getElementById('btn-fs-prompt-yes');
+  const btnNo = document.getElementById('btn-fs-prompt-no');
+  if (!gate) return;
+
+  // 이미 전체화면 상태라면 팝업을 띄우지 않음
+  if (document.fullscreenElement || document.webkitFullscreenElement) {
+    return;
+  }
+
+  // 접속 시 전체화면 시청 여부 질의 모달 노출
+  gate.classList.remove('hidden');
+
+  const closePrompt = () => {
+    gate.classList.add('hidden');
+    // 사용자 클릭 제스처를 통해 브라우저 오디오/비디오 잠금 즉시 해제
+    try {
+      subscriber?._ensureGlobalAudioUnlock?.();
+      subscriber?.unlockAudio?.();
+      liveVideo?.play?.().catch(() => {});
+    } catch { /* ignore */ }
+  };
+
+  btnYes?.addEventListener('click', async () => {
+    closePrompt();
+    try {
+      const docEl = document.documentElement;
+      if (docEl.requestFullscreen) {
+        await docEl.requestFullscreen();
+      } else if (docEl.webkitRequestFullscreen) {
+        await docEl.webkitRequestFullscreen();
+      }
+      // 모바일 기기는 가로 방향으로 잠금 시도
+      try {
+        const orient = screen.orientation || screen.mozOrientation || screen.msOrientation;
+        if (orient?.lock) await orient.lock('landscape');
+      } catch { /* ignore */ }
+    } catch (err) {
+      console.warn('[viewer] fullscreen request failed:', err);
+    }
+  }, { once: true });
+
+  btnNo?.addEventListener('click', () => {
+    closePrompt();
+  }, { once: true });
+}
+
 document.getElementById('btn-mic-retry')?.addEventListener('click', async () => {
   hideMicRequiredGate();
   if (subscriber) {
@@ -306,39 +387,42 @@ unmuteBanner?.classList.add('hidden');
 const btnAvSpeaker = document.getElementById('btn-av-speaker');
 const btnAvMic = document.getElementById('btn-av-mic');
 const btnAvCam = document.getElementById('btn-av-cam');
+const deepLiveCamModal = document.getElementById('deep-live-cam-modal');
+const btnDlcClose = document.getElementById('btn-dlc-close');
+const btnLaunchDlc = document.getElementById('btn-launch-dlc');
 const camOverlayContainer = document.getElementById('cam-overlay-container');
+const camFocusManager = new CamFocusManager({ containerId: 'cam-overlay-container' });
+camFocusManager.onFocusChange = (focusedId) => {
+  const avMgr = subscriber?.avatarManager;
+  if (avMgr) {
+    avMgr.setHighRes(focusedId === 'local');
+    updateAvatarUi();
+  }
+};
+const vadMonitor = new VoiceActivityMonitor({ threshold: 0.026, holdMs: 5000 });
+const tarotLounge = new TarotLoungeManager({ containerId: 'tarot-waiting-lounge', isHost: false });
+
+/** 호스트 화면 송출이 없거나 미팅 시작 전 대기실일 때 타로 카드 대기실 표시 */
+function showTarotLounge() {
+  if (subscriber?.sharingScreen) return;
+  liveStage?.classList.add('hidden');
+  document.body.classList.remove('has-presentation');
+  waitingPanel?.classList.add('hidden');
+  tarotLounge.show();
+  tarotLounge.renderParticipants(currentViewers);
+  syncStatus.textContent = isMeetingStarted ? '송출 대기' : '미팅 준비중';
+  unmuteBanner?.classList.add('hidden');
+}
 
 function updateCameraPip(id, stream, { label = '카메라', isMirror = false, isHost = false } = {}) {
-  if (!camOverlayContainer) return;
-  let box = document.getElementById(`cam-box-${id}`);
-  if (!stream) {
-    if (box) box.remove();
-    return;
-  }
-  if (!box) {
-    box = document.createElement('div');
-    box.id = `cam-box-${id}`;
-    box.className = 'cam-pip-box';
-    const video = document.createElement('video');
-    video.autoplay = true;
-    video.playsInline = true;
-    video.muted = true;
-    video.className = `cam-pip-video${isMirror ? ' is-mirror' : ''}`;
-    const badge = document.createElement('span');
-    badge.className = `cam-pip-badge${isHost ? ' is-host' : ''}`;
-    badge.textContent = label;
-    box.appendChild(video);
-    box.appendChild(badge);
-    camOverlayContainer.appendChild(box);
-  }
-  const v = box.querySelector('video');
-  if (v && v.srcObject !== stream) {
-    v.srcObject = stream;
-    v.play?.().catch(() => {});
-  }
+  // 클라이언트는 영상 화면을 보는 제어권이 없고 오직 호스트 송출 화면만 봄.
+  // 클라이언트 별도 영상 오버레이/PIP 렌더링을 차단하여 비디오 디코딩 부하 및 화면 멈춤/고속 재생 완벽 제거
+  return;
 }
 
 function removeCameraPip(id) {
+  camFocusManager.onBoxRemoved(id);
+  vadMonitor.detach(id);
   const box = document.getElementById(`cam-box-${id}`);
   if (box) box.remove();
 }
@@ -377,7 +461,231 @@ function syncAvButtons() {
     btnAvCam.setAttribute('aria-pressed', camOn ? 'true' : 'false');
     btnAvCam.title = camOn ? '카메라 켜짐 — 클릭하여 끄기' : '카메라 꺼짐 — 클릭하여 켜기';
   }
+  updateAvatarUi();
 }
+
+function onAvatarRandomClick() {
+  if (!subscriber?.avatarManager) return;
+  subscriber.avatarManager.nextAvatar();
+  updateAvatarUi();
+}
+
+function onAvatarToggleClick() {
+  if (!subscriber?.avatarManager) return;
+  if (!subscriber.avatarManager.isReal && !subscriber.rawCameraStream) {
+    alert('이 PC에는 실제 웹캠이 감지되지 않아 가상 얼굴(아바타) 모드로 유지됩니다.');
+    return;
+  }
+  subscriber.avatarManager.toggleMode();
+  updateAvatarUi();
+}
+
+async function applyFaceAndStartCamera(faceApplyFn) {
+  closeDeepLiveCamModal();
+  if (!subscriber) return;
+  if (interactionMode === 'unidirectional') {
+    alert('단방향(대규모 시청) 모드에서는 카메라를 사용할 수 없습니다.');
+    return;
+  }
+
+  const camAlreadyActive = !!(subscriber.hasCamera && subscriber.cameraEnabled);
+
+  if (camAlreadyActive) {
+    const avMgr = subscriber.avatarManager;
+    if (avMgr && typeof faceApplyFn === 'function') {
+      faceApplyFn(avMgr);
+    }
+    updateAvatarUi();
+  } else {
+    btnAvCam.disabled = true;
+    try {
+      const avMgr = subscriber.avatarManager;
+      if (avMgr && typeof faceApplyFn === 'function') {
+        faceApplyFn(avMgr);
+      }
+      const ok = await subscriber.setCameraEnabled(true);
+      if (!ok) {
+        const err = subscriber._lastCameraError;
+        alert(`카메라를 켤 수 없습니다: ${err?.message || '장치 권한 및 상태를 확인해 주세요.'}`);
+        return;
+      }
+      if (avMgr && typeof faceApplyFn === 'function') {
+        faceApplyFn(avMgr);
+      }
+      showAvToast('카메라 켜기');
+      updateAvatarUi();
+    } catch (err) {
+      alert(`카메라 오류: ${err?.message || err}`);
+    } finally {
+      btnAvCam.disabled = false;
+      syncAvButtons();
+    }
+  }
+}
+
+function onSelectHero(heroId) {
+  applyFaceAndStartCamera((avMgr) => {
+    avMgr.setSwapFace(heroId);
+  });
+}
+
+function onResetReal() {
+  applyFaceAndStartCamera((avMgr) => {
+    avMgr.activeSwapFace = null;
+    avMgr.setRealMode?.();
+  });
+}
+
+async function loadModalPhotos() {
+  const grid = document.getElementById('dlc-hero-grid');
+  if (!grid) return;
+  try {
+    const res = await fetch('/api/photos');
+    const data = await res.json();
+    if (!data.ok || !Array.isArray(data.photos)) return;
+
+    grid.innerHTML = '';
+    const avMgr = subscriber?.avatarManager;
+    const curSwap = (avMgr?.isSwap ? avMgr.activeSwapFace : '') || '';
+
+    data.photos.forEach((photo) => {
+      const card = document.createElement('div');
+      card.className = 'dlc-hero-card';
+      card.dataset.hero = photo.id;
+      card.id = `card-hero-${photo.id}`;
+      const isCur = curSwap === photo.id;
+      if (isCur) card.classList.add('is-active');
+
+      card.innerHTML = `
+        <img src="${photo.url}" alt="${photo.name}" class="dlc-hero-thumb">
+        <button type="button" class="dlc-hero-apply-btn">${isCur ? '✓ 적용 중' : '선택하기'}</button>
+      `;
+      card.addEventListener('click', () => {
+        onSelectHero(photo.id);
+      });
+      grid.appendChild(card);
+    });
+  } catch (err) {
+    console.warn('[FaceSwap] photos load error', err);
+  }
+}
+
+function openDeepLiveCamModal() {
+  loadModalPhotos();
+  deepLiveCamModal?.classList.remove('hidden');
+}
+
+function closeDeepLiveCamModal() {
+  deepLiveCamModal?.classList.add('hidden');
+}
+
+function updateAvatarUi() {
+  const avMgr = subscriber?.avatarManager;
+  const camOn = !!(subscriber?.cameraEnabled);
+
+  // 카메라 활성화 시 상단 툴바에 얼굴 효과 버튼 표시
+  const btnFaceEffect = document.getElementById('btn-face-effect');
+  if (btnFaceEffect) {
+    if (camOn) {
+      btnFaceEffect.classList.remove('hidden');
+      btnFaceEffect.style.setProperty('display', 'inline-flex', 'important');
+    } else {
+      btnFaceEffect.classList.add('hidden');
+      btnFaceEffect.style.setProperty('display', 'none', 'important');
+    }
+  }
+
+  const localBox = document.getElementById('cam-box-local');
+  if (localBox && avMgr) {
+    const isReal = avMgr.isReal;
+    const isSwap = avMgr.isSwap;
+
+    const pillHd = localBox.querySelector('.pill-hd');
+    if (pillHd) {
+      pillHd.classList.toggle('is-active', !!avMgr.isLarge);
+      pillHd.textContent = avMgr.isLarge ? 'HD 720p' : 'SD 저부하';
+      pillHd.title = avMgr.isLarge
+        ? '현재 1280×720 HD 고화질 모드 (클릭 시 360p 저부하 모드로 전환)'
+        : '현재 640×360 저부하 모드 (더블클릭 집중화면 또는 클릭 시 720p HD 전환)';
+    }
+
+    const badge = localBox.querySelector('.cam-pip-badge');
+    if (badge) {
+      const vName = viewerName || '참가자';
+      if (isSwap) {
+        const key = avMgr.activeSwapFace;
+        const heroLabel = key === 'superman' ? '슈퍼맨' : (key === 'batman' ? '배트맨' : (key === 'spiderman' ? '스파이더맨' : (key === 'real' || key === 'none' ? '원래 내 얼굴' : key)));
+        badge.textContent = `${vName} (⚡ AI 얼굴: ${heroLabel})`;
+      } else if (isReal) {
+        badge.textContent = `${vName} (원래 내 얼굴)`;
+      } else {
+        badge.textContent = `${vName} (✨ ${avMgr.currentAvatar?.name || '가상'})`;
+      }
+    }
+  }
+
+  // 모달 내 사진 카드 및 상단 버튼 활성화 상태 동기화
+  if (deepLiveCamModal && avMgr) {
+    const curSwap = (avMgr.isSwap ? avMgr.activeSwapFace : '') || '';
+    const isReal = avMgr.isReal;
+
+    document.getElementById('btn-dlc-reset-real')?.classList.toggle('is-active', isReal);
+
+    deepLiveCamModal.querySelectorAll('.dlc-hero-card').forEach((card) => {
+      const hId = card.dataset.hero;
+      const isCur = curSwap === hId;
+      card.classList.toggle('is-active', !!isCur);
+      const applyBtn = card.querySelector('.dlc-hero-apply-btn');
+      if (applyBtn) {
+        applyBtn.textContent = isCur ? '✓ 적용 중' : '선택하기';
+      }
+    });
+
+    const statusText = document.getElementById('dlc-status-text');
+    if (statusText) {
+      if (camOn) {
+        statusText.textContent = '선택한 얼굴이 실시간으로 적용되어 송출 중입니다.';
+      } else {
+        statusText.textContent = '원하는 얼굴을 선택하면 카메라가 켜지며 실시간 송출이 시작됩니다.';
+      }
+    }
+  }
+}
+
+btnDlcClose?.addEventListener('click', closeDeepLiveCamModal);
+document.getElementById('btn-dlc-reset-real')?.addEventListener('click', onResetReal);
+document.getElementById('btn-face-effect')?.addEventListener('click', openDeepLiveCamModal);
+
+document.getElementById('dlc-file-input')?.addEventListener('change', async (e) => {
+  const file = e.target.files?.[0];
+  if (!file) return;
+  const formData = new FormData();
+  formData.append('photo', file);
+  try {
+    const res = await fetch('/api/upload-face', { method: 'POST', body: formData });
+    const data = await res.json();
+    if (data.ok) {
+      await loadModalPhotos();
+      onSelectHero(data.id);
+    } else {
+      alert(`사진 업로드 실패: ${data.error || '알 수 없는 오류'}`);
+    }
+  } catch (err) {
+    alert(`사진 업로드 실패: ${err.message}`);
+  } finally {
+    e.target.value = '';
+  }
+});
+
+deepLiveCamModal?.addEventListener('click', (e) => {
+  if (e.target === deepLiveCamModal) closeDeepLiveCamModal();
+});
+deepLiveCamModal?.querySelectorAll('.dlc-hero-card').forEach((card) => {
+  card.addEventListener('click', () => {
+    const hId = card.dataset.hero;
+    if (hId) onSelectHero(hId);
+  });
+});
 
 btnAvCam?.addEventListener('click', async () => {
   if (!subscriber) return;
@@ -385,15 +693,20 @@ btnAvCam?.addEventListener('click', async () => {
     alert('단방향(대규모 시청) 모드에서는 카메라를 사용할 수 없습니다.');
     return;
   }
-  btnAvCam.disabled = true;
-  const next = !subscriber.cameraEnabled;
-  const ok = await subscriber.setCameraEnabled(next);
-  btnAvCam.disabled = false;
-  if (next && !ok) {
-    alert('카메라를 켤 수 없습니다. 브라우저 카메라 권한 및 장치 연결을 확인해 주세요.');
+  const camAlreadyActive = !!(subscriber.hasCamera && subscriber.cameraEnabled);
+  if (camAlreadyActive) {
+    btnAvCam.disabled = true;
+    try {
+      await subscriber.setCameraEnabled(false);
+      showAvToast('카메라 끄기', { off: true });
+    } finally {
+      btnAvCam.disabled = false;
+      syncAvButtons();
+    }
+    return;
   }
-  syncAvButtons();
-  showAvToast(next ? '카메라 켜기' : '카메라 끄기', { off: !next });
+  // 카메라 비활성 상태일 때: 바로 영상 송출하지 않고 얼굴 선택 모달 오픈
+  openDeepLiveCamModal();
 });
 
 btnAvSpeaker?.addEventListener('click', () => {
@@ -544,10 +857,44 @@ function probeMicAvailability() {
 function handleEvent(type, data) {
   switch (type) {
     case 'viewer-count':
+      currentViewers = data.viewers || [];
       setViewerCount(data.count ?? 0, data.viewers, {
         activeBroadcasterId: data.activeBroadcasterId,
       });
+      if (data.meetingStarted) {
+        isMeetingStarted = true;
+      }
+      if (tarotLounge.isActive && !tarotLounge._isCountingDown) {
+        tarotLounge.renderParticipants(currentViewers);
+      }
       break;
+    case 'start-meeting-countdown': {
+      if (!tarotLounge.isActive) {
+        tarotLounge.show();
+      }
+      tarotLounge.renderParticipants(currentViewers);
+      tarotLounge.startCountdown({
+        duration: data?.duration || 5,
+        onComplete: () => {
+          isMeetingStarted = true;
+          if (subscriber?.hasLiveVideo?.() || subscriber?.playing) {
+            tarotLounge.hide();
+            showLive();
+          } else {
+            tarotLounge.renderParticipants(currentViewers);
+            subscriber?.watch?.()
+              .then(() => {
+                if (subscriber?.hasLiveVideo?.() || subscriber?.playing) {
+                  tarotLounge.hide();
+                  showLive();
+                }
+              })
+              .catch((err) => console.warn('[viewer] watch after countdown:', err));
+          }
+        },
+      });
+      break;
+    }
     case 'request-screen-share': {
       if (interactionMode === 'unidirectional') {
         syncStatus.textContent = '단방향 모드 — 화면 공유 불가';
@@ -591,6 +938,29 @@ function handleEvent(type, data) {
       clearHostLink();
       showSessionEnded(data.message || '호스트가 발표를 종료했습니다.');
       break;
+    case 'meeting-started':
+      isMeetingStarted = true;
+      if (subscriber?.hasLiveVideo?.() || subscriber?.playing) {
+        tarotLounge.hide();
+        showLive();
+      } else {
+        tarotLounge.renderParticipants(currentViewers);
+        subscriber?.watch?.().catch((err) => { console.warn('[viewer] watch', err); });
+      }
+      break;
+    case 'draw-start':
+      viewerDrawCanvas?.handleRemoteStrokeStart(data);
+      break;
+    case 'draw-move':
+      viewerDrawCanvas?.handleRemoteStrokeMove(data);
+      break;
+    case 'draw-end':
+      viewerDrawCanvas?.handleRemoteStrokeEnd(data);
+      break;
+    case 'clear-drawings':
+    case 'clear-all-drawings':
+      viewerDrawCanvas?.clearAll();
+      break;
     case 'open-link':
       // 링크는 호스트 새 창 + 화면 송출만 — 참가자 별도 모달 없음
       break;
@@ -607,24 +977,35 @@ function handleEvent(type, data) {
       // 내가 화면 공유 중이면 호스트 송출 FLAG로 UI를 덮어쓰지 않음
       if (isSelfSharingUi()) break;
       if (data.active) {
-        // 이미 실시간 시청 중이면 FLAG 주기 재방송으로「연결 중」으로 되돌리지 않음
-        if (subscriber?.hasLiveVideo?.()) {
-          syncStatus.textContent = '실시간 시청 중';
-          break;
+        if (streamOfflineTimer) {
+          clearTimeout(streamOfflineTimer);
+          streamOfflineTimer = null;
         }
-        syncStatus.textContent = '호스트 화면 연결 중…';
-        if (!liveVideo?.srcObject) {
-          setWaiting('호스트 화면 연결 중…', '잠시만 기다려 주세요.');
+        if (isMeetingStarted) {
+          tarotLounge.hide();
+          showLive();
+          // 이미 실시간 시청 중이면 FLAG 주기 재방송으로「연결 중」으로 되돌리지 않음
+          if (subscriber?.hasLiveVideo?.()) {
+            syncStatus.textContent = '실시간 시청 중';
+            break;
+          }
+          syncStatus.textContent = '호스트 화면 연결 중…';
+          if (!liveVideo?.srcObject) {
+            waitingPanel?.classList.remove('hidden');
+            setWaiting('호스트 화면 연결 중…', '잠시만 기다려 주세요.');
+          }
+        } else {
+          showTarotLounge();
         }
         subscriber?.watch?.().catch((err) => { console.warn('[viewer] watch', err); });
       } else {
-        subscriber?.clearRemote();
-        setWaiting(
-          '호스트 화면 송출 대기',
-          '호스트가 「송출」을 누르면 여기에서 실시간으로 보입니다.'
-        );
-        syncStatus.textContent = '송출 대기';
-        unmuteBanner?.classList.add('hidden');
+        // 3차 안전망: 즉각 파괴 방지 — 3.5초 유예 버퍼 (찰나의 소켓/네트워크 순단 보호)
+        if (streamOfflineTimer) clearTimeout(streamOfflineTimer);
+        streamOfflineTimer = setTimeout(() => {
+          streamOfflineTimer = null;
+          subscriber?.clearRemote();
+          showTarotLounge();
+        }, 3500);
       }
       break;
     default:
@@ -637,6 +1018,20 @@ sync = new RoomSync({
   role: 'viewer',
   name: viewerName,
   onEvent: handleEvent,
+  onRejoined: (data) => {
+    console.log('[viewer] 1차 안전망: 소켓 재체결 성공, 상태 동기화 진행', data);
+    if (data?.state) {
+      if (data.state.viewers) currentViewers = data.state.viewers;
+      if (data.state.meetingStarted) {
+        isMeetingStarted = true;
+      }
+      if (data.state.streamActive) {
+        subscriber?.watch?.().catch((err) => console.warn('[viewer] rejoin watch', err));
+      } else {
+        showTarotLounge();
+      }
+    }
+  },
   onError: (msg) => console.warn(msg),
 });
 
@@ -650,6 +1045,18 @@ sync.start()
     if (data.state?.interactionMode || data.state?.requireMic !== undefined) {
       applyInteractionMode(data.state?.interactionMode || interactionMode, !!data.state?.requireMic);
     }
+
+    isMeetingStarted = !!data.state?.meetingStarted;
+    currentViewers = data.state?.viewers || [];
+    if (isMeetingStarted && data.state?.streamActive) {
+      tarotLounge.hide();
+      showLive();
+    } else {
+      showTarotLounge();
+    }
+
+    // 접속 시 전체화면 시청 여부 확인 팝업
+    initFullscreenPrompt();
 
     // 시그널 수신을 먼저 열어 호스트 offer 유실 방지
     const signaling = new WebrtcSignaling(sync.socket, { localClientId: sync.clientId });
@@ -672,21 +1079,13 @@ sync.start()
             syncStatus.classList.add('connected');
             return;
           }
-          setWaiting(
-            '호스트 화면 연결 중…',
-            '화면 공유가 끝났습니다. 호스트 화면으로 돌아가는 중…'
-          );
+          showTarotLounge();
           subscriber?.watch?.().catch((err) => console.warn('[viewer] watch', err));
           return;
         }
         if (s.streamEnded || s.streamActive === false) {
           if (subscriber?.sharingScreen) return;
-          setWaiting(
-            '호스트 화면 송출 대기',
-            '호스트가 「송출」을 누르면 여기에서 실시간으로 보입니다.'
-          );
-          syncStatus.textContent = '송출 대기';
-          unmuteBanner?.classList.add('hidden');
+          showTarotLounge();
           return;
         }
         if (subscriber?.sharingScreen) {
@@ -694,15 +1093,29 @@ sync.start()
           return;
         }
         if (s.playing) {
-          showLive();
-          syncStatus.textContent = '실시간 시청 중';
-          syncStatus.classList.add('connected');
+          if (isMeetingStarted) {
+            showLive();
+            syncStatus.textContent = '실시간 시청 중';
+            syncStatus.classList.add('connected');
+          } else {
+            showTarotLounge();
+          }
         } else if (s.connectError) {
-          setWaiting('화면 연결 실패', s.connectError);
-          syncStatus.textContent = '연결 실패';
+          if (isMeetingStarted && subscriber?.streamActive) {
+            waitingPanel?.classList.remove('hidden');
+            setWaiting('호스트 화면 연결 중…', '호스트의 발표 화면을 연결하고 있습니다. 잠시만 기다려 주세요.');
+            syncStatus.textContent = '화면 연결 중…';
+          } else {
+            showTarotLounge();
+          }
         } else if (s.streamActive && !liveVideo?.srcObject) {
-          setWaiting('호스트 화면 연결 중…', '잠시만 기다려 주세요.');
-          syncStatus.textContent = '호스트 화면 연결 중…';
+          if (isMeetingStarted) {
+            waitingPanel?.classList.remove('hidden');
+            setWaiting('호스트 화면 연결 중…', '잠시만 기다려 주세요.');
+            syncStatus.textContent = '호스트 화면 연결 중…';
+          } else {
+            showTarotLounge();
+          }
         }
         if (s.needUnmute && s.hasRemoteAudio) {
           if (unmuteBanner) {
@@ -719,28 +1132,55 @@ sync.start()
       },
     });
 
+    if (liveVideo) {
+      attachVideoFreezeWatchdog(liveVideo, {
+        label: 'viewer-main-screen',
+        onRequestKeyFrame: () => subscriber?.sfu?.requestKeyFrame?.(),
+        onDecoderKick: () => subscriber?.sfu?.resumeAllConsumers?.(),
+      });
+    }
+
     // 기본: 소리 ON — 별도 <audio>로 재생 (첫 클릭 시 unlock)
     subscriber.speakerOn = true;
     subscriber.micOn = false;
     subscriber.interactionMode = interactionMode;
+    if (subscriber.avatarManager) {
+      subscriber.avatarManager.onAvatarChange = () => updateAvatarUi();
+      subscriber.avatarManager.onModeChange = () => updateAvatarUi();
+    }
 
-    subscriber.onCameraChange = ({ active, stream }) => {
-      if (active && stream) {
-        updateCameraPip('local', stream, { label: `${viewerName} (내 카메라)`, isMirror: true, isHost: false });
-      } else {
-        removeCameraPip('local');
-      }
+    subscriber.onCameraChange = () => {
       syncAvButtons();
     };
 
-    subscriber.onRemoteCamera = ({ clientId, stream, role }) => {
-      const isHost = role === 'host';
-      const label = isHost ? '호스트 (카메라)' : '참가자 (카메라)';
-      updateCameraPip(clientId, stream, { label, isMirror: false, isHost });
+    subscriber.onRemoteCamera = () => {};
+    subscriber.onRemoteCameraClosed = () => {};
+    subscriber.onMicTrack = (track) => {
+      if (track) {
+        vadMonitor.attach('local', track);
+      } else {
+        vadMonitor.detach('local');
+      }
     };
-
-    subscriber.onRemoteCameraClosed = (clientId) => {
-      removeCameraPip(clientId);
+    subscriber.onRemoteAudioTrack = ({ clientId, track }) => {
+      vadMonitor.attach(clientId, track);
+    };
+    subscriber.onRemoteAudioTrackClosed = (clientId) => {
+      vadMonitor.detach(clientId);
+    };
+    subscriber.onNetworkQuality = ({ pingMs, lossRate, quality }) => {
+      const syncEl = document.getElementById('sync-status');
+      if (syncEl) {
+        const dot = quality === 'poor' ? '🔴' : quality === 'fair' ? '🟡' : '🟢';
+        const lossText = lossRate > 1 ? ` (${lossRate}%)` : '';
+        syncEl.textContent = `${dot} ${pingMs}ms${lossText}`;
+        syncEl.title = `실시간 네트워크 지연(Ping): ${pingMs}ms, 손실율: ${lossRate}%`;
+      }
+      const avMgr = subscriber.avatarManager;
+      if (quality === 'poor' && avMgr?.isLarge) {
+        console.warn('[viewer] network poor -> lowering camera res to SD for low latency');
+        avMgr.setHighRes(false);
+      }
     };
 
     if (liveVideo) liveVideo.muted = true;
@@ -749,6 +1189,35 @@ sync.start()
     }
     syncAvButtons();
     probeMicAvailability();
+
+    if (data.state?.streamActive) {
+      if (isMeetingStarted) {
+        tarotLounge.hide();
+        showLive();
+        syncStatus.textContent = '호스트 화면 연결 중…';
+        setWaiting('호스트 화면 연결 중…', '잠시만 기다려 주세요.');
+      } else {
+        showTarotLounge();
+      }
+      subscriber.watch().catch((err) => {
+        console.warn('[viewer] initial watch error:', err);
+      });
+    } else {
+      showTarotLounge();
+      if (interactionMode === 'bidirectional') {
+        subscriber.ensureReceiving?.().catch((err) => {
+          console.warn('[viewer] ensureReceiving error:', err);
+        });
+      }
+    }
+
+    sync.socket?.on('connect', () => {
+      console.log('[viewer] socket reconnected -> resyncing media streams...');
+      subscriber?.watch().catch(() => {});
+      if (interactionMode === 'bidirectional') {
+        subscriber?.ensureReceiving?.().catch(() => {});
+      }
+    });
 
     // 마이크 필수 미팅인 경우 즉시 마이크 권한 확인 및 켜기
     if (interactionMode === 'bidirectional' && requireMic) {
@@ -793,15 +1262,15 @@ sync.start()
     }
 
     if (data.state?.streamActive) {
-      setWaiting('호스트 화면 연결 중…', '송출이 진행 중입니다. 곧 표시됩니다.');
-      syncStatus.textContent = '호스트 화면 연결 중…';
+      if (isMeetingStarted && !subscriber?.hasLiveVideo?.() && !subscriber?.playing) {
+        waitingPanel?.classList.remove('hidden');
+        setWaiting('호스트 화면 연결 중…', '송출이 진행 중입니다. 곧 표시됩니다.');
+        syncStatus.textContent = '호스트 화면 연결 중…';
+      }
       // SFU: watch()로 기존 producer consume
       subscriber.watch?.().catch((err) => { console.warn('[viewer] watch', err); });
     } else {
-      setWaiting(
-        '호스트 화면 송출 대기',
-        '호스트가 「송출」을 누르면 실시간으로 발표 화면이 보입니다.'
-      );
+      showTarotLounge();
     }
   })
   .catch((err) => {
@@ -816,7 +1285,19 @@ sync.start()
     window.location.href = './';
   });
 
-window.addEventListener('beforeunload', () => {
+const cleanupSession = () => {
   try { subscriber?.dispose(); } catch { /* ignore */ }
   sync?.stop();
-});
+};
+window.addEventListener('beforeunload', cleanupSession);
+window.addEventListener('pagehide', cleanupSession);
+
+// 백그라운드 탭 전환 등으로 일시정지된 비디오 재생 유지
+setInterval(() => {
+  document.querySelectorAll('video').forEach((v) => {
+    if (v.srcObject && v.paused) {
+      v.play?.().catch(() => {});
+    }
+  });
+}, 2000);
+

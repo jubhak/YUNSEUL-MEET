@@ -118,9 +118,46 @@ export class SfuClient {
     return caps;
   }
 
+  async restartIce(transport) {
+    if (!transport || transport.closed) return false;
+    try {
+      const res = await this.request('sfu-restart-ice', { transportId: transport.id });
+      if (res?.iceParameters) {
+        await transport.restartIce({ iceParameters: res.iceParameters });
+        console.log(`[sfu-client] restartIce succeeded for transport ${String(transport.id).slice(0, 8)}`);
+        return true;
+      }
+    } catch (err) {
+      console.warn('[sfu-client] restartIce failed:', err);
+    }
+    return false;
+  }
+
+  _attachTransportHealth(transport, label = 'transport') {
+    transport.on('connectionstatechange', async (state) => {
+      console.log(`[sfu-client] ${label} (${String(transport.id).slice(0, 8)}) state: ${state}`);
+      if (state === 'disconnected') {
+        setTimeout(async () => {
+          if (transport.connectionState === 'disconnected') {
+            console.warn(`[sfu-client] ${label} still disconnected, attempting ICE restart...`);
+            await this.restartIce(transport);
+          }
+        }, 1200);
+      } else if (state === 'failed') {
+        console.warn(`[sfu-client] ${label} failed, attempting immediate ICE restart...`);
+        const ok = await this.restartIce(transport);
+        if (!ok) {
+          try { transport.close(); } catch { /* ignore */ }
+          try { this.onTransportFailed?.(transport, label); } catch { /* ignore */ }
+        }
+      }
+    });
+  }
+
   async _createSendTransport() {
     const info = await this.request('sfu-create-transport', { direction: 'send' });
     const transport = this.device.createSendTransport(info);
+    this._attachTransportHealth(transport, 'send-transport');
     transport.on('connect', ({ dtlsParameters }, callback, errback) => {
       this.request('sfu-connect-transport', {
         transportId: transport.id,
@@ -164,6 +201,7 @@ export class SfuClient {
     this._recvTransportCreating = (async () => {
       const info = await this.request('sfu-create-transport', { direction: 'recv' });
       const transport = this.device.createRecvTransport(info);
+      this._attachTransportHealth(transport, 'recv-transport');
       transport.on('connect', ({ dtlsParameters }, callback, errback) => {
         this.request('sfu-connect-transport', {
           transportId: transport.id,
@@ -212,21 +250,32 @@ export class SfuClient {
           },
         };
         if (track.kind === 'video') {
-          try { track.contentHint = 'detail'; } catch { /* ignore */ }
-          // encodings/maxFramerate 강제 시 일부 Chrome 화면공유 produce가 실패/검은화면 → 최소 옵션만
+          const isCam = source === 'camera' || source === 'viewer-camera';
+          // 화면공유 및 카메라 모두 프레임 지속 송출(0 fps 멈춤 방지)을 위해 'motion' 적용
+          try { track.contentHint = 'motion'; } catch { /* ignore */ }
           produceOpts.codecOptions = {
-            videoGoogleStartBitrate: 1000,
+            videoGoogleStartBitrate: isCam ? 800 : 1200,
           };
         } else if (track.kind === 'audio') {
           try { track.contentHint = (source === 'mic' || source === 'viewer-mic') ? 'speech' : 'music'; } catch { /* ignore */ }
           produceOpts.codecOptions = {
             opusStereo: source !== 'mic' && source !== 'viewer-mic',
             opusFec: true,
-            opusDtx: source === 'mic' || source === 'viewer-mic',
+            opusDtx: false,
             opusMaxAverageBitrate: (source === 'mic' || source === 'viewer-mic') ? 64000 : 128000,
           };
         }
         const producer = await transport.produce(produceOpts);
+        if (track.kind === 'video' && producer.rtpSender) {
+          try {
+            const params = producer.rtpSender.getParameters();
+            if (params) {
+              // 네트워크 변동 시에도 프레임레이트를 유지하여 화면 멈춤 및 0 fps 현상 방지
+              params.degradationPreference = 'maintain-framerate';
+              producer.rtpSender.setParameters(params).catch(() => {});
+            }
+          } catch { /* ignore */ }
+        }
         this.producers.set(key, producer);
         produced.push(producer);
         track.addEventListener('ended', () => {
@@ -304,8 +353,10 @@ export class SfuClient {
       try {
         const receiver = consumer.rtpReceiver;
         if (receiver) {
-          if ('playoutDelayHint' in receiver) receiver.playoutDelayHint = 0;
-          if ('jitterBufferTarget' in receiver) receiver.jitterBufferTarget = 0;
+          // 모바일/무선 환경에서 0은 패킷 지터 시 버퍼 고갈로 인한 멈춤 후 고속 재생(fast-forward)의 치명적 원인이 됨
+          // 100ms(0.1초)의 안정적인 적응형 재생 버퍼를 지정하여 프레임 밀림 및 고속 재생 완벽 제거
+          if ('playoutDelayHint' in receiver) receiver.playoutDelayHint = 0.1;
+          if ('jitterBufferTarget' in receiver) receiver.jitterBufferTarget = 100;
         }
       } catch { /* ignore */ }
       this.remoteStream.addTrack(consumer.track);
@@ -354,6 +405,17 @@ export class SfuClient {
     }
   }
 
+  async requestKeyFrame(producerIdOrConsumerId) {
+    if (this._closed || !this.socket?.connected) return;
+    try {
+      let targetConsumerId = producerIdOrConsumerId;
+      if (producerIdOrConsumerId && this.consumers.has(producerIdOrConsumerId)) {
+        targetConsumerId = this.consumers.get(producerIdOrConsumerId)?.id;
+      }
+      await this.request('sfu-request-keyframe', { consumerId: targetConsumerId });
+    } catch { /* ignore */ }
+  }
+
   async consumeExistingProducers() {
     const list = this._pendingProducers?.length
       ? this._pendingProducers
@@ -397,8 +459,70 @@ export class SfuClient {
     this.onProducerClosed?.(msg);
   }
 
+  startNetworkStatsMonitor(callback, intervalMs = 2500) {
+    if (this._netMonitorTimer) return;
+    let lastPacketsLost = 0;
+    let lastPacketsReceived = 0;
+
+    this._netMonitorTimer = setInterval(async () => {
+      if (this._closed || !this.recvTransport || this.recvTransport.closed) return;
+      try {
+        const stats = await this.recvTransport.getStats();
+        let rtt = null;
+        let packetsLostDelta = 0;
+        let packetsRecvDelta = 0;
+
+        const list = stats instanceof Map ? [...stats.values()] : Array.isArray(stats) ? stats : [];
+        list.forEach((report) => {
+          if (report.type === 'candidate-pair' && report.state === 'succeeded') {
+            if (typeof report.currentRoundTripTime === 'number') {
+              rtt = Math.round(report.currentRoundTripTime * 1000);
+            }
+          }
+          if (report.type === 'inbound-rtp' && report.kind === 'video') {
+            const curLost = report.packetsLost || 0;
+            const curRecv = report.packetsReceived || 0;
+            if (lastPacketsReceived > 0) {
+              packetsLostDelta = Math.max(0, curLost - lastPacketsLost);
+              packetsRecvDelta = Math.max(0, curRecv - lastPacketsReceived);
+            }
+            lastPacketsLost = curLost;
+            lastPacketsReceived = curRecv;
+          }
+        });
+
+        const totalPackets = packetsLostDelta + packetsRecvDelta;
+        const lossRate = totalPackets > 0 ? (packetsLostDelta / totalPackets) * 100 : 0;
+        const pingMs = rtt !== null ? rtt : (lastPacketsReceived > 0 ? 35 : 25);
+
+        let quality = 'good';
+        if (pingMs > 280 || lossRate > 6) {
+          quality = 'poor';
+        } else if (pingMs > 120 || lossRate > 2) {
+          quality = 'fair';
+        }
+
+        const data = {
+          pingMs,
+          lossRate: Math.round(lossRate * 10) / 10,
+          quality,
+        };
+        this.onNetworkQuality?.(data);
+        callback?.(data);
+      } catch { /* ignore */ }
+    }, intervalMs);
+  }
+
+  stopNetworkStatsMonitor() {
+    if (this._netMonitorTimer) {
+      clearInterval(this._netMonitorTimer);
+      this._netMonitorTimer = null;
+    }
+  }
+
   dispose() {
     this._closed = true;
+    this.stopNetworkStatsMonitor();
     this.socket.off('sfu-new-producer', this._boundNewProducer);
     this.socket.off('sfu-producer-closed', this._boundProducerClosed);
     for (const producer of this.producers.values()) {

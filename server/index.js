@@ -25,6 +25,7 @@ const fs = require('fs');
 
 const http = require('http');
 const crypto = require('crypto');
+const { spawn } = require('child_process');
 const express = require('express');
 const multer = require('multer');
 const { Server } = require('socket.io');
@@ -35,11 +36,13 @@ const DATA_DIR = path.join(ROOT, 'data');
 const ROOMS_DIR = path.join(DATA_DIR, 'rooms');
 const UPLOADS_DIR = path.join(ROOT, 'uploads');
 const LOGS_DIR = path.join(ROOT, 'logs');
+const PHOTO_DIR = path.join(ROOT, 'photo');
+const DEEP_LIVE_CAM_DIR = path.join(ROOT, 'deep-live-cam');
 
 const PORT = Number(process.env.PORT || 3000);
 const HOST = process.env.HOST || '127.0.0.1';
 
-for (const dir of [DATA_DIR, ROOMS_DIR, UPLOADS_DIR, LOGS_DIR]) {
+for (const dir of [DATA_DIR, ROOMS_DIR, UPLOADS_DIR, LOGS_DIR, PHOTO_DIR]) {
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
 }
 
@@ -55,7 +58,14 @@ function isCodeTaken(code) {
   const c = roomCode(code);
   if (!c || c.length !== 4) return false;
   const room = getRoom(c);
-  return !!(room && !room.ended);
+  if (!room || room.ended) return false;
+  // 호스트도 없고 참가자도 없으며 연결 유예 타이머도 없는 빈 방은 재사용 가능
+  const hasViewers = room.viewers && room.viewers.size > 0;
+  const hasGrace = room._peerGraceTimers && room._peerGraceTimers.size > 0;
+  if (!room.hostConnected && !hasViewers && !hasGrace) {
+    return false;
+  }
+  return true;
 }
 
 function makeRoomCode() {
@@ -102,6 +112,7 @@ function defaultRoom(code, hostToken, interactionMode = 'bidirectional', require
     chatMessages: [], // 최근 채팅 (메모리만)
     ended: false,
     endedAt: 0,
+    meetingStarted: false,
     createdAt: Date.now(),
     hostLastSeen: 0,
     lastActivity: Date.now(),
@@ -326,6 +337,7 @@ function publicState(room) {
     viewerCount: viewerCount(room),
     viewers: viewersPayload(room),
     ended: !!room.ended,
+    meetingStarted: !!room.meetingStarted,
     streamActive: !!room.streamActive,
     streamKinds: Array.isArray(room.streamKinds) ? room.streamKinds : [],
     popup: room.popup || null,
@@ -358,11 +370,70 @@ function broadcastViewerCount(io, room) {
     count,
     viewers,
     activeBroadcasterId: room.activeBroadcasterId || room.hostClientId || null,
+    meetingStarted: !!room.meetingStarted,
   });
+}
+
+/** 1차 안전 장치: 일시 단선 시 30초 유예 (SFU 리소스 및 송출 플래그 보존) */
+const PEER_DISCONNECT_GRACE_MS = Number(process.env.PEER_DISCONNECT_GRACE_MS || 30_000);
+
+function cancelPeerDisconnectGrace(room, clientId) {
+  if (!room || !room._peerGraceTimers || !clientId) return;
+  const t = room._peerGraceTimers.get(clientId);
+  if (t) {
+    clearTimeout(t);
+    room._peerGraceTimers.delete(clientId);
+  }
+}
+
+function schedulePeerDisconnectGrace(io, room, clientId, role) {
+  if (!room || !clientId) return;
+  if (!room._peerGraceTimers) room._peerGraceTimers = new Map();
+  cancelPeerDisconnectGrace(room, clientId);
+
+  room._peerGraceTimers.set(
+    clientId,
+    setTimeout(() => {
+      room._peerGraceTimers?.delete(clientId);
+      console.log(`[grace-expired] room=${room.code} role=${role} client=${clientId.slice(0, 8)}`);
+
+      // 30초 유예가 완전히 경과했을 때만 실제 SFU 리소스 해제
+      cleanupSocketPeer(room.code, clientId, io);
+
+      if (role === 'host') {
+        if (room.hostClientId === clientId && !room.hostConnected) {
+          room.streamActive = false;
+          room.streamKinds = [];
+          persistRoom(room);
+          io.to(room.code).emit('stream-status', { active: false, kinds: [] });
+          maybeScheduleEmptyRoomDispose(room);
+        }
+      } else {
+        const v = room.viewers.get(clientId);
+        if (v && !v.connected) {
+          room.viewers.delete(clientId);
+          if (room.activeBroadcasterId === clientId) {
+            room.activeBroadcasterId = room.hostClientId;
+            if (room.hostSocketId) {
+              io.to(room.hostSocketId).emit('screen-share-ended', { clientId });
+            }
+            broadcastBroadcaster(io, room);
+          }
+          if (room.hostSocketId) {
+            io.to(room.hostSocketId).emit('peer-left', { clientId, role: 'viewer' });
+          }
+          maybeScheduleEmptyRoomDispose(room);
+          persistRoom(room);
+          broadcastViewerCount(io, room);
+        }
+      }
+    }, PEER_DISCONNECT_GRACE_MS)
+  );
 }
 
 /** 참가자 새로고침 시 peer-left가 peer-joined보다 늦어 연결을 끊지 않게 */
 function cancelViewerLeave(room, clientId) {
+  cancelPeerDisconnectGrace(room, clientId);
   if (!room._viewerLeaveTimers) return;
   const t = room._viewerLeaveTimers.get(clientId);
   if (t) clearTimeout(t);
@@ -370,24 +441,7 @@ function cancelViewerLeave(room, clientId) {
 }
 
 function scheduleViewerLeave(io, room, clientId) {
-  if (!room._viewerLeaveTimers) room._viewerLeaveTimers = new Map();
-  cancelViewerLeave(room, clientId);
-  room._viewerLeaveTimers.set(
-    clientId,
-    setTimeout(() => {
-      room._viewerLeaveTimers.delete(clientId);
-      // 같은 clientId로 다시 들어와 있으면 새로고침 — peer-left 생략
-      if (room.viewers.has(clientId)) return;
-      if (room.hostSocketId) {
-        io.to(room.hostSocketId).emit('peer-left', {
-          clientId,
-          role: 'viewer',
-        });
-      }
-      // 호스트도 없고 참가자도 없으면 방 정리 예약
-      maybeScheduleEmptyRoomDispose(room);
-    }, 2000)
-  );
+  schedulePeerDisconnectGrace(io, room, clientId, 'viewer');
 }
 
 /** 호스트·참가자 모두 0명인 빈 방 — 새로고침 유예 후 폐기 */
@@ -559,6 +613,138 @@ app.get('/api/health', (_req, res) => {
   });
 });
 
+app.get('/api/deep-live-cam/status', (_req, res) => {
+  const hasRepo = fs.existsSync(path.join(DEEP_LIVE_CAM_DIR, 'run.py'));
+  const hasBat = fs.existsSync(path.join(ROOT, 'run_deep_live_cam.bat'));
+  let photos = [];
+  if (fs.existsSync(PHOTO_DIR)) {
+    try {
+      photos = fs.readdirSync(PHOTO_DIR)
+        .filter((f) => /\.(jpe?g|png|webp)$/i.test(f))
+        .map((f) => ({
+          filename: f,
+          url: `/photo/${encodeURIComponent(f)}`,
+          name: path.parse(f).name,
+        }));
+    } catch { /* ignore */ }
+  }
+  res.json({
+    ok: true,
+    hasRepo,
+    hasBat,
+    photos,
+  });
+});
+
+const photoUpload = multer({
+  storage: multer.diskStorage({
+    destination: (_req, _file, cb) => cb(null, PHOTO_DIR),
+    filename: (_req, file, cb) => {
+      const ext = path.extname(file.originalname || '').toLowerCase() || '.jpg';
+      const base = path.parse(file.originalname || 'custom').name.replace(/[^a-zA-Z0-9_\uAC00-\uD7A3-]/g, '_');
+      cb(null, `${base}_${Date.now()}${ext}`);
+    },
+  }),
+  limits: { fileSize: 20 * 1024 * 1024 },
+  fileFilter: (_req, file, cb) => {
+    const ext = path.extname(file.originalname || '').toLowerCase();
+    if (['.jpg', '.jpeg', '.png', '.webp'].includes(ext)) cb(null, true);
+    else cb(new Error('이미지 파일(.jpg, .jpeg, .png, .webp)만 업로드할 수 있습니다.'));
+  },
+});
+
+app.get('/api/photos', (_req, res) => {
+  try {
+    const photos = [];
+    if (fs.existsSync(PHOTO_DIR)) {
+      const files = fs.readdirSync(PHOTO_DIR).filter((f) => /\.(jpe?g|png|webp)$/i.test(f));
+      for (const f of files) {
+        const s = path.parse(f).name.toLowerCase();
+        const name = (s === 'superman' ? '슈퍼맨 (Superman)'
+          : s === 'batman' ? '배트맨 (Batman)'
+          : s === 'spiderman' ? '스파이더맨 (Spider-Man)'
+          : path.parse(f).name);
+        photos.push({
+          id: path.parse(f).name.toLowerCase(),
+          filename: f,
+          name,
+          url: `/photo/${encodeURIComponent(f)}`,
+        });
+      }
+    }
+    res.json({ ok: true, photos });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+app.post('/api/upload-face', photoUpload.single('photo'), (req, res) => {
+  if (!req.file) {
+    return res.status(400).json({ ok: false, error: '사진 파일이 필요합니다.' });
+  }
+  const filename = req.file.filename;
+  const id = path.parse(filename).name.toLowerCase();
+  res.json({
+    ok: true,
+    id,
+    filename,
+    name: path.parse(req.file.originalname || filename).name,
+    url: `/photo/${encodeURIComponent(filename)}`,
+  });
+});
+
+app.post('/api/swap-frame', (req, res) => {
+  const sourceFace = req.headers['x-source-face'] || 'superman';
+  const proxyReq = http.request({
+    hostname: '127.0.0.1',
+    port: Number(process.env.FACE_SWAP_PORT || 8765),
+    path: '/api/swap-frame',
+    method: 'POST',
+    headers: {
+      'Content-Type': req.headers['content-type'] || 'image/jpeg',
+      'X-Source-Face': encodeURIComponent(sourceFace),
+    },
+    timeout: 5000,
+  }, (proxyRes) => {
+    res.writeHead(proxyRes.statusCode || 200, proxyRes.headers);
+    proxyRes.pipe(res);
+  });
+
+  proxyReq.on('error', (err) => {
+    console.warn('[FaceSwap Proxy] worker error:', err?.message || err);
+    res.status(502).json({ ok: false, error: 'Face swap worker unavailable' });
+  });
+  proxyReq.on('timeout', () => {
+    proxyReq.destroy();
+    res.status(504).json({ ok: false, error: 'Face swap worker timeout' });
+  });
+
+  req.pipe(proxyReq);
+});
+
+app.post('/api/launch-deep-live-cam', (_req, res) => {
+  const batPath = path.join(ROOT, 'run_deep_live_cam.bat');
+  if (!fs.existsSync(batPath)) {
+    return res.status(404).json({ ok: false, error: 'run_deep_live_cam.bat 파일을 찾을 수 없습니다.' });
+  }
+  try {
+    const child = spawn('cmd.exe', ['/c', 'start', '""', 'run_deep_live_cam.bat'], {
+      cwd: ROOT,
+      detached: true,
+      stdio: 'ignore',
+      shell: true,
+    });
+    child.unref();
+    res.json({
+      ok: true,
+      message: 'Deep-Live-Cam이 새로운 창에서 실행되었습니다.',
+    });
+  } catch (err) {
+    console.error('[deep-live-cam] launch error:', err);
+    res.status(500).json({ ok: false, error: err.message || '실행 실패' });
+  }
+});
+
 /** SFU/방 접속 진단 — ICE·producer 상태 확인용 */
 app.get('/api/debug/sfu', async (req, res) => {
   const code = roomCode(req.query.code);
@@ -660,9 +846,11 @@ app.get('/api/check-embed', async (req, res) => {
 });
 
 app.post('/api/create-room', (req, res) => {
-  let code = roomCode(req.body?.code || '');
-  if (code) {
-    if (code.length !== 4) {
+  const rawCode = String(req.body?.code ?? '').trim();
+  let code = '';
+  if (rawCode) {
+    code = roomCode(rawCode);
+    if (!/^[0-9]{4}$/.test(rawCode)) {
       return res.status(400).json({ error: '참여 코드는 4자리 숫자여야 합니다.' });
     }
     if (isCodeTaken(code)) {
@@ -692,7 +880,7 @@ app.post('/api/create-room', (req, res) => {
   persistRoom(room);
   // 호스트가 들어오지 않으면 유예 후 폐기
   maybeScheduleEmptyRoomDispose(room);
-  res.json({ code, hostToken, interactionMode: room.interactionMode, requireMic: !!room.requireMic });
+  res.json({ ok: true, code, hostToken, interactionMode: room.interactionMode, requireMic: !!room.requireMic });
 });
 
 app.get('/api/get-room', (req, res) => {
@@ -724,6 +912,38 @@ app.get('/api/check-room-code', (req, res) => {
     available: !taken,
     code,
     error: taken ? '이미 사용 중인 참여 코드입니다. 다른 번호를 입력해 주세요.' : null,
+  });
+});
+
+/** 호스트 화면 즉시 진입용 URL 제공 (진행 중인 방 재사용 또는 신규 방 자동 생성) */
+app.get('/api/host-url', (_req, res) => {
+  let targetRoom = null;
+  for (const r of rooms.values()) {
+    if (!r.ended) {
+      targetRoom = r;
+      break;
+    }
+  }
+  if (!targetRoom) {
+    const code = makeRoomCode();
+    const hostToken = crypto.randomBytes(16).toString('hex');
+    targetRoom = defaultRoom(code, hostToken, 'bidirectional', false);
+    try { ensureRoomLogDir(targetRoom); } catch { /* ignore */ }
+    rooms.set(code, targetRoom);
+    persistRoom(targetRoom);
+    maybeScheduleEmptyRoomDispose(targetRoom);
+  }
+  const q = new URLSearchParams({
+    code: targetRoom.code,
+    ht: targetRoom.hostToken,
+    hn: targetRoom.hostName || '호스트',
+    mode: targetRoom.interactionMode || 'bidirectional',
+    rm: targetRoom.requireMic ? '1' : '0',
+  });
+  res.json({
+    ok: true,
+    code: targetRoom.code,
+    url: `http://${HOST}:${PORT}/host.html?${q.toString()}`,
   });
 });
 
@@ -809,9 +1029,11 @@ app.post('/api/upload', (req, res) => {
 
 // PHP 호환 별칭 (구 URL)
 app.post('/api/create-room.php', (req, res) => {
-  let code = roomCode(req.body?.code || '');
-  if (code) {
-    if (code.length !== 4) {
+  const rawCode = String(req.body?.code ?? '').trim();
+  let code = '';
+  if (rawCode) {
+    code = roomCode(rawCode);
+    if (!/^[0-9]{4}$/.test(rawCode)) {
       return res.status(400).json({ error: '참여 코드는 4자리 숫자여야 합니다.' });
     }
     const existing = getRoom(code);
@@ -838,7 +1060,7 @@ app.post('/api/create-room.php', (req, res) => {
   rooms.set(code, room);
   persistRoom(room);
   maybeScheduleEmptyRoomDispose(room);
-  res.json({ code, hostToken, interactionMode: room.interactionMode, requireMic: !!room.requireMic });
+  res.json({ ok: true, code, hostToken, interactionMode: room.interactionMode, requireMic: !!room.requireMic });
 });
 app.get('/api/get-room.php', (req, res) => {
   const room = getRoom(req.query.code);
@@ -893,8 +1115,8 @@ const server = http.createServer(app);
 const io = new Server(server, {
   cors: { origin: '*' },
   maxHttpBufferSize: 1e6,
-  pingInterval: 10000,
-  pingTimeout: 20000,
+  pingInterval: 5000,
+  pingTimeout: 10000,
 });
 
 io.on('connection', (socket) => {
@@ -934,6 +1156,9 @@ io.on('connection', (socket) => {
         return;
       }
 
+      // 재접속 시 유예 타이머 취소 (1차 안전망: 기존 세션 및 미디어 유지)
+      cancelPeerDisconnectGrace(room, clientId);
+
       if (role === 'host') {
         if (!requireHost(room, hostToken)) {
           const err = { error: '호스트 토큰이 올바르지 않습니다.' };
@@ -955,6 +1180,7 @@ io.on('connection', (socket) => {
         room.viewers.set(clientId, {
           name,
           socketId: socket.id,
+          connected: true,
           lastSeen: Date.now(),
           micState: prev?.micState === 'on' || prev?.micState === 'none' ? prev.micState : 'off',
         });
@@ -1223,6 +1449,33 @@ io.on('connection', (socket) => {
             room.audio = { ...room.audio, ...payload, playing: payload.action !== 'pause' };
           }
           break;
+        case 'start-meeting-countdown': {
+          room.meetingStarted = false;
+          room.meetingCountdown = true;
+          const countdownSec = Math.max(1, parseInt(payload?.duration, 10) || 5);
+          if (room._countdownTimer) clearTimeout(room._countdownTimer);
+          room._countdownTimer = setTimeout(() => {
+            room._countdownTimer = null;
+            if (room && !room.ended) {
+              room.meetingStarted = true;
+              room.meetingCountdown = false;
+              persistRoom(room);
+              broadcastViewerCount(io, room);
+            }
+          }, countdownSec * 1000 + 200);
+          break;
+        }
+        case 'meeting-started': {
+          if (room._countdownTimer) {
+            clearTimeout(room._countdownTimer);
+            room._countdownTimer = null;
+          }
+          room.meetingStarted = true;
+          room.meetingCountdown = false;
+          persistRoom(room);
+          broadcastViewerCount(io, room);
+          break;
+        }
         case 'session-end':
           room.ended = true;
           room.endedAt = Date.now();
@@ -1290,8 +1543,8 @@ io.on('connection', (socket) => {
       }
 
       persistRoom(room);
-      // 슬라이드/낙서 등은 다른 클라이언트에게만, 종료는 전원
-      if (type === 'session-end') {
+      // 슬라이드/낙서 등은 다른 클라이언트에게만, 종료 및 미팅 시작 카운트다운은 전원에게 브로드캐스트
+      if (type === 'session-end' || type === 'start-meeting-countdown') {
         io.to(code).emit(type, payload);
       } else {
         socket.to(code).emit(type, payload);
@@ -1311,10 +1564,13 @@ io.on('connection', (socket) => {
       room.hostConnected = true;
       room.hostSocketId = socket.id;
       room.hostLastSeen = now;
+      cancelPeerDisconnectGrace(room, socket.data.clientId);
     } else if (socket.data.clientId && room.viewers.has(socket.data.clientId)) {
       const v = room.viewers.get(socket.data.clientId);
       v.lastSeen = now;
       v.socketId = socket.id;
+      v.connected = true;
+      cancelPeerDisconnectGrace(room, socket.data.clientId);
     }
   });
 
@@ -1353,46 +1609,33 @@ io.on('connection', (socket) => {
     );
   });
 
-  socket.on('disconnect', () => {
+  socket.on('disconnect', (reason) => {
     const code = socket.data.roomCode;
     const clientId = socket.data.clientId;
-    if (code && clientId) {
-      cleanupSocketPeer(code, clientId, io);
-    }
+    const role = socket.data.role;
     const room = code ? getRoom(code) : null;
-    if (!room) return;
+    if (!room || !clientId) return;
 
-    if (socket.data.role === 'host') {
+    console.log(
+      `[disconnect] room=${code} role=${role} client=${clientId.slice(0, 8)} reason=${reason} (grace ${Math.round(PEER_DISCONNECT_GRACE_MS / 1000)}s)`
+    );
+
+    if (role === 'host') {
       if (room.hostSocketId === socket.id) {
         room.hostConnected = false;
         room.hostSocketId = null;
-        // 호스트 새로고침/이탈 = 송출 종료 → FLAG false + 참가자「송출 대기」
-        room.streamActive = false;
-        room.streamKinds = [];
-        persistRoom(room);
-        io.to(code).emit('stream-status', { active: false, kinds: [] });
-        // 참가자도 없으면 유예 후 방 폐기 (코드 재사용·목록 정리)
-        maybeScheduleEmptyRoomDispose(room);
+        // 1차 안전망: 스트림과 SFU 리소스를 즉시 끊지 않고 30초 유예 부여
+        schedulePeerDisconnectGrace(io, room, clientId, 'host');
       }
-    } else if (socket.data.clientId) {
-      const clientId = socket.data.clientId;
+    } else {
       const v = room.viewers.get(clientId);
       if (v && v.socketId === socket.id) {
-        room.viewers.delete(clientId);
-        if (room.activeBroadcasterId === clientId) {
-          room.activeBroadcasterId = room.hostClientId;
-          if (room.hostSocketId) {
-            io.to(room.hostSocketId).emit('screen-share-ended', { clientId });
-          }
-          broadcastBroadcaster(io, room);
-        }
-        // peer-left는 지연 — 새로고침 재입장 시 생략
-        scheduleViewerLeave(io, room, clientId);
-        maybeScheduleEmptyRoomDispose(room);
+        v.connected = false;
+        v.socketId = null;
+        // 1차 안전망: 참가자 세션 및 SFU 리소스를 즉시 삭제하지 않고 30초 유예 부여
+        schedulePeerDisconnectGrace(io, room, clientId, 'viewer');
       }
     }
-    persistRoom(room);
-    broadcastViewerCount(io, room);
   });
 });
 
@@ -1409,8 +1652,120 @@ server.listen(PORT, HOST, () => {
   console.log('');
   // SFU 워커를 부팅 시 미리 올려 44444 LISTEN 확보
   getWorker().catch((err) => console.warn('[sfu] warmup', err));
+
+  // Deep-Live-Cam 실시간 페이스 스왑 백그라운드 워커 기동
+  startFaceSwapWorker();
+
   try { sweepRooms(); } catch (err) { console.warn('[room] initial sweep', err); }
   setInterval(() => {
     try { sweepRooms(); } catch (err) { console.warn('[room] sweep', err); }
   }, ROOM_SWEEP_MS).unref?.();
 });
+
+// WebSocket upgrade proxy: /face-swap-ws -> face_swap_worker:8765/ws
+server.on('upgrade', (req, socket, head) => {
+  if (req.url && (req.url.startsWith('/face-swap-ws') || req.url.startsWith('/ws'))) {
+    const net = require('net');
+    const port = Number(process.env.FACE_SWAP_PORT || 8765);
+    const proxySocket = net.connect(port, '127.0.0.1', () => {
+      const targetPath = req.url.replace('/face-swap-ws', '/ws');
+      const lines = [`${req.method} ${targetPath} HTTP/1.1`];
+      for (const [k, v] of Object.entries(req.headers)) {
+        lines.push(`${k}: ${v}`);
+      }
+      lines.push('\r\n');
+      proxySocket.write(lines.join('\r\n'));
+      if (head && head.length) proxySocket.write(head);
+      socket.pipe(proxySocket);
+      proxySocket.pipe(socket);
+    });
+    proxySocket.on('error', () => {
+      try { socket.destroy(); } catch { /* ignore */ }
+    });
+    socket.on('error', () => {
+      try { proxySocket.destroy(); } catch { /* ignore */ }
+    });
+  }
+});
+
+let faceSwapProcess = null;
+let faceSwapRestartTimer = null;
+let faceSwapStopping = false;
+
+function getPythonCmd() {
+  const pythonCandidates = [
+    process.env.PYTHON_PATH,
+    'C:\\Program Files\\Python313\\python.exe',
+    'python',
+    'py',
+  ].filter(Boolean);
+  for (const cand of pythonCandidates) {
+    if (cand.includes('\\') || cand.includes('/')) {
+      if (fs.existsSync(cand)) return cand;
+    }
+  }
+  return 'python';
+}
+
+function startFaceSwapWorker() {
+  if (faceSwapStopping) return;
+  if (faceSwapProcess) return;
+
+  const workerScript = path.join(__dirname, 'face_swap_worker.py');
+  if (!fs.existsSync(workerScript)) return;
+
+  const pythonCmd = getPythonCmd();
+  console.log(`[FaceSwap] starting worker with ${pythonCmd}...`);
+
+  try {
+    faceSwapProcess = spawn(pythonCmd, ['-u', workerScript], {
+      cwd: ROOT,
+      stdio: ['ignore', 'pipe', 'pipe'],
+      windowsHide: true,
+      env: { ...process.env, PYTHONUNBUFFERED: '1' },
+    });
+    faceSwapProcess.stdout.on('data', (d) => {
+      const s = d.toString().trim();
+      if (s) console.log('[FaceSwap]', s);
+    });
+    faceSwapProcess.stderr.on('data', (d) => {
+      const s = d.toString().trim();
+      if (s) console.log('[FaceSwap]', s);
+    });
+    faceSwapProcess.on('error', (err) => {
+      console.warn('[FaceSwap] worker spawn error:', err);
+    });
+    faceSwapProcess.on('exit', (code) => {
+      console.log(`[FaceSwap] worker exited (code=${code})`);
+      faceSwapProcess = null;
+      if (!faceSwapStopping) {
+        clearTimeout(faceSwapRestartTimer);
+        faceSwapRestartTimer = setTimeout(() => {
+          startFaceSwapWorker();
+        }, 3000);
+      }
+    });
+  } catch (err) {
+    console.warn('[FaceSwap] could not spawn worker:', err);
+    if (!faceSwapStopping) {
+      clearTimeout(faceSwapRestartTimer);
+      faceSwapRestartTimer = setTimeout(startFaceSwapWorker, 5000);
+    }
+  }
+}
+
+function stopFaceSwapWorker() {
+  faceSwapStopping = true;
+  clearTimeout(faceSwapRestartTimer);
+  if (faceSwapProcess) {
+    try {
+      faceSwapProcess.kill('SIGTERM');
+    } catch { /* ignore */ }
+    faceSwapProcess = null;
+  }
+}
+
+process.on('exit', stopFaceSwapWorker);
+process.on('SIGINT', () => { stopFaceSwapWorker(); process.exit(0); });
+process.on('SIGTERM', () => { stopFaceSwapWorker(); process.exit(0); });
+

@@ -14,12 +14,21 @@ const mediaCodecs = [
     mimeType: 'audio/opus',
     clockRate: 48000,
     channels: 2,
+    parameters: {
+      useinbandfec: 1, // 원거리 패킷 손실 시 Opus 인밴드 FEC 자동 복구
+      usedtx: 0,        // DTX 비활성화 (말문 시작 시 첫 음절 잘림 방지)
+      minptime: 10,
+    },
   },
   {
     kind: 'video',
     mimeType: 'video/VP8',
     clockRate: 90000,
-    parameters: { 'x-google-start-bitrate': 800 },
+    parameters: {
+      'x-google-start-bitrate': 800,
+      'x-google-max-bitrate': 2500,
+      'x-google-min-bitrate': 200,
+    },
   },
   {
     kind: 'video',
@@ -29,6 +38,9 @@ const mediaCodecs = [
       'packetization-mode': 1,
       'profile-level-id': '42e01f',
       'level-asymmetry-allowed': 1,
+      'x-google-start-bitrate': 800,
+      'x-google-max-bitrate': 2500,
+      'x-google-min-bitrate': 200,
     },
   },
 ];
@@ -225,6 +237,12 @@ function clientRtpCapabilities(router) {
   return caps;
 }
 
+const DEFAULT_ICE_SERVERS = [
+  { urls: 'stun:stun.l.google.com:19302' },
+  { urls: 'stun:stun1.l.google.com:19302' },
+  { urls: 'stun:stun2.l.google.com:19302' },
+];
+
 async function createWebRtcTransport(router) {
   const server = await getWebRtcServer();
   const transport = await router.createWebRtcTransport({
@@ -234,6 +252,8 @@ async function createWebRtcTransport(router) {
     // 공유기 UDP 40000–49999(44444 포함) 활용. TCP는 보조.
     preferUdp: true,
     initialAvailableOutgoingBitrate: 1_000_000,
+    minimumAvailableOutgoingBitrate: 300_000,
+    maxIncomingBitrate: 3_500_000,
   });
   return {
     transport,
@@ -242,6 +262,7 @@ async function createWebRtcTransport(router) {
       iceParameters: transport.iceParameters,
       iceCandidates: transport.iceCandidates,
       dtlsParameters: transport.dtlsParameters,
+      iceServers: DEFAULT_ICE_SERVERS,
     },
   };
 }
@@ -375,6 +396,23 @@ function closeRoomIfEmpty(roomCode) {
  * @param {import('socket.io').Socket} socket
  * @param {{ getRoomCode: () => string, getClientId: () => string, getRole: () => string, io: import('socket.io').Server }} ctx
  */
+const lastProducerPliTimes = new Map(); // producerId -> timestamp
+
+async function requestKeyframeThrottled(consumer) {
+  if (!consumer || consumer.closed || consumer.kind !== 'video') return;
+  const producerId = consumer.producerId;
+  const now = Date.now();
+  const lastTime = lastProducerPliTimes.get(producerId) || 0;
+  // 다중 시청자 동시 접속 시 키프레임(PLI) 폭풍 방지: 프로듀서당 최소 2.5초 간격 제한
+  if (now - lastTime < 2500) {
+    return;
+  }
+  lastProducerPliTimes.set(producerId, now);
+  try {
+    await consumer.requestKeyFrame();
+  } catch { /* ignore */ }
+}
+
 function attachSfuHandlers(socket, ctx) {
   socket.on('sfu-get-capabilities', async (_msg, cb) => {
     try {
@@ -406,6 +444,14 @@ function attachSfuHandlers(socket, ctx) {
       const peer = getPeer(room, clientId);
       peer.role = ctx.getRole() || peer.role;
       const direction = msg?.direction === 'recv' ? 'recv' : 'send';
+      // 재접속/새로고침 시 동일 direction의 기존 트랜스포트가 남아 있다면 즉시 안전하게 종료 및 정리 (타임아웃 캐스케이드 차단)
+      for (const [oldId, oldT] of [...peer.transports.entries()]) {
+        if (oldT.appData?.direction === direction) {
+          console.log(`[sfu] cleaning up replaced transport ${oldId} for peer ${String(clientId).slice(0, 8)} (${direction})`);
+          try { oldT.close(); } catch { /* ignore */ }
+          peer.transports.delete(oldId);
+        }
+      }
       const { transport, params } = await createWebRtcTransport(room.router);
       peer.transports.set(transport.id, transport);
       transport.appData = { direction, clientId };
@@ -440,6 +486,24 @@ function attachSfuHandlers(socket, ctx) {
       cb?.({ ok: true });
     } catch (err) {
       console.error('[sfu-connect-transport]', err);
+      cb?.({ error: err.message || 'sfu-error' });
+    }
+  });
+
+  // 2차 안전망: 무중단 ICE 재협상
+  socket.on('sfu-restart-ice', async (msg, cb) => {
+    try {
+      const code = ctx.getRoomCode();
+      const clientId = ctx.getClientId();
+      const room = sfuRooms.get(code);
+      const peer = room?.peers.get(clientId);
+      const transport = peer?.transports.get(msg?.transportId);
+      if (!transport || transport.closed) return cb?.({ error: 'transport-not-found' });
+      const iceParameters = await transport.restartIce();
+      console.log(`[sfu] ICE restart success: room=${code} client=${String(clientId || '').slice(0, 8)} transport=${String(transport.id).slice(0, 8)}`);
+      cb?.({ ok: true, iceParameters });
+    } catch (err) {
+      console.error('[sfu-restart-ice]', err);
       cb?.({ error: err.message || 'sfu-error' });
     }
   });
@@ -520,11 +584,12 @@ function attachSfuHandlers(socket, ctx) {
       const peer = room?.peers.get(clientId);
       if (!room || !peer) return cb?.({ error: 'no-peer' });
 
-      let transport = peer.transports.get(msg?.transportId);
-      if (!transport) {
-        transport = [...peer.transports.values()].find((t) => t.appData?.direction === 'recv');
+      let transport = msg?.transportId ? peer.transports.get(msg.transportId) : null;
+      if (!transport || transport.closed) {
+        const liveRecv = [...peer.transports.values()].filter((t) => t.appData?.direction === 'recv' && !t.closed);
+        transport = liveRecv[liveRecv.length - 1];
       }
-      if (!transport) return cb?.({ error: 'recv-transport-not-found' });
+      if (!transport || transport.closed) return cb?.({ error: 'recv-transport-not-found' });
 
       const producerId = msg?.producerId;
       if (!producerId) return cb?.({ error: 'no-producer' });
@@ -533,9 +598,18 @@ function attachSfuHandlers(socket, ctx) {
         return cb?.({ error: 'cannot-consume' });
       }
 
+      let targetProducer = null;
+      for (const p of room.peers.values()) {
+        const prod = p.producers.get(producerId);
+        if (prod) { targetProducer = prod; break; }
+      }
+
       const consumer = await transport.consume({
         producerId,
         rtpCapabilities: msg.rtpCapabilities,
+        appData: targetProducer?.appData || {},
+        enableRtx: true, // RFC 4588 RTX 재전송 활성화로 패킷 손실 시 영상 멈춤 완벽 복구
+        ignoreDtx: true,
         paused: true,
       });
       peer.consumers.set(consumer.id, consumer);
@@ -555,7 +629,7 @@ function attachSfuHandlers(socket, ctx) {
         producerId,
         kind: consumer.kind,
         rtpParameters: consumer.rtpParameters,
-        appData: consumer.appData || {},
+        appData: consumer.appData || targetProducer?.appData || {},
         producerPaused: consumer.producerPaused,
       });
     } catch (err) {
@@ -577,6 +651,30 @@ function attachSfuHandlers(socket, ctx) {
     } catch (err) {
       console.error('[sfu-resume-consumer]', err);
       cb?.({ error: err.message || 'sfu-error' });
+    }
+  });
+
+  socket.on('sfu-request-keyframe', async (msg, cb) => {
+    try {
+      const code = ctx.getRoomCode();
+      const clientId = ctx.getClientId();
+      const room = sfuRooms.get(code);
+      const peer = room?.peers.get(clientId);
+      if (msg?.consumerId) {
+        const consumer = peer?.consumers.get(msg.consumerId);
+        if (consumer && consumer.kind === 'video') {
+          await requestKeyframeThrottled(consumer);
+        }
+      } else if (peer?.consumers) {
+        for (const consumer of peer.consumers.values()) {
+          if (consumer && consumer.kind === 'video') {
+            await requestKeyframeThrottled(consumer);
+          }
+        }
+      }
+      cb?.({ ok: true });
+    } catch {
+      cb?.({ ok: false });
     }
   });
 

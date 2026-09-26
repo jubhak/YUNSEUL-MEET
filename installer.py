@@ -165,9 +165,10 @@ class InstallThread(QThread):
             root_to_copy = dev_root if dev_root.exists() else Path(src_root)
 
             copy_items = [
-                "server", "api", "css", "js", "data", "uploads", "scripts",
+                "server", "api", "css", "js", "img", "data", "uploads", "scripts",
                 "index.html", "host.html", "viewer.html", "check.html",
                 "package.json", "package-lock.json", ".env", "START-SERVER.bat",
+                "install.bat", "공유기_포트포워딩_설정안내.txt",
                 "app_icon.ico", "app_icon.png"
             ]
 

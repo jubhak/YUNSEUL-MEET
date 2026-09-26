@@ -8,7 +8,7 @@
   <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
   <meta http-equiv="Pragma" content="no-cache">
   <title>호스트 - YUNSEUL PPT</title>
-  <link rel="stylesheet" href="css/style.css?v=20260902compose2">
+  <link rel="stylesheet" href="css/style.css?v=20260924grid6">
   <style>
     /* 툴바 강제 · 아이콘 가시성 강제 (캐시된 CSS 이겨내기) */
     #main-toolbar.toolbar {
@@ -18,7 +18,7 @@
       right: auto !important;
       width: 100% !important;
       flex: 0 0 auto !important;
-      z-index: 20 !important;
+      z-index: 50 !important;
       display: flex !important;
       align-items: flex-start !important;
       justify-content: flex-start !important;
@@ -129,8 +129,13 @@
       line-height: 1 !important;
       cursor: pointer !important;
     }
-    #main-toolbar .btn-icon .ico { display: block !important; font-size: 1.15rem !important; line-height: 1 !important; }
-    #main-toolbar .btn-icon svg { display: none !important; }
+    #main-toolbar .btn-icon .ico { display: inline-flex !important; align-items: center !important; justify-content: center !important; font-size: 1.15rem !important; line-height: 1 !important; }
+    #main-toolbar .btn-icon svg { display: inline-block !important; width: 1.25rem !important; height: 1.25rem !important; vertical-align: middle !important; }
+    #main-toolbar .btn-icon.hidden,
+    #main-toolbar .btn-avatar-control.hidden,
+    #main-toolbar .hidden {
+      display: none !important;
+    }
     #main-toolbar #btn-pen.is-active {
       background: #3d6aef !important;
       border-color: #355fd4 !important;
@@ -210,21 +215,20 @@
 
       <div class="tb-sep tb-sep-draw" role="separator" aria-hidden="true"></div>
 
-      <div class="tb-group tb-group-draw" id="draw-tools" style="display:none">
-        <button type="button" id="btn-pen" class="btn btn-icon btn-pen is-active" title="펜 끄기" aria-pressed="true" aria-label="펜">
+      <div class="tb-group tb-group-draw" id="draw-tools">
+        <button type="button" id="btn-pen" class="btn btn-icon btn-pen" title="펜 켜기" aria-pressed="false" aria-label="펜">
           <span class="ico" aria-hidden="true">✏️</span>
         </button>
         <input type="color" id="pen-color" value="#ff0000" title="펜 색상">
         <input type="range" id="pen-size" min="1" max="20" value="4" title="펜 굵기">
         <button type="button" id="btn-eraser" class="btn btn-sm" title="지우개">지우개</button>
-        <button type="button" id="btn-clear-slide" class="btn btn-sm" title="현재 슬라이드 지우기">슬라이드 지우기</button>
-        <button type="button" id="btn-clear-all" class="btn btn-sm" title="전체 지우기">전체 지우기</button>
+        <button type="button" id="btn-clear-all" class="btn btn-sm" title="전체 필기 지우기">전체 필기 지우기</button>
       </div>
 
       <div class="tb-sep tb-sep-session" role="separator" aria-hidden="true"></div>
 
       <div class="tb-group tb-group-session">
-        <button type="button" id="btn-reload-ppt" class="btn btn-sm" title="다른 PPTX 파일로 바꾸기" style="display:none">PPT 바꾸기</button>
+        <button type="button" id="btn-meeting-wait" class="btn btn-sm btn-meeting-wait" title="미팅 준비 대기 중 (클릭 시 미팅 시작)">⏳ 대기중</button>
         <button type="button" id="btn-stream" class="btn btn-sm btn-primary" title="참가자에게 화면 송출">송출</button>
         <button type="button" id="btn-fullscreen" class="btn btn-sm" title="전체화면 (F)">전체화면</button>
         <button type="button" id="btn-chat" class="btn btn-icon btn-chat" title="채팅 열기" aria-pressed="false" aria-label="채팅">
@@ -246,8 +250,20 @@
           <span class="ico ico-off" aria-hidden="true">🚫</span>
         </button>
         <button type="button" id="btn-av-cam" class="btn btn-icon btn-av" title="카메라 꺼짐 — 클릭하여 켜기" aria-pressed="false" aria-label="카메라">
-          <span class="ico ico-on" aria-hidden="true">📹</span>
-          <span class="ico ico-off" aria-hidden="true">📷</span>
+          <span class="ico ico-on" aria-hidden="true">
+            <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="display:inline-block!important;vertical-align:middle;width:20px;height:20px;">
+              <path d="M15 10l5-3v10l-5-3v3a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v3z"></path>
+            </svg>
+          </span>
+          <span class="ico ico-off" aria-hidden="true">
+            <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="display:inline-block!important;vertical-align:middle;width:20px;height:20px;">
+              <path d="M16 16v1a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2h2m4 0h4a2 2 0 0 1 2 2v3l5-3v10l-3.5-2.1"></path>
+              <line x1="2" y1="2" x2="22" y2="22" stroke="#ef4444" stroke-width="2.5"></line>
+            </svg>
+          </span>
+        </button>
+        <button type="button" id="btn-face-effect" class="btn btn-icon btn-face-effect hidden" style="display: none !important;" title="얼굴 효과 (다른 사람 얼굴로 변경)" aria-label="얼굴 효과">
+          <span class="ico" aria-hidden="true">🎭</span>
         </button>
       </div>
     </div>
@@ -257,6 +273,27 @@
   <div id="capture-root">
   <div id="app">
     <main class="stage-area">
+      <!-- 타로카드 미팅 준비 대기실 (툴 박스 아래 검정색 공간) -->
+      <div id="tarot-waiting-lounge" class="tarot-waiting-lounge hidden">
+        <div class="tarot-lounge-header">
+          <h1 class="tarot-lounge-title">미팅 준비중</h1>
+          <p class="tarot-lounge-subtitle">참가자들이 입장하고 있습니다. 호스트가 미팅을 시작하면 화면이 열립니다.</p>
+          <div class="tarot-lounge-host-actions">
+            <button type="button" id="btn-tarot-screen-share" class="btn btn-tarot-share">🖥️ 윈도우 화면 공유 설정</button>
+            <button type="button" id="btn-tarot-start-meeting" class="btn btn-meeting-start-hero">🚀 미팅 시작하기</button>
+          </div>
+        </div>
+        <div class="tarot-body-area">
+          <div id="tarot-card-container" class="tarot-card-container">
+            <div id="tarot-card-grid" class="tarot-card-grid"></div>
+          </div>
+          <div id="tarot-countdown-overlay" class="tarot-countdown-overlay hidden">
+            <div class="tarot-countdown-number" id="tarot-countdown-num">5</div>
+            <div class="tarot-countdown-text">미팅이 곧 시작됩니다!</div>
+          </div>
+        </div>
+      </div>
+
       <div id="upload-panel" class="upload-panel hidden">
         <div class="upload-box ready-box share-prompt-box" id="upload-box">
           <h2 id="share-prompt-title">화면 공유</h2>
@@ -265,18 +302,17 @@
             <button type="button" id="btn-share-now" class="btn btn-primary btn-lg">화면 공유 시작</button>
             <button type="button" id="btn-camera-share" class="btn btn-secondary btn-lg hidden">카메라로 송출</button>
           </div>
-          <input type="file" id="file-input" accept=".pptx,application/vnd.openxmlformats-officedocument.presentationml.presentation" hidden>
           <p id="upload-status" class="upload-status"></p>
         </div>
       </div>
 
-      <div id="presentation-stage" class="presentation-stage hidden">
-        <div id="slide-fit" class="slide-fit">
-          <div id="slide-scaler" class="slide-scaler">
-            <div id="slide-container" class="slide-container"></div>
-          </div>
-          <canvas id="draw-canvas" class="draw-canvas"></canvas>
+      <!-- 발표 및 그리기 스테이지 (호스트 화면에 로컬 비디오 미러링 없음 — 무한 루프 방지) -->
+      <div id="presentation-stage" class="presentation-stage">
+        <!-- 양방향 미팅: 접속 사용자 가로 비율 카드 그리드 (카메라 영상 또는 카메라 꺼짐 표시) -->
+        <div id="host-participants-view" class="host-participants-view hidden">
+          <div id="host-participants-grid" class="host-participants-grid"></div>
         </div>
+        <canvas id="draw-canvas" class="draw-canvas"></canvas>
       </div>
     </main>
   </div><!-- /#app -->
@@ -341,26 +377,108 @@
     </div>
   </div>
 
-  <div id="rotate-hint" class="rotate-hint hidden">
-    <div>
+  <div id="rotate-hint" class="rotate-hint hidden" aria-hidden="true">
+    <div class="rotate-hint-box">
       <span class="phone-icon">📱</span>
-      <p>가로로 돌려 주세요</p>
+      <h2>가로 화면으로 회전해 주세요</h2>
+      <p>YUNSEUL PPT는 고화질 프레젠테이션을 위해<br><strong>가로 화면만 지원</strong>합니다.</p>
     </div>
   </div>
 
   <audio id="sync-audio" preload="auto" playsinline></audio>
   <button type="button" id="unmute-banner" class="unmute-banner hidden">🔊 탭하여 소리 켜기</button>
 
+
+  <!-- 윈도우 화면 공유 사전 설정 모달 -->
+  <div id="screen-share-setup-modal" class="meeting-start-modal hidden">
+    <div class="meeting-start-card">
+      <h2>🖥️ 윈도우 화면 공유 설정</h2>
+      <p>새 미팅 룸이 준비되었습니다!<br>미팅을 시작하기 전에 <strong>공유할 윈도우 화면(파워포인트, 프로그램 창, 전체 화면 등)</strong>을 먼저 선택해 주세요.<br><span style="font-size:0.88em;color:#94a3b8;display:inline-block;margin-top:6px;">화면을 먼저 설정해 두어야 미팅 시작 시 참가자들에게 끊김이나 오류 없이 즉시 송출됩니다.</span></p>
+      <div class="meeting-start-actions">
+        <button type="button" id="btn-modal-share-skip" class="btn btn-secondary">나중에 설정</button>
+        <button type="button" id="btn-modal-share-now" class="btn btn-primary" style="background:#2563eb;color:#fff;font-weight:700;white-space:nowrap;">🖥️ 화면 공유 시작</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 미팅 시작 확인 모달 -->
+  <div id="meeting-start-modal" class="meeting-start-modal hidden">
+    <div class="meeting-start-card">
+      <h2>미팅을 시작할까요?</h2>
+      <p>확인을 누르면 5초 카운트다운 후 타로 카드가 빛나며 사라지고 본격적인 미팅 화면이 시작됩니다.</p>
+      <div class="meeting-start-actions">
+        <button type="button" id="btn-modal-cancel" class="btn btn-secondary">취소</button>
+        <button type="button" id="btn-modal-start" class="btn btn-meeting-start-confirm">시작</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Deep-Live-Cam 실시간 얼굴 바꾸기 (사진 선택) 모달 -->
+  <div id="deep-live-cam-modal" class="deep-live-cam-modal hidden">
+    <div class="deep-live-cam-card">
+      <div class="dlc-header">
+        <div class="dlc-title">
+          <span>🎭</span>
+          <span>얼굴 선택 (송출할 얼굴을 선택해 주세요)</span>
+        </div>
+        <button type="button" class="dlc-close" id="btn-dlc-close" title="닫기">✕</button>
+      </div>
+
+      <div class="dlc-modal-body">
+        <p class="dlc-modal-desc">
+          원하는 얼굴을 선택하면 카메라가 켜지며 실시간 영상 송출이 시작됩니다.
+        </p>
+
+        <!-- 상단 액션 바 (원래 얼굴 복원 & 내 사진 업로드) -->
+        <div class="dlc-actions-bar">
+          <button type="button" id="btn-dlc-reset-real" class="dlc-action-btn dlc-btn-real" title="원래 내 실제 얼굴로 복원">
+            <span>👤</span>
+            <span>원래 내 얼굴</span>
+          </button>
+          <label class="dlc-action-btn dlc-btn-upload" title="내 컴퓨터에서 새 얼굴 사진 선택">
+            <span>➕</span>
+            <span>내 사진 직접 선택</span>
+            <input type="file" id="dlc-file-input" accept="image/jpeg,image/png,image/webp" style="display:none;">
+          </label>
+        </div>
+
+        <!-- 사진 카드 그리드 -->
+        <div class="dlc-section-heading">
+          <span>✨</span>
+          <span>캐릭터 및 인물 사진 선택</span>
+        </div>
+        <div class="dlc-hero-grid" id="dlc-hero-grid">
+          <div class="dlc-hero-card" data-hero="superman" id="card-hero-superman">
+            <img src="photo/superman.jpg" alt="슈퍼맨" class="dlc-hero-thumb">
+            <button type="button" class="dlc-hero-apply-btn">선택하기</button>
+          </div>
+          <div class="dlc-hero-card" data-hero="batman" id="card-hero-batman">
+            <img src="photo/batman.jpg" alt="배트맨" class="dlc-hero-thumb">
+            <button type="button" class="dlc-hero-apply-btn">선택하기</button>
+          </div>
+          <div class="dlc-hero-card" data-hero="spiderman" id="card-hero-spiderman">
+            <img src="photo/spiderman.jpg" alt="스파이더맨" class="dlc-hero-thumb">
+            <button type="button" class="dlc-hero-apply-btn">선택하기</button>
+          </div>
+        </div>
+
+        <div class="dlc-footer-status">
+          <span class="status-dot"></span>
+          <span id="dlc-status-text">원하는 얼굴을 선택하면 카메라가 켜지며 실시간 송출이 시작됩니다.</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <div id="load-progress" aria-hidden="true"></div>
 
   <script src="/socket.io/socket.io.js"></script>
   <script src="js/toolbar-pin.js?v=20260826fs1"></script>
   <script src="js/progress-bar.js?v=20260715w"></script>
-  <script src="js/host-upload.js?v=20260826local1"></script>
   <script type="module" src="js/load-progress.js?v=20260715w"></script>
   <script type="module" src="js/deps.js?v=20260826a"></script>
   <script type="module" src="js/host-ppt-loader.js?v=20260826local1"></script>
-  <script type="module" src="js/host.js?v=20260902compose2"></script>
+  <script type="module" src="js/host.js?v=20260923priv3"></script>
   <script type="module">
     import { setupDisplayMode } from './js/display-mode.js?v=20260826fs1';
     setupDisplayMode({ autoPromptMobile: true });

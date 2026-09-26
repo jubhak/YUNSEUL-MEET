@@ -1,5 +1,6 @@
 import { TRACK_KIND } from './config.js';
-import { SfuClient } from './sfu-client.js?v=20260826sfu23';
+import { SfuClient } from './sfu-client.js?v=20260919freeze1';
+import { VirtualAvatarManager } from '../virtual-avatar-manager.js?v=20260923priv3';
 
 /**
  * Host -> SFU display share (+ optional tab audio / mic).
@@ -34,12 +35,15 @@ export class HostPublisher {
     this.sfu = null;
     /** @type {Map<string, MediaStream>} */
     this._viewerDisplayStreams = new Map();
-    /** @type {HTMLAudioElement|null} */
-    this._viewerAudioEl = null;
-    /** @type {MediaStream|null} */
-    this._viewerAudioMix = null;
+    /** @type {Map<string, HTMLAudioElement>} */
+    this._remoteAudioEls = new Map();
+    this._viewerAudioUnlockBound = false;
+    this.onAudioPlaybackState = null;
+    this._ensureGlobalAudioUnlock();
     /** @type {((info: { peerId: string|null, active: boolean, stream?: MediaStream|null }) => void)|null} */
     this.onRelayChange = null;
+    this.avatarManager = new VirtualAvatarManager({ width: 640, height: 360 });
+    this.rawCameraStream = null;
     /** @type {MediaStream|null} */
     this.cameraStream = null;
     this.cameraWanted = false;
@@ -49,6 +53,14 @@ export class HostPublisher {
     this.onRemoteCamera = null;
     /** @type {((clientId: string) => void)|null} */
     this.onRemoteCameraClosed = null;
+    /** @type {((track: MediaStreamTrack|null) => void)|null} */
+    this.onMicTrack = null;
+    /** @type {((info: { clientId: string, track: MediaStreamTrack }) => void)|null} */
+    this.onRemoteAudioTrack = null;
+    /** @type {((clientId: string) => void)|null} */
+    this.onRemoteAudioTrackClosed = null;
+    /** @type {((data: { pingMs: number, lossRate: number, quality: string }) => void)|null} */
+    this.onNetworkQuality = null;
 
     this._unsubLeft = signaling.onPeerLeft((msg) => this._onPeerLeft(msg));
   }
@@ -99,7 +111,11 @@ export class HostPublisher {
     this.sfu.consumeFilter = (info) => {
       if (this.interactionMode === 'unidirectional') return false;
       const source = info?.appData?.source || '';
-      return source === 'viewer-display' || source === 'viewer-mic' || source === 'viewer-camera';
+      const kind = info?.kind || '';
+      const role = info?.role || '';
+      if (source === 'viewer-display' || source === 'viewer-mic' || source === 'viewer-camera') return true;
+      if (role === 'viewer' && (kind === 'audio' || kind === 'video')) return true;
+      return false;
     };
     this.sfu.onConsumed = (info, consumer) => this._onRemoteConsumed(info, consumer);
     this.sfu.onProducerClosed = (msg) => this._onRemoteProducerClosed(msg);
@@ -112,8 +128,15 @@ export class HostPublisher {
     if (!sfu.recvTransport || sfu.recvTransport.closed) {
       await sfu.ensureRecvTransport();
       await sfu.consumeExistingProducers();
+      sfu.startNetworkStatsMonitor((data) => {
+        this.onNetworkQuality?.(data);
+      });
     }
     return sfu;
+  }
+
+  async ensureReceiving() {
+    return await this._ensureSfuRecv();
   }
 
   _onRemoteConsumed(info, consumer) {
@@ -121,7 +144,7 @@ export class HostPublisher {
     const clientId = info?.clientId || info?.appData?.clientId;
     if (!clientId || clientId === this.signaling.localClientId) return;
 
-    if (source === 'viewer-camera') {
+    if (source === 'viewer-camera' || info?.appData?.trackKind === 'camera') {
       const ms = new MediaStream([consumer.track]);
       this.onRemoteCamera?.({ clientId, stream: ms, role: 'viewer' });
       consumer.track.addEventListener('ended', () => {
@@ -130,7 +153,7 @@ export class HostPublisher {
       return;
     }
 
-    if (source === 'viewer-display' || (consumer.kind === 'video' && info?.role === 'viewer')) {
+    if (source === 'viewer-display') {
       let ms = this._viewerDisplayStreams.get(clientId);
       if (!ms) {
         ms = new MediaStream();
@@ -160,6 +183,14 @@ export class HostPublisher {
     if (clientId) {
       this._viewerDisplayStreams.delete(clientId);
       this.onRemoteCameraClosed?.(clientId);
+      if (this._remoteAudioEls) {
+        for (const [key, el] of [...this._remoteAudioEls.entries()]) {
+          if (key.startsWith(`${clientId}:`)) {
+            this._cleanupViewerAudio(key, clientId);
+          }
+        }
+      }
+      this.onRemoteAudioTrackClosed?.(clientId);
     }
   }
 
@@ -219,7 +250,8 @@ export class HostPublisher {
 
     const vt = stream.getVideoTracks()[0];
     if (vt) {
-      try { vt.contentHint = 'detail'; } catch { /* ignore */ }
+      // 'motion'으로 설정하여 정지 화면(슬라이드)에서도 0 fps로 떨어지지 않고 꾸준히 프레임을 송출하도록 보장
+      try { vt.contentHint = 'motion'; } catch { /* ignore */ }
     }
     const surface = vt?.getSettings?.()?.displaySurface || '';
     if (surface === 'browser') {
@@ -242,6 +274,7 @@ export class HostPublisher {
     this._ensureSfuRecv().catch((err) => {
       console.warn('[HostPublisher] sfu recv', err);
     });
+    this._startAutoRepair();
     this._emitStatus();
     return stream;
   }
@@ -296,8 +329,39 @@ export class HostPublisher {
     this._ensureSfuRecv().catch((err) => {
       console.warn('[HostPublisher] sfu recv', err);
     });
+    this._startAutoRepair();
     this._emitStatus();
     return stream;
+  }
+
+  _startAutoRepair() {
+    if (this._autoRepairTimer) return;
+    this._autoRepairTimer = setInterval(async () => {
+      if (!this.active || !this.localStream) return;
+      const vt = this.localStream.getVideoTracks()[0];
+      if (!vt || vt.readyState !== 'live') return;
+
+      const hasProducer = this.sfu?.getProducerByKind('video');
+      if (!this.sfu || this.sfu._closed || !hasProducer) {
+        console.log('[HostPublisher] 3차 안전망: SFU 송출 자동 자가 치유(Auto-Repair) 진행...');
+        try {
+          await this._publishToSfu();
+          this._emitStatus();
+        } catch (err) {
+          console.warn('[HostPublisher] auto-repair error:', err);
+        }
+      }
+    }, 4000);
+  }
+
+  async ensurePublished() {
+    if (!this.active || !this.localStream) return;
+    try {
+      await this._publishToSfu();
+      this._emitStatus();
+    } catch (err) {
+      console.warn('[HostPublisher] ensurePublished error:', err);
+    }
   }
 
   async _publishToSfu() {
@@ -377,19 +441,38 @@ export class HostPublisher {
       return true;
     }
     if (!navigator.mediaDevices?.getUserMedia) {
-      throw new Error('이 기기/브라우저에서는 카메라를 지원하지 않습니다.');
+      console.warn('[HostPublisher] getUserMedia 미지원 환경, 가상 얼굴(아바타)로 전환');
+      return await this.startVirtualCamera();
     }
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({
-        video: {
-          facingMode: 'user',
-          width: { ideal: 640 },
-          height: { ideal: 480 },
-          frameRate: { ideal: 24, max: 30 },
-        },
-        audio: false,
-      });
-      this.cameraStream = stream;
+      let stream = null;
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({
+          video: {
+            width: { ideal: 1280, max: 1920 },
+            height: { ideal: 720, max: 1080 },
+            frameRate: { ideal: 30, max: 30 },
+          },
+          audio: false,
+        });
+      } catch (camErr) {
+        console.warn('[HostPublisher] 실물 웹캠 시작 불가(장치 없음/점유 중 등) → 가상 얼굴(아바타)로 자동 대체:', camErr);
+        return await this.startVirtualCamera();
+      }
+
+      this.rawCameraStream = stream;
+      this.avatarManager.setWebcamStream(stream);
+      if (this.hasMic && this._micTracks?.[0]) {
+        this.avatarManager.attachMicTrack(this._micTracks[0]);
+      }
+      if (this.avatarManager.activeSwapFace && this.avatarManager.activeSwapFace !== 'none' && this.avatarManager.activeSwapFace !== 'real') {
+        this.avatarManager.setMode('swap');
+      } else {
+        this.avatarManager.setMode('real');
+      }
+      const outgoingStream = this.avatarManager.getOutputStream();
+      this.cameraStream = outgoingStream;
+
       const vt = stream.getVideoTracks()[0];
       if (vt) {
         vt.addEventListener('ended', () => {
@@ -400,7 +483,7 @@ export class HostPublisher {
       // SFU가 이미 준비되어 있다면 송출
       if (this.sfu && this.sfu.sendTransport) {
         try {
-          await this.sfu.publishStream(stream, {
+          await this.sfu.publishStream(outgoingStream, {
             source: 'camera',
             trackKind: TRACK_KIND.CAMERA,
           });
@@ -408,10 +491,52 @@ export class HostPublisher {
           console.warn('[HostPublisher] publish camera failed:', err);
         }
       }
-      this.onCameraChange?.({ active: true, stream });
+      this.onCameraChange?.({ active: true, stream: outgoingStream });
       return true;
     } catch (err) {
-      console.warn('[HostPublisher] ensureCamera failed:', err);
+      console.warn('[HostPublisher] ensureCamera failed, falling back to virtual avatar:', err);
+      try {
+        return await this.startVirtualCamera();
+      } catch (virtErr) {
+        this.cameraWanted = false;
+        this.cameraStream = null;
+        this.onCameraChange?.({ active: false, stream: null });
+        return false;
+      }
+    }
+  }
+
+  async startVirtualCamera() {
+    this.cameraWanted = true;
+    if (this.rawCameraStream) {
+      this.rawCameraStream.getTracks().forEach((t) => {
+        try { t.stop(); } catch { /* ignore */ }
+      });
+      this.rawCameraStream = null;
+    }
+    try {
+      this.avatarManager.setWebcamStream(null);
+      this.avatarManager.setMode('virtual');
+      if (this.hasMic && this._micTracks?.[0]) {
+        this.avatarManager.attachMicTrack(this._micTracks[0]);
+      }
+      const outgoingStream = this.avatarManager.getOutputStream();
+      this.cameraStream = outgoingStream;
+
+      if (this.sfu && this.sfu.sendTransport) {
+        try {
+          await this.sfu.publishStream(outgoingStream, {
+            source: 'camera',
+            trackKind: TRACK_KIND.CAMERA,
+          });
+        } catch (err) {
+          console.warn('[HostPublisher] publish virtual camera failed:', err);
+        }
+      }
+      this.onCameraChange?.({ active: true, stream: outgoingStream });
+      return true;
+    } catch (err) {
+      console.warn('[HostPublisher] startVirtualCamera failed:', err);
       this.cameraWanted = false;
       this.cameraStream = null;
       this.onCameraChange?.({ active: false, stream: null });
@@ -420,12 +545,14 @@ export class HostPublisher {
   }
 
   stopCamera() {
-    if (this.cameraStream) {
-      this.cameraStream.getTracks().forEach((t) => {
+    if (this.rawCameraStream) {
+      this.rawCameraStream.getTracks().forEach((t) => {
         try { t.stop(); } catch { /* ignore */ }
       });
-      this.cameraStream = null;
+      this.rawCameraStream = null;
     }
+    this.avatarManager?.setWebcamStream(null);
+    this.cameraStream = null;
     this.cameraWanted = false;
     if (this.sfu) {
       this.sfu.stopPublishing({ source: 'camera' }).catch(() => {});
@@ -495,6 +622,8 @@ export class HostPublisher {
         }
       }
       this._startHostMicLevelWatch(rawTrack);
+      this.onMicTrack?.(rawTrack);
+      this.avatarManager?.attachMicTrack(rawTrack);
       this._emitStatus();
       return true;
     } catch (err) {
@@ -514,6 +643,9 @@ export class HostPublisher {
     this._micTracks.forEach((t) => {
       if (t) t.enabled = !!on;
     });
+    const activeMicTrack = on ? (this._micTracks[0] || null) : null;
+    this.onMicTrack?.(activeMicTrack);
+    this.avatarManager?.attachMicTrack(activeMicTrack);
     this._emitStatus();
   }
 
@@ -614,50 +746,92 @@ export class HostPublisher {
     if (this._relayPeerId === id) {
       this.restoreOwnDisplay().catch(() => {});
     }
+    if (this._remoteAudioEls) {
+      for (const [key, el] of [...this._remoteAudioEls.entries()]) {
+        if (key.startsWith(`${id}:`)) {
+          this._cleanupViewerAudio(key, id);
+        }
+      }
+    }
+    this.onRemoteAudioTrackClosed?.(id);
+  }
+
+  _ensureGlobalAudioUnlock() {
+    if (this._viewerAudioUnlockBound || typeof window === 'undefined') return;
+    this._viewerAudioUnlockBound = true;
+    const unlock = () => {
+      this.unlockAudio();
+    };
+    window.addEventListener('pointerdown', unlock, { capture: true });
+    window.addEventListener('keydown', unlock, { capture: true });
+    window.addEventListener('touchstart', unlock, { capture: true, passive: true });
+    window.addEventListener('click', unlock, { capture: true });
+  }
+
+  unlockAudio() {
+    if (!this._remoteAudioEls) return;
+    for (const el of this._remoteAudioEls.values()) {
+      if (el) {
+        el.muted = false;
+        if (el.paused) {
+          el.play().catch(() => {});
+        }
+      }
+    }
   }
 
   _playViewerMic(_peerId, track) {
     if (!track) return;
-    if (!this._viewerAudioMix) {
-      this._viewerAudioMix = new MediaStream();
-      this._viewerAudioEl = document.createElement('audio');
-      this._viewerAudioEl.autoplay = true;
-      this._viewerAudioEl.setAttribute('playsinline', '');
-      this._viewerAudioEl.playsInline = true;
-      this._viewerAudioEl.muted = false;
-      this._viewerAudioEl.volume = 1;
-      this._viewerAudioEl.srcObject = this._viewerAudioMix;
-      // display:none 금지 — 일부 환경 무음. 시스템소리 재캡처 루프 완화를 위해 볼륨은 유지하되
-      // 탭 오디오(시스템 소리) 송출은 끈다.
-      this._viewerAudioEl.style.cssText = 'position:fixed;left:0;top:0;width:1px;height:1px;opacity:0.01;pointer-events:none;z-index:-1;';
-      document.body.appendChild(this._viewerAudioEl);
-      if (!this._viewerAudioUnlockBound) {
-        this._viewerAudioUnlockBound = true;
-        const unlock = () => {
-          const el = this._viewerAudioEl;
-          if (!el) return;
-          el.muted = false;
-          el.play().catch(() => {});
-        };
-        window.addEventListener('pointerdown', unlock, { capture: true });
-        window.addEventListener('keydown', unlock, { capture: true });
-      }
+    if (!this._remoteAudioEls) this._remoteAudioEls = new Map();
+    this._ensureGlobalAudioUnlock();
+
+    const key = `${_peerId || 'guest'}:${track.id}`;
+    let el = this._remoteAudioEls.get(key);
+    if (!el) {
+      el = document.createElement('audio');
+      el.autoplay = true;
+      el.setAttribute('playsinline', '');
+      el.playsInline = true;
+      el.muted = false;
+      el.volume = 1;
+      el.style.cssText = 'position:fixed;left:0;top:0;width:1px;height:1px;opacity:0.01;pointer-events:none;z-index:-1;';
+      el.srcObject = new MediaStream([track]);
+      document.body.appendChild(el);
+      this._remoteAudioEls.set(key, el);
+    } else {
+      el.srcObject = new MediaStream([track]);
     }
-    if (!this._viewerAudioMix.getTracks().includes(track)) {
-      this._viewerAudioMix.addTrack(track);
-      track.addEventListener('ended', () => {
-        try { this._viewerAudioMix?.removeTrack(track); } catch { /* ignore */ }
-        this._syncTabAudioForFeedback();
-      });
-    }
-    this._viewerAudioEl.srcObject = this._viewerAudioMix;
-    this._viewerAudioEl.play().then(() => {
+
+    el.muted = false;
+    el.play().then(() => {
       this._viewerMicPlaying = true;
       this._syncTabAudioForFeedback();
-    }).catch(() => {
+      this.onAudioPlaybackState?.({ ok: true, clientId: _peerId });
+    }).catch((err) => {
       this._viewerMicPlaying = false;
-      console.warn('[HostPublisher] 참가자 마이크 재생이 차단됨 — 화면을 한 번 클릭해 주세요');
+      console.warn('[HostPublisher] 참가자 마이크 자동재생 차단됨 — 화면 클릭 시 재생됩니다:', err);
+      this.onAudioPlaybackState?.({ ok: false, needUnmute: true, clientId: _peerId });
     });
+
+    this.onRemoteAudioTrack?.({ clientId: _peerId, track });
+
+    track.addEventListener('ended', () => {
+      this._cleanupViewerAudio(key, _peerId);
+    }, { once: true });
+  }
+
+  _cleanupViewerAudio(key, clientId) {
+    const el = this._remoteAudioEls?.get(key);
+    if (el) {
+      try { el.pause(); } catch { /* ignore */ }
+      el.srcObject = null;
+      try { el.remove(); } catch { /* ignore */ }
+      this._remoteAudioEls.delete(key);
+    }
+    if (clientId) {
+      this.onRemoteAudioTrackClosed?.(clientId);
+    }
+    this._syncTabAudioForFeedback();
   }
 
   /**
@@ -666,8 +840,16 @@ export class HostPublisher {
    * 호스트 목소리는 mic producer로 별도 전송.
    */
   _syncTabAudioForFeedback() {
-    const liveViewerMic = (this._viewerAudioMix?.getAudioTracks() || [])
-      .some((t) => t && t.readyState === 'live');
+    let liveViewerMic = false;
+    if (this._remoteAudioEls) {
+      for (const el of this._remoteAudioEls.values()) {
+        const trk = el.srcObject?.getAudioTracks?.()[0];
+        if (trk && trk.readyState === 'live') {
+          liveViewerMic = true;
+          break;
+        }
+      }
+    }
     const shouldMuteTab = liveViewerMic;
     this._tabAudioTracks.forEach((t) => {
       if (!t) return;
@@ -728,6 +910,10 @@ export class HostPublisher {
 
   stopCaptureOnly() {
     this.stopCamera();
+    if (this._autoRepairTimer) {
+      clearInterval(this._autoRepairTimer);
+      this._autoRepairTimer = null;
+    }
     if (this._hostMicLevelTimer) {
       clearInterval(this._hostMicLevelTimer);
       this._hostMicLevelTimer = null;
@@ -741,20 +927,9 @@ export class HostPublisher {
     this._viewerDisplayStreams.clear();
     this.onRelayChange?.({ peerId: null, active: false, stream: null });
 
-    if (this._viewerAudioEl) {
-      try {
-        this._viewerAudioEl.pause();
-        this._viewerAudioEl.srcObject = null;
-        this._viewerAudioEl.remove();
-      } catch { /* ignore */ }
-      this._viewerAudioEl = null;
-      this._viewerAudioMix = null;
-    }
-
     if (this.sfu) {
-      try { this.sfu.stopPublishing(); } catch { /* ignore */ }
-      try { this.sfu.dispose(); } catch { /* ignore */ }
-      this.sfu = null;
+      try { this.sfu.stopPublishing({ source: 'display' }); } catch { /* ignore */ }
+      try { this.sfu.stopPublishing({ source: 'tab-audio' }); } catch { /* ignore */ }
     }
 
     if (this._ownStream) {
@@ -783,5 +958,18 @@ export class HostPublisher {
   dispose() {
     this.stop();
     this._unsubLeft?.();
+    if (this._remoteAudioEls) {
+      for (const el of this._remoteAudioEls.values()) {
+        try { el.pause(); } catch { /* ignore */ }
+        el.srcObject = null;
+        try { el.remove(); } catch { /* ignore */ }
+      }
+      this._remoteAudioEls.clear();
+    }
+    if (this.sfu) {
+      try { this.sfu.stopPublishing(); } catch { /* ignore */ }
+      try { this.sfu.dispose(); } catch { /* ignore */ }
+      this.sfu = null;
+    }
   }
 }

@@ -17,3 +17,10 @@ dist/
 
 # IDE
 .vscode/
+
+# Large Model & Package Files
+*.onnx
+**/*.onnx
+deep-live-cam/models/
+packages/
+*.whl

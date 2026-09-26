@@ -1,0 +1,113 @@
+name: update-mediasoup
+
+# Triggered (via workflow_dispatch) by the mediasoup repository once a new
+# mediasoup version has been published to NPM and its mediasoup-worker prebuilt
+# binaries have been uploaded to the GitHub release. It bumps the mediasoup
+# dependency in server/package.json and server/package-lock.json, validates the
+# bump, commits it to the default branch (v3) and triggers the demo-deploy
+# workflow.
+#
+# It can also be triggered manually from the Actions tab, optionally entering the
+# version to update to (empty means "latest published on NPM").
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'mediasoup version to update to (defaults to the latest published on NPM if empty)'
+        required: false
+
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
+jobs:
+  update:
+    runs-on: ubuntu-26.04
+    permissions:
+      contents: write
+      # Needed to dispatch the demo-deploy workflow once the bump is validated.
+      actions: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 26
+
+      # Resolve the target version: use the given input or, if empty, the latest
+      # mediasoup version published on NPM.
+      - name: Resolve mediasoup version
+        id: resolve
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${INPUT_VERSION}"
+          if [ -z "${version}" ]; then
+            version=$(npm view mediasoup version)
+          fi
+          echo "Updating mediasoup to ${version}"
+          echo "version=${version}" >> "${GITHUB_OUTPUT}"
+
+      # Bump mediasoup in server/package.json and server/package-lock.json.
+      # --ignore-scripts keeps this fast and side-effect free: it only rewrites
+      # the manifest files, without running mediasoup's postinstall (worker
+      # download/compile) nor the server's `prepare` script (tsc). The actual
+      # build and validation happen in the "Validate the bump" step below.
+      - name: Bump mediasoup dependency
+        run: npm install mediasoup@${{ steps.resolve.outputs.version }} --save --ignore-scripts --foreground-scripts --prefix server
+
+      # Detect whether the bump actually changed the package.json file. If
+      # mediasoup was already at the requested version there is nothing else
+      # to do.
+      - name: Check for changes
+        id: changes
+        env:
+          VERSION: ${{ steps.resolve.outputs.version }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if git diff --quiet -- server/package.json server/package-lock.json; then
+            echo "mediasoup is already at ${VERSION}, nothing to do"
+            echo "changed=false" >> "${GITHUB_OUTPUT}"
+          else
+            echo "changed=true" >> "${GITHUB_OUTPUT}"
+          fi
+
+      # Validate the bump BEFORE committing it, running some checks. `npm ci`
+      # runs the server's `prepare` script (tsc), so an incompatible mediasoup
+      # version fails here, so a broken bump never lands on v3 nor reaches the
+      # demo server.
+      - name: Validate the bump
+        if: steps.changes.outputs.changed == 'true'
+        run: |
+          npm ci --prefix server --foreground-scripts
+
+      # Commit and push the (now validated) bump. The commit message includes the
+      # version ("update mediasoup to X.Y.Z").
+      - name: Commit and push
+        if: steps.changes.outputs.changed == 'true'
+        env:
+          VERSION: ${{ steps.resolve.outputs.version }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email 'github-actions[bot]@users.noreply.github.com'
+          git add server/package.json server/package-lock.json
+          git commit -m "update mediasoup to ${VERSION}"
+          git push
+
+      # Trigger the demo-deploy workflow directly. We dispatch it (instead of
+      # relying on the push above to trigger it) because a push made with the
+      # default GITHUB_TOKEN does NOT trigger other workflows; workflow_dispatch
+      # is the documented exception that DOES work with the GITHUB_TOKEN. The bump
+      # was already validated above, so deploying it is safe.
+      - name: Trigger demo-deploy
+        if: steps.changes.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run demo-deploy.yaml --ref v3

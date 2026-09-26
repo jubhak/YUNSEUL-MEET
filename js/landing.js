@@ -247,12 +247,9 @@ function showJoinSuggest() {
 function renderJoinSuggest(rooms) {
   if (!joinSuggest) return;
   joinSuggest.innerHTML = '';
-  if (!rooms.length) {
-    const empty = document.createElement('li');
-    empty.className = 'join-suggest-empty';
-    empty.textContent = '진행 중인 미팅이 없습니다';
-    joinSuggest.appendChild(empty);
-    showJoinSuggest();
+  // 일치하는 방이 없거나 0개이면 리스트업 박스를 완전히 숨김 (값이 있을 때만 표시)
+  if (!rooms || rooms.length === 0) {
+    hideJoinSuggest();
     return;
   }
 
@@ -301,25 +298,34 @@ async function fetchActiveRooms(q) {
     const data = await res.json().catch(() => ({}));
     if (seq !== suggestSeq) return;
     activeRoomsCache = Array.isArray(data.rooms) ? data.rooms : [];
-    renderJoinSuggest(activeRoomsCache);
+    // 1자 이상 입력된 경우 해당 값으로 시작되는 방만 필터링
+    const filtered = q
+      ? activeRoomsCache.filter((r) => String(r.code || '').startsWith(q))
+      : activeRoomsCache;
+    renderJoinSuggest(filtered);
   } catch {
     if (seq !== suggestSeq) return;
     activeRoomsCache = [];
-    if (joinSuggest) {
-      joinSuggest.innerHTML = '<li class="join-suggest-empty">목록을 불러오지 못했습니다</li>';
-      showJoinSuggest();
-    }
+    hideJoinSuggest();
   }
 }
 
-function scheduleSuggestFetch() {
+function scheduleSuggestFetch(immediate = false) {
   const q = (joinCodeInput?.value || '').replace(/[^0-9]/g, '');
   clearTimeout(suggestTimer);
-  suggestTimer = setTimeout(() => fetchActiveRooms(q), 120);
+  if (immediate) {
+    fetchActiveRooms(q);
+  } else {
+    suggestTimer = setTimeout(() => fetchActiveRooms(q), 80);
+  }
 }
 
 joinCodeInput?.addEventListener('focus', () => {
-  scheduleSuggestFetch();
+  scheduleSuggestFetch(true);
+});
+
+joinCodeInput?.addEventListener('click', () => {
+  scheduleSuggestFetch(true);
 });
 
 joinCodeInput?.addEventListener('input', () => {
@@ -327,7 +333,7 @@ joinCodeInput?.addEventListener('input', () => {
   const raw = joinCodeInput.value;
   const cleaned = raw.replace(/[^0-9]/g, '').slice(0, 4);
   if (raw !== cleaned) joinCodeInput.value = cleaned;
-  scheduleSuggestFetch();
+  scheduleSuggestFetch(false);
 });
 
 joinCodeInput?.addEventListener('keydown', (e) => {

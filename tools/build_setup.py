@@ -7,6 +7,7 @@ import os
 import shutil
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -24,6 +25,12 @@ def run_cmd(cmd: list[str]) -> None:
 def build() -> None:
     os.environ.pop("PYTHONHOME", None)
     os.environ.pop("PYTHONPATH", None)
+
+    # 실행 중인 프로세스 정리 (파일 잠금 해제)
+    if os.name == "nt":
+        subprocess.run(["taskkill", "/f", "/im", "YUNSEUL-PPT.exe"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        subprocess.run(["taskkill", "/f", "/im", "YUNSEUL-PPT-Setup.exe"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        time.sleep(0.5)
 
     # 1. 아이콘 확인 및 생성
     if not ICON_ICO.exists() or not ICON_PNG.exists():
@@ -48,6 +55,7 @@ def build() -> None:
         "--hidden-import=PyQt6.QtCore",
         "--hidden-import=PyQt6.QtGui",
         "--hidden-import=PyQt6.QtWidgets",
+        "--hidden-import=PyQt6.QtNetwork",
         "--hidden-import=installer",
         "--hidden-import=widget_app",
         "--hidden-import=install_meta",

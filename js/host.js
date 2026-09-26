@@ -1,6 +1,6 @@
 import { OverlayManager } from './overlay-manager.js?v=20260826link1';
-import { DrawCanvas } from './draw-canvas.js?v=20260715u';
-import { RoomSync } from './sync.js?v=20260728b';
+import { DrawCanvas } from './draw-canvas.js?v=20260918pen2';
+import { RoomSync } from './sync.js?v=20260919failsafe1';
 import { goToSlide, getPptEngine } from './host-ppt-loader.js?v=20260715ah';
 import { findHttpLinkAt, findVideoHitAt } from './link-utils.js?v=20260715z';
 import {
@@ -10,8 +10,11 @@ import {
   getLatestViewers,
 } from './viewers-panel.js?v=20260826mic1';
 import { WebrtcSignaling } from './webrtc/signaling.js?v=20260715j';
-import { HostPublisher } from './webrtc/host-publisher.js?v=20260902mobile1';
-import { setupChatPanel } from './chat-panel.js?v=20260902compose2';
+import { HostPublisher } from './webrtc/host-publisher.js?v=20260919clean1';
+import { setupChatPanel } from './chat-panel.js?v=20260918fix2';
+import { CamFocusManager, VoiceActivityMonitor } from './cam-focus-manager.js?v=20260918focus1';
+import { TarotLoungeManager } from './tarot-lounge-manager.js?v=20260918pen2';
+import { attachVideoFreezeWatchdog } from './webrtc/video-freeze-watchdog.js?v=20260925smooth1';
 
 const params = new URLSearchParams(window.location.search);
 const roomCode = (params.get('code') || sessionStorage.getItem('roomCode') || '').replace(/[^0-9]/g, '').slice(0, 4);
@@ -20,7 +23,20 @@ const hostName = params.get('hn') || sessionStorage.getItem('hostName') || '호�
 const urlMode = params.get('mode');
 
 if (!roomCode || !hostToken) {
-  window.location.href = './';
+  try {
+    const res = await fetch('/api/host-url');
+    const data = await res.json();
+    if (data?.ok && data.url) {
+      window.location.replace(data.url);
+      await new Promise(() => {});
+    } else {
+      window.location.href = './#create';
+      await new Promise(() => {});
+    }
+  } catch {
+    window.location.href = './#create';
+    await new Promise(() => {});
+  }
 }
 
 try {
@@ -50,6 +66,8 @@ let activeBroadcasterId = null;
 let interactionMode = urlMode || sessionStorage.getItem('interactionMode') || 'bidirectional';
 let requireMic = params.get('rm') === '1' || sessionStorage.getItem('requireMic') === 'true';
 let chatPanel = null;
+let isMeetingStarted = false;
+let hostParticipantsGrid = null;
 
 function applyInteractionMode(mode, isRequireMic = requireMic) {
   interactionMode = mode === 'unidirectional' ? 'unidirectional' : 'bidirectional';
@@ -73,7 +91,13 @@ function applyInteractionMode(mode, isRequireMic = requireMic) {
         : '양방향 화상 미팅';
     }
   }
-  if (webrtcPublisher) webrtcPublisher.interactionMode = interactionMode;
+  if (webrtcPublisher) {
+    webrtcPublisher.interactionMode = interactionMode;
+    if (interactionMode === 'bidirectional') {
+      webrtcPublisher.ensureReceiving().catch(() => {});
+    }
+  }
+  hostParticipantsGrid?.updateVisibility();
   // 단방향: 명단에서 참가자 화면 공유 선택 비활성
   const hint = document.getElementById('viewers-popup-hint');
   if (hint && interactionMode === 'unidirectional') {
@@ -99,6 +123,7 @@ function showGuestShare(stream, name) {
       : '참가자 화면 공유 중';
   }
   guestShareStage?.classList.remove('hidden');
+  drawCanvas?.resize();
 }
 
 function hideGuestShare() {
@@ -106,6 +131,7 @@ function hideGuestShare() {
     guestShareVideo.srcObject = null;
   }
   guestShareStage?.classList.add('hidden');
+  drawCanvas?.resize();
 }
 
 async function returnToHostDisplay() {
@@ -191,13 +217,378 @@ const btnPen = document.getElementById('btn-pen');
 const btnAvSpeaker = document.getElementById('btn-av-speaker');
 const btnAvMic = document.getElementById('btn-av-mic');
 const btnAvCam = document.getElementById('btn-av-cam');
+const deepLiveCamModal = document.getElementById('deep-live-cam-modal');
+const btnDlcClose = document.getElementById('btn-dlc-close');
+const btnLaunchDlc = document.getElementById('btn-launch-dlc');
 const camOverlayContainer = document.getElementById('cam-overlay-container');
+const camFocusManager = new CamFocusManager({ containerId: 'cam-overlay-container' });
+camFocusManager.onFocusChange = (focusedId) => {
+  const avMgr = webrtcPublisher?.avatarManager;
+  if (avMgr) {
+    avMgr.setHighRes(focusedId === 'local');
+    updateAvatarUi();
+  }
+};
+const vadMonitor = new VoiceActivityMonitor({ threshold: 0.026, holdMs: 5000 });
+const tarotLounge = new TarotLoungeManager({ containerId: 'tarot-waiting-lounge', isHost: true });
+const btnMeetingWait = document.getElementById('btn-meeting-wait');
+const meetingStartModal = document.getElementById('meeting-start-modal');
+const btnModalCancel = document.getElementById('btn-modal-cancel');
+const btnModalStart = document.getElementById('btn-modal-start');
+const btnTarotStart = document.getElementById('btn-tarot-start-meeting');
+
+const screenShareSetupModal = document.getElementById('screen-share-setup-modal');
+const btnModalShareNow = document.getElementById('btn-modal-share-now');
+const btnModalShareSkip = document.getElementById('btn-modal-share-skip');
+const btnTarotScreenShare = document.getElementById('btn-tarot-screen-share');
+
+function updateTarotShareButton() {
+  if (!btnTarotScreenShare) return;
+  const isSharing = !!webrtcPublisher?.isActive;
+  btnTarotScreenShare.classList.toggle('is-active', isSharing);
+  btnTarotScreenShare.textContent = isSharing ? '✅ 화면 공유 준비 완료' : '🖥️ 윈도우 화면 공유 설정';
+}
+
+btnModalShareNow?.addEventListener('click', async () => {
+  screenShareSetupModal?.classList.add('hidden');
+  await startScreenShare();
+  updateTarotShareButton();
+});
+
+btnModalShareSkip?.addEventListener('click', () => {
+  screenShareSetupModal?.classList.add('hidden');
+});
+
+btnTarotScreenShare?.addEventListener('click', async () => {
+  await startScreenShare();
+  updateTarotShareButton();
+});
+
+btnMeetingWait?.addEventListener('click', () => {
+  meetingStartModal?.classList.remove('hidden');
+});
+
+btnTarotStart?.addEventListener('click', () => {
+  meetingStartModal?.classList.remove('hidden');
+});
+
+btnModalCancel?.addEventListener('click', () => {
+  meetingStartModal?.classList.add('hidden');
+});
+
+btnModalStart?.addEventListener('click', async () => {
+  // 1. 화면 공유가 아직 설정되지 않은 경우, 화면 공유 창부터 먼저 띄워 설정 완료
+  if (!webrtcPublisher?.isActive) {
+    meetingStartModal?.classList.add('hidden');
+    const ok = await startScreenShare();
+    updateTarotShareButton();
+    if (!ok) {
+      alert('화면 공유가 설정되지 않았습니다.\n공유할 윈도우 창 또는 전체 화면을 선택한 후 미팅을 시작해 주세요.');
+      return;
+    }
+  }
+
+  meetingStartModal?.classList.add('hidden');
+  isMeetingStarted = true;
+  if (btnMeetingWait) {
+    btnMeetingWait.disabled = true;
+    btnMeetingWait.textContent = '시작 중…';
+  }
+
+  // 2. 방 안의 모든 참가자(호스트+클라이언트)에게 미팅 시작 카운트다운 이벤트 전송
+  try {
+    sync?.socket?.emit('host-event', {
+      type: 'start-meeting-countdown',
+      payload: { duration: 5 },
+    });
+  } catch (err) {
+    console.warn('[host] emit start-meeting-countdown error:', err);
+  }
+
+  // 3. 호스트 화면에서도 즉시 5,4,3,2,1 카운트다운 및 타로카드 소멸 연출
+  tarotLounge.startCountdown({
+    duration: 5,
+    onComplete: () => {
+      isMeetingStarted = true;
+      tarotLounge.hide();
+      btnMeetingWait?.classList.add('hidden');
+      showHostMenu();
+      hostParticipantsGrid.updateVisibility();
+      try {
+        sync?.socket?.emit('host-event', { type: 'meeting-started', payload: {} });
+      } catch { /* ignore */ }
+      drawCanvas?.resize();
+    },
+  });
+});
+
+function escapeHtml(s) {
+  return String(s || '').replace(/[&<>"']/g, (m) => ({
+    '&': '&amp;',
+    '<': '&lt;',
+    '>': '&gt;',
+    '"': '&quot;',
+    "'": '&#39;',
+  }[m]));
+}
+
+class HostParticipantsGridManager {
+  constructor({ viewEl, gridEl }) {
+    this.viewEl = viewEl;
+    this.gridEl = gridEl;
+    this.viewers = [];
+    this.streams = new Map();
+    this.hostInfo = { id: 'local', name: hostName || '호스트', role: 'host' };
+    this.isVisible = false;
+    this.netQualities = new Map();
+
+    if (typeof IntersectionObserver !== 'undefined' && viewEl) {
+      this.observer = new IntersectionObserver((entries) => {
+        entries.forEach((entry) => {
+          const card = entry.target;
+          const video = card.querySelector('video');
+          if (!video) return;
+          if (entry.isIntersecting) {
+            // 화면에 조금이라도 노출되는 사용자: 영상 재생 재개
+            if (card.dataset.hasCam === '1') {
+              video.play?.().catch(() => {});
+            }
+          } else {
+            // 세로 스크롤로 화면에서 완전히 벗어난 사용자만 일시정지 (화면이 스크롤 중일 때만 적용)
+            if (this.viewEl?.classList.contains('is-overflowing') && !video.paused) {
+              video.pause?.();
+            }
+          }
+        });
+      }, {
+        root: this.viewEl,
+        threshold: 0.01,
+      });
+    }
+
+    this.checkOverflow = this.checkOverflow.bind(this);
+    window.addEventListener('resize', this.checkOverflow);
+  }
+
+  checkOverflow() {
+    if (!this.viewEl || !this.gridEl) return;
+    const clientH = this.viewEl.clientHeight;
+    if (clientH <= 0) return;
+
+    const cards = this.gridEl.querySelectorAll('.participant-card');
+    const totalCards = cards.length;
+    if (totalCards <= 0) {
+      this.gridEl.classList.remove('grid-5-col', 'solo-1');
+      this.viewEl.classList.remove('is-overflowing');
+      return;
+    }
+
+    // 1명 단독일 때: 얼굴/카드를 약 3배 크기로 대형 배치 (스포트라이트)
+    const isSolo = totalCards === 1;
+    this.gridEl.classList.toggle('solo-1', isSolo);
+
+    // 9명 이하: 3명 1줄 배치 (화면 높이 초과 시 세로 스크롤)
+    // 10명 이상부터: 5명씩 배치 (13명이면 5, 5, 3명 총 3줄, 50명이면 총 10줄 등)
+    const is5Col = totalCards >= 10;
+    this.gridEl.classList.toggle('grid-5-col', is5Col);
+
+    // 화면 높이를 초과하면 세로 스크롤 활성화 (상단 margin-top: 50px, 하단 margin-bottom: 50px 유지)
+    const isOverflowing = this.gridEl.scrollHeight > (clientH - 20);
+    this.viewEl.classList.toggle('is-overflowing', isOverflowing);
+  }
+
+  updateNetworkQuality(pid, { pingMs = 30, lossRate = 0, quality = 'good' } = {}) {
+    this.netQualities.set(pid, { pingMs, lossRate, quality });
+    if (!this.gridEl) return;
+    const card = this.gridEl.querySelector(`.participant-card[data-participant-id="${pid}"]`);
+    if (!card) return;
+    const pill = card.querySelector('.participant-net-pill');
+    if (!pill) return;
+    pill.className = `participant-net-pill net-${quality}`;
+    const dot = quality === 'poor' ? '🔴' : quality === 'fair' ? '🟡' : '🟢';
+    const lossText = lossRate > 1 ? ` (${lossRate}%)` : '';
+    pill.textContent = `${dot} ${pingMs}ms${lossText}`;
+    pill.title = `네트워크 지연시간(Ping): ${pingMs}ms / 패킷손실: ${lossRate}%`;
+  }
+
+  setHostName(name) {
+    this.hostInfo.name = name || '호스트';
+    this.render();
+  }
+
+  setViewers(viewers = []) {
+    this.viewers = (viewers || []).filter((v) => v && v.role !== 'host');
+    this.render();
+  }
+
+  setStream(id, stream) {
+    if (stream) {
+      this.streams.set(id, stream);
+    } else {
+      this.streams.delete(id);
+    }
+    this.render();
+  }
+
+  removeStream(id) {
+    this.streams.delete(id);
+    this.render();
+  }
+
+  updateVisibility() {
+    const isLoungeActive = typeof tarotLounge !== 'undefined' && tarotLounge && tarotLounge.isActive;
+    const shouldShow = interactionMode === 'bidirectional' && isMeetingStarted && !isLoungeActive;
+    this.isVisible = shouldShow;
+    if (this.viewEl) {
+      this.viewEl.classList.toggle('hidden', !shouldShow);
+    }
+    if (typeof camOverlayContainer !== 'undefined' && camOverlayContainer) {
+      camOverlayContainer.style.display = shouldShow ? 'none' : '';
+    }
+    if (shouldShow) {
+      this.render();
+    }
+  }
+
+  render() {
+    if (!this.gridEl) return;
+    if (!this.isVisible && (interactionMode !== 'bidirectional' || tarotLounge.isActive)) return;
+
+    const list = [this.hostInfo, ...this.viewers];
+    const presentIds = new Set(list.map((p) => p.id || p.clientId));
+
+    const existingCards = this.gridEl.querySelectorAll('.participant-card[data-participant-id]');
+    existingCards.forEach((card) => {
+      const pid = card.dataset.participantId;
+      if (!presentIds.has(pid)) {
+        this.observer?.unobserve(card);
+        card.remove();
+      }
+    });
+
+    list.forEach((p) => {
+      const pid = p.id || p.clientId;
+      let stream = this.streams.get(pid);
+      if (!stream && p.clientId) stream = this.streams.get(p.clientId);
+      if (!stream && p.id) stream = this.streams.get(p.id);
+
+      const hasCam = !!stream && stream.getVideoTracks().some((t) => t && t.readyState === 'live' && t.enabled !== false);
+      const isHost = p.role === 'host' || pid === 'local';
+      let card = this.gridEl.querySelector(`.participant-card[data-participant-id="${pid}"]`);
+
+      if (!card) {
+        card = document.createElement('div');
+        card.className = 'participant-card';
+        card.dataset.participantId = pid;
+        card.innerHTML = `
+          <div class="participant-card-media"></div>
+          <div class="participant-card-footer">
+            <span class="participant-card-name"></span>
+            <div class="participant-card-meta">
+              <span class="participant-net-pill net-good">🟢 25ms</span>
+              <span class="participant-cam-state"></span>
+            </div>
+          </div>
+        `;
+        this.observer?.observe(card);
+      }
+      this.gridEl.appendChild(card);
+      card.dataset.hasCam = hasCam ? '1' : '0';
+
+      const nameEl = card.querySelector('.participant-card-name');
+      if (nameEl) {
+        nameEl.innerHTML = `${escapeHtml(p.name || (isHost ? '호스트' : '참가자'))} ${isHost ? '👑' : ''}`;
+      }
+      const camStateEl = card.querySelector('.participant-cam-state');
+      if (camStateEl) {
+        camStateEl.className = `participant-cam-state ${hasCam ? 'is-on' : 'is-off'}`;
+        camStateEl.textContent = hasCam ? '● LIVE' : '✕ OFF';
+      }
+
+      const netPill = card.querySelector('.participant-net-pill');
+      if (netPill) {
+        const net = this.netQualities.get(pid) || { pingMs: 25, lossRate: 0, quality: 'good' };
+        netPill.className = `participant-net-pill net-${net.quality}`;
+        const dot = net.quality === 'poor' ? '🔴' : net.quality === 'fair' ? '🟡' : '🟢';
+        const lossText = net.lossRate > 1 ? ` (${net.lossRate}%)` : '';
+        netPill.textContent = `${dot} ${net.pingMs}ms${lossText}`;
+        netPill.title = `네트워크 지연시간(Ping): ${net.pingMs}ms / 패킷손실: ${net.lossRate}%`;
+      }
+
+      const mediaEl = card.querySelector('.participant-card-media');
+      if (mediaEl) {
+        const currentVideo = mediaEl.querySelector('video');
+        if (hasCam) {
+          if (!currentVideo) {
+            mediaEl.innerHTML = '';
+            const video = document.createElement('video');
+            video.autoplay = true;
+            video.playsInline = true;
+            video.muted = true; // 음성은 WebRTC 오디오 엘리먼트에서 별도 처리되므로, 비디오는 항상 muted로 설정하여 브라우저 Autoplay 차단(멈춤) 원천 방지
+            video.defaultMuted = true;
+            video.className = `participant-card-video${isHost ? ' is-mirror' : ''}`;
+            video.srcObject = stream;
+            video.play?.().catch(() => {});
+            if (!isHost) {
+              attachVideoFreezeWatchdog(video, {
+                label: `grid-${pid}`,
+                onRequestKeyFrame: () => webrtcPublisher?.sfu?.requestKeyFrame?.(),
+                onDecoderKick: () => webrtcPublisher?.sfu?.resumeAllConsumers?.(),
+              });
+            }
+            mediaEl.appendChild(video);
+          } else if (currentVideo.srcObject !== stream) {
+            currentVideo.srcObject = stream;
+            currentVideo.muted = true;
+            currentVideo.defaultMuted = true;
+            currentVideo.play?.().catch(() => {});
+          }
+        } else {
+          if (!mediaEl.querySelector('.participant-card-cam-off')) {
+            mediaEl.innerHTML = `
+              <div class="participant-card-cam-off">
+                <div class="cam-off-icon-box" title="카메라 꺼짐">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M16 16v1a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2h2m4 0h5a2 2 0 0 1 2 2v3.34l1 1L23 7v10"></path>
+                    <line x1="1" y1="1" x2="23" y2="23"></line>
+                  </svg>
+                </div>
+                <span class="cam-off-badge">카메라 꺼짐</span>
+              </div>
+            `;
+          }
+        }
+      }
+    });
+
+    // 빈 카드 채우는 로직 삭제 및 혹시 남아있을 수 있는 빈 슬롯 제거
+    this.gridEl.querySelectorAll('.participant-card-empty').forEach((el) => el.remove());
+    this.gridEl.classList.toggle('solo-1', list.length === 1);
+    this.gridEl.classList.toggle('grid-5-col', list.length >= 10);
+    requestAnimationFrame(this.checkOverflow);
+  }
+}
+
+const hostParticipantsView = document.getElementById('host-participants-view');
+const hostParticipantsGridEl = document.getElementById('host-participants-grid');
+hostParticipantsGrid = new HostParticipantsGridManager({
+  viewEl: hostParticipantsView,
+  gridEl: hostParticipantsGridEl,
+});
+hostParticipantsGrid.updateVisibility();
+
+if (!isMeetingStarted) {
+  tarotLounge.show();
+  tarotLounge.renderParticipants([{ id: 'local', name: hostName, role: 'host' }]);
+  btnMeetingWait?.classList.remove('hidden');
+}
+
 
 function updateCameraPip(id, stream, { label = '카메라', isMirror = false, isHost = false } = {}) {
   if (!camOverlayContainer) return;
   let box = document.getElementById(`cam-box-${id}`);
   if (!stream) {
-    if (box) box.remove();
+    removeCameraPip(id);
     return;
   }
   if (!box) {
@@ -214,16 +605,53 @@ function updateCameraPip(id, stream, { label = '카메라', isMirror = false, is
     badge.textContent = label;
     box.appendChild(video);
     box.appendChild(badge);
+
+    if (id !== 'local') {
+      attachVideoFreezeWatchdog(video, {
+        label: `pip-${id}`,
+        onRequestKeyFrame: () => webrtcPublisher?.sfu?.requestKeyFrame?.(),
+        onDecoderKick: () => webrtcPublisher?.sfu?.resumeAllConsumers?.(),
+      });
+    }
+
+    if (id === 'local') {
+      const toolbar = document.createElement('div');
+      toolbar.className = 'cam-local-toolbar';
+      toolbar.innerHTML = `
+        <button type="button" class="cam-btn-pill pill-hd" title="화질 전환 (클릭 시 저부하 SD ↔ 720p HD 토글)">HD</button>
+        <button type="button" class="cam-btn-pill pill-dlc" title="얼굴 변경 (사진·뷰티·내 얼굴 선택)">🎭</button>
+      `;
+      box.appendChild(toolbar);
+      toolbar.querySelector('.pill-hd')?.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const avMgr = webrtcPublisher?.avatarManager;
+        if (avMgr) {
+          avMgr.setHighRes(!avMgr.isLarge);
+          updateAvatarUi();
+        }
+      });
+      toolbar.querySelector('.pill-dlc')?.addEventListener('click', (e) => {
+        e.stopPropagation();
+        openDeepLiveCamModal();
+      });
+    }
+
     camOverlayContainer.appendChild(box);
+    camFocusManager.bindBox(id, box);
   }
   const v = box.querySelector('video');
   if (v && v.srcObject !== stream) {
     v.srcObject = stream;
     v.play?.().catch(() => {});
   }
+  if (id === 'local') {
+    updateAvatarUi();
+  }
 }
 
 function removeCameraPip(id) {
+  camFocusManager.onBoxRemoved(id);
+  vadMonitor.detach(id);
   const box = document.getElementById(`cam-box-${id}`);
   if (box) box.remove();
 }
@@ -248,8 +676,13 @@ function syncPenUi(active) {
   btnPen.classList.toggle('is-active', !!active);
   btnPen.setAttribute('aria-pressed', active ? 'true' : 'false');
   btnPen.title = active
-    ? '펜 끄기 — 일반 커서 · 링크/영상 클릭 가능'
-    : '펜 켜기 — 펜 커서 · 그리기';
+    ? '펜 끄기 — 화면 위 그리기 끄기'
+    : '펜 켜기 — 화면 위 그리기';
+  document.body.classList.toggle('pen-mode', !!active);
+  if (drawCanvas?.canvas) {
+    drawCanvas.canvas.style.pointerEvents = active ? 'auto' : 'none';
+  }
+  drawCanvas?.setDrawingEnabled(active);
   clearLinkHoverCursor();
 }
 
@@ -280,18 +713,228 @@ function syncAvButtons() {
     btnAvCam.title = camOn ? '카메라 켜짐 — 클릭하여 끄기' : '카메라 꺼짐 — 클릭하여 켜기';
   }
   if (optStreamMic) optStreamMic.checked = !!preferMic;
+  updateAvatarUi();
 }
+
+function onAvatarRandomClick() {
+  if (!webrtcPublisher?.avatarManager) return;
+  webrtcPublisher.avatarManager.nextAvatar();
+  updateAvatarUi();
+}
+
+async function applyFaceAndStartCamera(faceApplyFn) {
+  closeDeepLiveCamModal();
+  if (!webrtcPublisher) return;
+
+  const camAlreadyActive = !!(webrtcPublisher.hasCamera && webrtcPublisher.cameraEnabled);
+
+  if (camAlreadyActive) {
+    const avMgr = webrtcPublisher.avatarManager;
+    if (avMgr && typeof faceApplyFn === 'function') {
+      faceApplyFn(avMgr);
+    }
+    updateAvatarUi();
+  } else {
+    btnAvCam.disabled = true;
+    try {
+      const avMgr = webrtcPublisher.avatarManager;
+      if (avMgr && typeof faceApplyFn === 'function') {
+        faceApplyFn(avMgr);
+      }
+      const ok = await webrtcPublisher.ensureCamera(true);
+      if (!ok) {
+        alert('카메라를 켤 수 없습니다. 브라우저 카메라 권한 및 연결을 확인해 주세요.');
+        return;
+      }
+      if (avMgr && typeof faceApplyFn === 'function') {
+        faceApplyFn(avMgr);
+      }
+      updateAvatarUi();
+    } catch (err) {
+      alert(`카메라 시작 실패: ${err?.message || err}`);
+    } finally {
+      btnAvCam.disabled = false;
+      syncAvButtons();
+    }
+  }
+}
+
+function onSelectHero(heroId) {
+  applyFaceAndStartCamera((avMgr) => {
+    avMgr.setSwapFace(heroId);
+  });
+}
+
+function onResetReal() {
+  applyFaceAndStartCamera((avMgr) => {
+    avMgr.activeSwapFace = null;
+    avMgr.setRealMode?.();
+  });
+}
+
+async function loadModalPhotos() {
+  const grid = document.getElementById('dlc-hero-grid');
+  if (!grid) return;
+  try {
+    const res = await fetch('/api/photos');
+    const data = await res.json();
+    if (!data.ok || !Array.isArray(data.photos)) return;
+
+    grid.innerHTML = '';
+    const avMgr = webrtcPublisher?.avatarManager;
+    const curSwap = (avMgr?.isSwap ? avMgr.activeSwapFace : '') || '';
+
+    data.photos.forEach((photo) => {
+      const card = document.createElement('div');
+      card.className = 'dlc-hero-card';
+      card.dataset.hero = photo.id;
+      card.id = `card-hero-${photo.id}`;
+      const isCur = curSwap === photo.id;
+      if (isCur) card.classList.add('is-active');
+
+      card.innerHTML = `
+        <img src="${photo.url}" alt="${photo.name}" class="dlc-hero-thumb">
+        <button type="button" class="dlc-hero-apply-btn">${isCur ? '✓ 적용 중' : '선택하기'}</button>
+      `;
+      card.addEventListener('click', () => {
+        onSelectHero(photo.id);
+      });
+      grid.appendChild(card);
+    });
+  } catch (err) {
+    console.warn('[FaceSwap] photos load error', err);
+  }
+}
+
+function openDeepLiveCamModal() {
+  loadModalPhotos();
+  deepLiveCamModal?.classList.remove('hidden');
+}
+
+function closeDeepLiveCamModal() {
+  deepLiveCamModal?.classList.add('hidden');
+}
+
+function updateAvatarUi() {
+  const avMgr = webrtcPublisher?.avatarManager;
+  const camOn = !!(webrtcPublisher?.hasCamera && webrtcPublisher?.cameraEnabled);
+
+  // 카메라 활성화 시 상단 툴바에 얼굴 효과 버튼 표시
+  const btnFaceEffect = document.getElementById('btn-face-effect');
+  if (btnFaceEffect) {
+    if (camOn) {
+      btnFaceEffect.classList.remove('hidden');
+      btnFaceEffect.style.setProperty('display', 'inline-flex', 'important');
+    } else {
+      btnFaceEffect.classList.add('hidden');
+      btnFaceEffect.style.setProperty('display', 'none', 'important');
+    }
+  }
+
+  const localBox = document.getElementById('cam-box-local');
+  if (localBox && avMgr) {
+    const isReal = avMgr.isReal;
+    const isSwap = avMgr.isSwap;
+
+    const pillHd = localBox.querySelector('.pill-hd');
+    if (pillHd) {
+      pillHd.classList.toggle('is-active', !!avMgr.isLarge);
+      pillHd.textContent = avMgr.isLarge ? 'HD 720p' : 'SD 저부하';
+      pillHd.title = avMgr.isLarge
+        ? '현재 1280×720 HD 고화질 모드 (클릭 시 360p 저부하 모드로 전환)'
+        : '현재 640×360 저부하 모드 (더블클릭 집중화면 또는 클릭 시 720p HD 전환)';
+    }
+
+    const badge = localBox.querySelector('.cam-pip-badge');
+    if (badge) {
+      const hName = hostName || '호스트';
+      if (isSwap) {
+        const key = avMgr.activeSwapFace;
+        const heroLabel = key === 'superman' ? '슈퍼맨' : (key === 'batman' ? '배트맨' : (key === 'spiderman' ? '스파이더맨' : (key === 'real' || key === 'none' ? '원래 내 얼굴' : key)));
+        badge.textContent = `${hName} (⚡ AI 얼굴: ${heroLabel})`;
+      } else if (isReal) {
+        badge.textContent = `${hName} (원래 내 얼굴)`;
+      } else {
+        badge.textContent = `${hName} (✨ ${avMgr.currentAvatar?.name || '가상'})`;
+      }
+    }
+  }
+
+  // 모달 내 사진 카드 및 상단 버튼 활성화 상태 동기화
+  if (deepLiveCamModal && avMgr) {
+    const curSwap = (avMgr.isSwap ? avMgr.activeSwapFace : '') || '';
+    const isReal = avMgr.isReal;
+
+    document.getElementById('btn-dlc-reset-real')?.classList.toggle('is-active', isReal);
+
+    deepLiveCamModal.querySelectorAll('.dlc-hero-card').forEach((card) => {
+      const hId = card.dataset.hero;
+      const isCur = curSwap === hId;
+      card.classList.toggle('is-active', !!isCur);
+      const applyBtn = card.querySelector('.dlc-hero-apply-btn');
+      if (applyBtn) {
+        applyBtn.textContent = isCur ? '✓ 적용 중' : '선택하기';
+      }
+    });
+
+    const statusText = document.getElementById('dlc-status-text');
+    if (statusText) {
+      if (camOn) {
+        statusText.textContent = '선택한 얼굴이 실시간으로 적용되어 송출 중입니다.';
+      } else {
+        statusText.textContent = '원하는 얼굴을 선택하면 카메라가 켜지며 실시간 송출이 시작됩니다.';
+      }
+    }
+  }
+}
+
+btnDlcClose?.addEventListener('click', closeDeepLiveCamModal);
+document.getElementById('btn-dlc-reset-real')?.addEventListener('click', onResetReal);
+document.getElementById('btn-face-effect')?.addEventListener('click', openDeepLiveCamModal);
+
+document.getElementById('dlc-file-input')?.addEventListener('change', async (e) => {
+  const file = e.target.files?.[0];
+  if (!file) return;
+  const formData = new FormData();
+  formData.append('photo', file);
+  try {
+    const res = await fetch('/api/upload-face', { method: 'POST', body: formData });
+    const data = await res.json();
+    if (data.ok) {
+      await loadModalPhotos();
+      onSelectHero(data.id);
+    } else {
+      alert(`사진 업로드 실패: ${data.error || '알 수 없는 오류'}`);
+    }
+  } catch (err) {
+    alert(`사진 업로드 실패: ${err.message}`);
+  } finally {
+    e.target.value = '';
+  }
+});
+
+deepLiveCamModal?.addEventListener('click', (e) => {
+  if (e.target === deepLiveCamModal) closeDeepLiveCamModal();
+});
+deepLiveCamModal?.querySelectorAll('.dlc-hero-card').forEach((card) => {
+  card.addEventListener('click', () => {
+    const hId = card.dataset.hero;
+    if (hId) onSelectHero(hId);
+  });
+});
 
 async function toggleCamera() {
   if (!webrtcPublisher) return;
-  btnAvCam.disabled = true;
-  const next = !webrtcPublisher.cameraEnabled;
-  const ok = await webrtcPublisher.ensureCamera(next);
-  btnAvCam.disabled = false;
-  if (next && !ok) {
-    alert('카메라를 켤 수 없습니다. 브라우저 카메라 권한 및 연결을 확인해 주세요.');
+  const camAlreadyActive = !!(webrtcPublisher.hasCamera && webrtcPublisher.cameraEnabled);
+  if (camAlreadyActive) {
+    btnAvCam.disabled = true;
+    await webrtcPublisher.ensureCamera(false);
+    btnAvCam.disabled = false;
+    syncAvButtons();
+    return;
   }
-  syncAvButtons();
+  // 카메라 비활성 상태일 때: 바로 영상 송출하지 않고 얼굴 선택 모달 오픈
+  openDeepLiveCamModal();
 }
 
 btnAvCam?.addEventListener('click', toggleCamera);
@@ -306,6 +949,7 @@ function updateStreamUi(active, withMic = false) {
     : '참가자에게 화면 송출';
   btnStream.disabled = false;
   syncAvButtons();
+  updateTarotShareButton();
 }
 
 function hideSharePrompt() {
@@ -360,17 +1004,10 @@ function showSharePrompt(msg) {
 /** 페이지 진입 즉시 패널 숨김 — 공유 창 뜨기 전 PPT/안내 깜빡임 방지 */
 document.getElementById('upload-panel')?.classList.add('hidden');
 
-/** PPT 없이도 호스트 툴바(그리기·마이크·송출 등) 표시 */
+/** 호스트 툴바(그리기·마이크·송출 등) 표시 */
 function showHostMenu() {
   document.body.classList.add('has-presentation');
   window.YunseulToolbar?.showTools?.();
-  const reloadBtn = document.getElementById('btn-reload-ppt');
-  if (reloadBtn) {
-    reloadBtn.style.display = '';
-    reloadBtn.textContent = document.body.classList.contains('has-ppt')
-      ? 'PPT 바꾸기'
-      : 'PPT 업로드';
-  }
   syncAvButtons();
 }
 
@@ -390,11 +1027,11 @@ function closeStreamOptions() {
 async function startScreenShare() {
   if (!sync?.socket || !webrtcPublisher) {
     alert('방에 아직 연결되지 않았습니다.');
-    return;
+    return false;
   }
   if (!canDisplayCapture()) {
     showSharePrompt('이 기기에서는 화면 공유를 지원하지 않습니다. 「카메라로 송출」을 사용해 주세요.');
-    return;
+    return false;
   }
   const withMic = !!preferMic;
   const withTabAudio = preferTabAudio !== false;
@@ -414,9 +1051,11 @@ async function startScreenShare() {
     updateStreamUi(true, (webrtcPublisher.kinds || []).includes('mic'));
     emitMicStatus(webrtcPublisher.micEnabled ? 'on' : (withMic ? 'none' : 'off'));
     hideSharePrompt();
+    drawCanvas?.resize();
     const ids = [...knownViewerIds];
     // SFU 단일 경로: produce 재확인
     if (ids.length) await webrtcPublisher.publishTo(ids);
+    return true;
   } catch (err) {
     console.warn('[stream]', err);
     updateStreamUi(false);
@@ -431,6 +1070,7 @@ async function startScreenShare() {
     if (!cancelled && !isMobileHostEnv() && !unsupported) {
       alert(`화면 송출을 시작할 수 없습니다.\n${err?.message || ''}`);
     }
+    return false;
   } finally {
     if (btnStream && !webrtcPublisher?.isActive) {
       btnStream.disabled = false;
@@ -447,7 +1087,7 @@ async function startScreenShare() {
 async function startCameraShare() {
   if (!sync?.socket || !webrtcPublisher) {
     alert('방에 아직 연결되지 않았습니다.');
-    return;
+    return false;
   }
   const withMic = preferMic !== false;
   closeStreamOptions();
@@ -466,8 +1106,10 @@ async function startCameraShare() {
     updateStreamUi(true, (webrtcPublisher.kinds || []).includes('mic'));
     emitMicStatus(webrtcPublisher.micEnabled ? 'on' : (withMic ? 'none' : 'off'));
     hideSharePrompt();
+    drawCanvas?.resize();
     const ids = [...knownViewerIds];
     if (ids.length) await webrtcPublisher.publishTo(ids);
+    return true;
   } catch (err) {
     console.warn('[camera-stream]', err);
     updateStreamUi(false);
@@ -475,6 +1117,7 @@ async function startCameraShare() {
     showSharePrompt(cancelled
       ? '카메라 권한이 거부되었습니다. 브라우저 설정에서 카메라를 허용한 뒤 다시 시도해 주세요.'
       : (err?.message || '카메라 송출을 시작할 수 없습니다.'));
+    return false;
   } finally {
     if (btnStream && !webrtcPublisher?.isActive) {
       btnStream.disabled = false;
@@ -608,7 +1251,13 @@ const overlayManager = new OverlayManager({
 });
 
 btnPen?.addEventListener('click', () => {
-  overlayManager.setPenMode(!overlayManager.isPenMode);
+  const currentActive = document.body.classList.contains('pen-mode');
+  const next = !currentActive;
+  overlayManager.setPenMode(next);
+  syncPenUi(next);
+  if (next) {
+    drawCanvas.setEraser(false);
+  }
 });
 
 function openSyncedLink(data) {
@@ -748,9 +1397,9 @@ const drawCanvas = new DrawCanvas(document.getElementById('draw-canvas'), {
 });
 window.__yunseulDrawCanvas = drawCanvas;
 
-// 기본: 펜 활성화 (펜 커서 · 그리기 ON · 링크 클릭 불가)
-overlayManager.setPenMode(true);
-syncPenUi(true);
+// 기본: 펜 비활성화 (아이콘 클릭 시에만 활성화)
+overlayManager.setPenMode(false);
+syncPenUi(false);
 
 window.addEventListener('ppt-link-click', (e) => {
   openSyncedLink(e.detail);
@@ -791,9 +1440,6 @@ window.addEventListener('ppt-ready', (e) => {
     drawCanvas.setSlide(0);
     syncSlideAudio(0).catch((err) => console.warn('[slide-audio]', err));
   }
-  document.getElementById('btn-reload-ppt')?.style.setProperty('display', '');
-  const reloadBtn = document.getElementById('btn-reload-ppt');
-  if (reloadBtn) reloadBtn.textContent = 'PPT 바꾸기';
   btnStream?.classList.remove('hidden');
   if (btnStream && !webrtcPublisher?.isActive) {
     btnStream.title = '참가자에게 화면 송출';
@@ -805,21 +1451,6 @@ window.addEventListener('ppt-ready', (e) => {
   }
 });
 
-document.getElementById('btn-reload-ppt')?.addEventListener('click', () => {
-  if (window.YunseulUpload?.isBusy?.()) {
-    alert('이미 업로드/로딩 중입니다. 잠시만 기다려 주세요.');
-    return;
-  }
-  // 이미 PPT가 있을 때만 교체 확인 — 첫 업로드에서는 바로 파일 선택
-  if (document.body.classList.contains('has-ppt')) {
-    const ok = confirm('다른 PPTX 파일로 바꿀까요?\n현재 낙서는 지워지고 첫 슬라이드부터 다시 시작합니다.');
-    if (!ok) return;
-  }
-  if (!window.YunseulUpload?.pickPptFile?.()) {
-    document.getElementById('file-input')?.click();
-  }
-});
-
 // 메타·미디어 백그라운드 준비 완료 → BGM/오디오 재동기화
 window.addEventListener('ppt-enriched', () => {
   const engine = getPptEngine();
@@ -827,25 +1458,29 @@ window.addEventListener('ppt-enriched', () => {
   syncSlideAudio(idx).catch((err) => console.warn('[slide-audio]', err));
 });
 
-document.getElementById('pen-color').addEventListener('input', (e) => {
+document.getElementById('pen-color')?.addEventListener('input', (e) => {
   drawCanvas.setPenColor(e.target.value);
 });
-document.getElementById('pen-size').addEventListener('input', (e) => {
+document.getElementById('pen-size')?.addEventListener('input', (e) => {
   drawCanvas.setPenSize(parseInt(e.target.value, 10));
 });
-document.getElementById('btn-eraser').addEventListener('click', () => {
+document.getElementById('btn-eraser')?.addEventListener('click', () => {
   drawCanvas.setEraser(true);
+  overlayManager.setPenMode(true);
+  syncPenUi(true);
 });
-document.getElementById('btn-clear-slide').addEventListener('click', () => {
+document.getElementById('btn-clear-slide')?.addEventListener('click', () => {
   const engine = getPptEngine();
   const idx = engine ? engine.getCurrentSlide() : 0;
   drawCanvas.clearSlide(idx);
   sync?.emit('clear-drawings', { slideIndex: idx });
 });
-document.getElementById('btn-clear-all').addEventListener('click', () => {
+document.getElementById('btn-clear-all')?.addEventListener('click', () => {
   drawCanvas.clearAll();
   sync?.emit('clear-all-drawings');
 });
+
+window.addEventListener('resize', () => drawCanvas?.resize());
 
 sync = new RoomSync({
   code: roomCode,
@@ -860,6 +1495,29 @@ sync = new RoomSync({
       (payload.viewers || []).forEach((v) => {
         if (v?.id && v.role !== 'host') knownViewerIds.add(v.id);
       });
+      hostParticipantsGrid.setViewers(payload.viewers || []);
+      if (tarotLounge.isActive && !tarotLounge._isCountingDown) {
+        tarotLounge.renderParticipants(payload.viewers || []);
+      }
+    }
+    if (type === 'start-meeting-countdown') {
+      isMeetingStarted = true;
+      if (btnMeetingWait) btnMeetingWait.classList.add('hidden');
+      tarotLounge.startCountdown({
+        duration: payload?.duration || 5,
+        onComplete: () => {
+          isMeetingStarted = true;
+          tarotLounge.hide();
+          btnMeetingWait?.classList.add('hidden');
+          showHostMenu();
+          drawCanvas?.resize();
+          hostParticipantsGrid.updateVisibility();
+          webrtcPublisher?.ensureReceiving?.().catch(() => {});
+          if (!webrtcPublisher?.isActive) {
+            startScreenShare().catch((e) => console.warn('[host] startScreenShare', e));
+          }
+        },
+      });
     }
     if (type === 'broadcaster-changed') {
       activeBroadcasterId = payload.clientId || sync?.clientId;
@@ -872,9 +1530,11 @@ sync = new RoomSync({
       }
     }
   },
-  // 재연결 후 송출 FLAG만 다시 올림 (피어 재생성 없음 — peer-joined가 처리)
+  // 재연결 후 3차 안전망: SFU 프로듀서 검증 및 송출 보장
   onRejoined: () => {
     if (webrtcPublisher?.isActive) {
+      console.log('[host] reconnected & rejoined -> ensuring publication...');
+      webrtcPublisher.ensurePublished?.();
       webrtcPublisher.signaling.setStreamStatus({
         active: true,
         kinds: webrtcPublisher.kinds || ['display'],
@@ -896,6 +1556,24 @@ sync.start()
     (data.state?.viewers || []).forEach((v) => {
       if (v?.id && v.role !== 'host') knownViewerIds.add(v.id);
     });
+
+    isMeetingStarted = !!data.state?.meetingStarted;
+    if (!isMeetingStarted) {
+      tarotLounge.show();
+      const initialViewers = data.state?.viewers || [];
+      if (!initialViewers.some((v) => v.role === 'host')) {
+        initialViewers.unshift({ id: sync.clientId, name: hostName, role: 'host' });
+      }
+      tarotLounge.renderParticipants(initialViewers);
+      btnMeetingWait?.classList.remove('hidden');
+    } else {
+      tarotLounge.hide();
+      btnMeetingWait?.classList.add('hidden');
+    }
+    hostParticipantsGrid.setViewers(data.state?.viewers || []);
+    hostParticipantsGrid.updateVisibility();
+
+
     if (data.drawings) drawCanvas.loadStrokes(data.drawings);
     if (data.state?.presentation && getPptEngine()) {
       goToSlide(data.state.currentSlide || 0);
@@ -935,7 +1613,12 @@ sync.start()
       },
     });
     webrtcPublisher.interactionMode = interactionMode;
+    if (webrtcPublisher.avatarManager) {
+      webrtcPublisher.avatarManager.onAvatarChange = () => updateAvatarUi();
+      webrtcPublisher.avatarManager.onModeChange = () => updateAvatarUi();
+    }
     webrtcPublisher.onCameraChange = ({ active, stream }) => {
+      hostParticipantsGrid.setStream('local', active ? stream : null);
       if (active && stream) {
         updateCameraPip('local', stream, { label: `${hostName} (내 카메라)`, isMirror: true, isHost: true });
       } else {
@@ -944,14 +1627,51 @@ sync.start()
       syncAvButtons();
     };
     webrtcPublisher.onRemoteCamera = ({ clientId, stream }) => {
+      hostParticipantsGrid.setStream(clientId, stream);
       const viewers = getLatestViewers() || [];
       const v = viewers.find((x) => x.clientId === clientId || x.id === clientId);
       const label = v ? `${v.name || '참가자'}` : '참가자';
       updateCameraPip(clientId, stream, { label, isMirror: false, isHost: false });
     };
     webrtcPublisher.onRemoteCameraClosed = (clientId) => {
+      hostParticipantsGrid.removeStream(clientId);
       removeCameraPip(clientId);
     };
+    webrtcPublisher.onMicTrack = (track) => {
+      if (track) {
+        vadMonitor.attach('local', track);
+      } else {
+        vadMonitor.detach('local');
+      }
+    };
+    webrtcPublisher.onRemoteAudioTrack = ({ clientId, track }) => {
+      vadMonitor.attach(clientId, track);
+    };
+    webrtcPublisher.onRemoteAudioTrackClosed = (clientId) => {
+      vadMonitor.detach(clientId);
+    };
+    webrtcPublisher.onNetworkQuality = ({ pingMs, lossRate, quality }) => {
+      hostParticipantsGrid.updateNetworkQuality('local', { pingMs, lossRate, quality });
+      const avMgr = webrtcPublisher.avatarManager;
+      if (quality === 'poor' && avMgr?.isLarge) {
+        console.warn('[host] network poor -> lowering camera res to SD for low latency');
+        avMgr.setHighRes(false);
+      }
+    };
+
+    function setupGlobalAudioUnlock() {
+      const unlock = () => {
+        try {
+          document.querySelectorAll('audio').forEach((el) => {
+            if (el.paused && el.srcObject) el.play().catch(() => {});
+          });
+        } catch { /* ignore */ }
+      };
+      ['click', 'touchstart', 'keydown'].forEach((evt) => {
+        window.addEventListener(evt, unlock, { capture: true, passive: true });
+      });
+    }
+    setupGlobalAudioUnlock();
     webrtcPublisher.onRelayChange = ({ peerId, active, stream }) => {
       if (active && stream) {
         const name = getLatestViewers().find((v) => v.id === peerId)?.name || '참가자';
@@ -975,16 +1695,44 @@ sync.start()
       }
     };
 
+    const unmuteBanner = document.getElementById('unmute-banner');
+    webrtcPublisher.onAudioPlaybackState = ({ ok, needUnmute }) => {
+      if (needUnmute && unmuteBanner) {
+        unmuteBanner.classList.remove('hidden');
+      } else if (ok && unmuteBanner) {
+        unmuteBanner.classList.add('hidden');
+      }
+    };
+    unmuteBanner?.addEventListener('click', () => {
+      webrtcPublisher?.unlockAudio();
+      unmuteBanner.classList.add('hidden');
+    });
+
+    if (interactionMode === 'bidirectional') {
+      webrtcPublisher.ensureReceiving().catch((err) => {
+        console.warn('[host] ensureReceiving error:', err);
+      });
+    }
+
     // 입장 직후 호스트 메뉴 표시
     // 모바일: 자동 화면공유는 사용자 제스처 없이 실패하므로 안내만 표시
     showHostMenu();
     probeHostMicAvailability();
-    if (isMobileHostEnv() || !canDisplayCapture()) {
-      showSharePrompt('');
+    if (isMeetingStarted) {
+      if (isMobileHostEnv() || !canDisplayCapture()) {
+        showSharePrompt('');
+      } else {
+        setTimeout(() => {
+          if (!webrtcPublisher?.isActive) startScreenShare();
+        }, 120);
+      }
     } else {
-      setTimeout(() => {
-        if (!webrtcPublisher?.isActive) startScreenShare();
-      }, 120);
+      updateTarotShareButton();
+      if (!isMobileHostEnv() && canDisplayCapture() && !webrtcPublisher?.isActive) {
+        setTimeout(() => {
+          screenShareSetupModal?.classList.remove('hidden');
+        }, 350);
+      }
     }
   })
   .catch((err) => {
@@ -1058,3 +1806,13 @@ document.getElementById('btn-end-session')?.addEventListener('click', async () =
   sessionStorage.removeItem('roomCode');
   window.location.href = './';
 });
+
+// 백그라운드 탭 전환 등으로 일시정지된 비디오 재생 유지
+setInterval(() => {
+  document.querySelectorAll('video').forEach((v) => {
+    if (v.srcObject && v.paused) {
+      v.play?.().catch(() => {});
+    }
+  });
+}, 2000);
+

@@ -157,14 +157,12 @@ export async function enterFullscreen() {
     console.warn('fullscreen failed', err);
   }
 
-  // 호스트만 가로 잠금 시도 — 참가자는 세로 시청 허용
-  if (!isViewerPage()) {
-    try {
-      const orient = screen.orientation || screen.mozOrientation || screen.msOrientation;
-      if (orient?.lock) await orient.lock('landscape');
-    } catch {
-      // iOS 등은 잠금 미지원 — 회전 안내만 표시
-    }
+  // 모바일 가로 모드 잠금 시도 (호스트 및 참가자 모두)
+  try {
+    const orient = screen.orientation || screen.mozOrientation || screen.msOrientation;
+    if (orient?.lock) await orient.lock('landscape');
+  } catch {
+    // iOS 등 브라우저 미지원 시 회전 안내 오버레이 표시
   }
 
   document.body.classList.add('is-presenting');
@@ -185,7 +183,7 @@ export async function exitFullscreen() {
 
   document.body.classList.remove('is-presenting');
   exitFsChrome();
-  hideRotateHint();
+  updateRotateHint();
 }
 
 export async function toggleFullscreen() {
@@ -193,15 +191,18 @@ export async function toggleFullscreen() {
   else await enterFullscreen();
 }
 
-function updateRotateHint() {
+export function updateRotateHint() {
   const hint = document.getElementById('rotate-hint');
   if (!hint) return;
-  if (isViewerPage()) {
-    hint.classList.add('hidden');
-    return;
-  }
-  const needRotate = isMobile() && window.innerHeight > window.innerWidth;
+  // 휴대폰/모바일 기기는 가로 화면만 지원 (세로 모드 시 회전 안내 표시)
+  const isPortrait = window.innerHeight > window.innerWidth;
+  const needRotate = isMobile() && isPortrait;
   hint.classList.toggle('hidden', !needRotate);
+  if (needRotate) {
+    hint.setAttribute('aria-hidden', 'false');
+  } else {
+    hint.setAttribute('aria-hidden', 'true');
+  }
 }
 
 function hideRotateHint() {
@@ -274,9 +275,12 @@ export function setupDisplayMode({ autoPromptMobile = false } = {}) {
     }
     applyChromeVisibility(document.body.classList.contains('fs-chrome-open'));
   };
+  if (isMobile()) {
+    updateRotateHint();
+  }
   window.addEventListener('resize', () => {
     keepChromeState();
-    if (isFullscreen() || document.body.classList.contains('is-presenting')) {
+    if (isMobile()) {
       updateRotateHint();
     }
   });
@@ -286,20 +290,17 @@ export function setupDisplayMode({ autoPromptMobile = false } = {}) {
     setTimeout(() => {
       keepChromeState();
       updateRotateHint();
-    }, 200);
+    }, 150);
   });
 
-  // 발표 시작 시 모바일에서 전체화면 유도 (호스트 위주 — 참가자는 세로 허용)
+  // 발표 시작 시 모바일 가로 회전 안내 및 전체화면 유도
   window.addEventListener('ppt-ready', () => {
     document.body.classList.add('has-presentation');
-    if (isViewerPage()) {
-      hideRotateHint();
-      return;
+    if (isMobile()) {
+      updateRotateHint();
     }
     if (autoPromptMobile && isMobile() && !isFullscreen()) {
       gate?.classList.remove('hidden');
-    } else if (isMobile()) {
-      updateRotateHint();
     }
   });
 

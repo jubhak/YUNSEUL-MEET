@@ -43,20 +43,17 @@ export function setupChatPanel(opts) {
     toggleBtn = null,
   } = opts;
 
-  // 클라이언트: 채팅 목록 없이 작성·전송만 (호스트만 전체 채팅창)
-  const composeOnly = role === 'viewer';
+  // 호스트와 클라이언트 모두 전체 채팅 목록 및 실시간 채팅 지원
+  const composeOnly = false;
 
   let socket = opts.socket || null;
   const buffer = [];
   let open = false;
   let boundSocket = null;
   let unread = 0;
-  let dragging = false;
-  let dragOffsetX = 0;
-  let dragOffsetY = 0;
   let sending = false;
 
-  const root = ensureDom({ composeOnly });
+  const root = ensureDom({ composeOnly: false });
   const panel = root.querySelector('.chat-panel');
   const titleEl = root.querySelector('.chat-panel-title');
   const listEl = root.querySelector('.chat-panel-list');
@@ -65,19 +62,12 @@ export function setupChatPanel(opts) {
   const sendBtn = root.querySelector('.chat-panel-send');
   const closeBtn = root.querySelector('.chat-panel-close');
   const statusEl = root.querySelector('.chat-panel-status');
-  const unreadEl = composeOnly ? null : toggleBtn?.querySelector('.chat-unread');
+  const unreadEl = toggleBtn?.querySelector('.chat-unread');
 
-  if (composeOnly && toggleBtn) {
-    const badge = toggleBtn.querySelector('.chat-unread');
-    if (badge) {
-      badge.classList.add('hidden');
-      badge.setAttribute('aria-hidden', 'true');
-    }
-    toggleBtn.title = '메시지 보내기';
-    toggleBtn.setAttribute('aria-label', '메시지 보내기');
+  if (toggleBtn) {
+    toggleBtn.title = '채팅';
+    toggleBtn.setAttribute('aria-label', '채팅');
   }
-
-  restorePosition(panel, composeOnly);
 
   function currentSocket() {
     return getSocket?.() || socket || opts.socket || null;
@@ -98,10 +88,6 @@ export function setupChatPanel(opts) {
       boundSocket.off('chat-history', onHistory);
     }
     boundSocket = s;
-    if (composeOnly) {
-      // 클라이언트는 수신/히스토리 없이 전송만
-      return;
-    }
     s.on('chat-message', onMessage);
     s.on('chat-history', onHistory);
     try { s.emit('chat-request-history'); } catch { /* ignore */ }
@@ -186,6 +172,7 @@ export function setupChatPanel(opts) {
 
   function setOpen(next) {
     open = !!next;
+    document.body.classList.toggle('chat-open', open);
     root.classList.toggle('hidden', !open);
     root.setAttribute('aria-hidden', open ? 'false' : 'true');
     if (open) {
@@ -193,7 +180,7 @@ export function setupChatPanel(opts) {
       unread = 0;
       syncUnread();
       setStatus('');
-      if (!composeOnly) renderAll();
+      renderAll();
       requestAnimationFrame(() => {
         try { inputEl?.focus({ preventScroll: true }); } catch { inputEl?.focus(); }
       });
@@ -202,6 +189,7 @@ export function setupChatPanel(opts) {
       setStatus('');
     }
     syncToggleBtn();
+    window.dispatchEvent(new Event('resize'));
   }
 
   function renderAll() {
@@ -272,19 +260,18 @@ export function setupChatPanel(opts) {
     if (sendBtn) sendBtn.disabled = true;
     setStatus('');
 
-    if (!composeOnly) {
-      const localMsg = {
-        id: `local-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`,
-        clientId,
-        role,
-        name: displayName || '참가자',
-        text,
-        at: Date.now(),
-        _local: true,
-      };
-      pushBuffer(localMsg);
-      if (open) appendRow(localMsg, true);
-    }
+    const localMsg = {
+      id: `local-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`,
+      clientId,
+      role,
+      name: displayName || '참가자',
+      text,
+      at: Date.now(),
+      _local: true,
+    };
+    pushBuffer(localMsg);
+    if (open) appendRow(localMsg, true);
+
     if (inputEl) inputEl.value = '';
 
     let settled = false;
@@ -295,9 +282,6 @@ export function setupChatPanel(opts) {
       if (sendBtn) sendBtn.disabled = false;
       if (errText) {
         setStatus(errText);
-      } else if (composeOnly) {
-        setStatus('전송됨');
-        setTimeout(() => { if (statusEl?.textContent === '전송됨') setStatus(''); }, 1500);
       }
       try { inputEl?.focus({ preventScroll: true }); } catch { inputEl?.focus(); }
     };
@@ -312,17 +296,16 @@ export function setupChatPanel(opts) {
           finish(String(res.error));
           return;
         }
-        if (!composeOnly && res?.message) onMessage(res.message);
+        if (res?.message) onMessage(res.message);
         finish('');
       });
     } catch {
-      // timeout() 미지원 구형 클라이언트 대비
       s.emit('chat-send', { text }, (res) => {
         if (res?.error) {
           finish(String(res.error));
           return;
         }
-        if (!composeOnly && res?.message) onMessage(res.message);
+        if (res?.message) onMessage(res.message);
         finish('');
       });
       setTimeout(() => finish(''), 500);
@@ -344,8 +327,6 @@ export function setupChatPanel(opts) {
   inputEl?.addEventListener('keydown', (e) => {
     if (e.key !== 'Enter') return;
     if (e.isComposing || e.keyCode === 229) return;
-    // textarea: Shift+Enter 줄바꿈, Enter 전송
-    if (composeOnly && e.shiftKey) return;
     e.preventDefault();
     e.stopPropagation();
     send();
@@ -360,40 +341,6 @@ export function setupChatPanel(opts) {
   toggleBtn?.addEventListener('click', (e) => {
     e.preventDefault();
     setOpen(!open);
-  });
-
-  // 타이틀 드래그
-  titleEl?.addEventListener('pointerdown', (e) => {
-    if (e.button !== 0) return;
-    if (e.target.closest?.('button')) return;
-    dragging = true;
-    const rect = panel.getBoundingClientRect();
-    dragOffsetX = e.clientX - rect.left;
-    dragOffsetY = e.clientY - rect.top;
-    titleEl.setPointerCapture?.(e.pointerId);
-    panel.classList.add('is-dragging');
-    e.preventDefault();
-  });
-
-  titleEl?.addEventListener('pointermove', (e) => {
-    if (!dragging) return;
-    moveTo(e.clientX - dragOffsetX, e.clientY - dragOffsetY);
-  });
-
-  const endDrag = (e) => {
-    if (!dragging) return;
-    dragging = false;
-    panel.classList.remove('is-dragging');
-    try { titleEl.releasePointerCapture?.(e.pointerId); } catch { /* ignore */ }
-    savePosition(panel, composeOnly);
-  };
-  titleEl?.addEventListener('pointerup', endDrag);
-  titleEl?.addEventListener('pointercancel', endDrag);
-
-  window.addEventListener('resize', () => {
-    if (!open || !panel) return;
-    clampPanel(panel);
-    savePosition(panel, composeOnly);
   });
 
   // 소켓이 나중에 붙는 경우 대비
@@ -423,6 +370,7 @@ export function setupChatPanel(opts) {
         boundSocket.off('chat-history', onHistory);
         boundSocket = null;
       }
+      document.body.classList.remove('chat-open');
       root.remove();
     },
   };
@@ -432,102 +380,40 @@ function ensureDom({ composeOnly = false } = {}) {
   let root = document.getElementById('chat-layer');
   if (root) return root;
 
-  root = document.createElement('div');
+  root = document.createElement('aside');
   root.id = 'chat-layer';
-  root.className = 'chat-layer hidden';
+  root.className = 'chat-layer chat-sidebar hidden';
   root.setAttribute('aria-hidden', 'true');
+  root.setAttribute('aria-label', '실시간 채팅방');
 
-  if (composeOnly) {
-    root.innerHTML = `
-      <div class="chat-panel chat-panel--compose" role="dialog" aria-labelledby="chat-panel-title">
-        <div class="chat-panel-title" id="chat-panel-titlebar">
-          <h3 id="chat-panel-title">메시지 보내기</h3>
-          <button type="button" class="btn-close chat-panel-close" title="닫기" aria-label="닫기">✕</button>
+  root.innerHTML = `
+    <div class="chat-panel" role="region" aria-labelledby="chat-panel-title">
+      <div class="chat-panel-title" id="chat-panel-titlebar">
+        <div class="chat-title-info">
+          <span class="chat-title-ico" aria-hidden="true">💬</span>
+          <h3 id="chat-panel-title">채팅방</h3>
         </div>
-        <p class="chat-panel-hint">입력한 메시지는 호스트 채팅창으로 전달됩니다.</p>
-        <form class="chat-panel-form chat-panel-compose-form" action="#" autocomplete="off">
-          <div class="chat-panel-body">
-            <textarea class="chat-panel-input" maxlength="400" placeholder="메시지를 입력하세요…" rows="8" autocomplete="off" enterkeyhint="send"></textarea>
-          </div>
-          <p class="chat-panel-status" aria-live="polite"></p>
-          <div class="chat-panel-actions">
-            <button type="submit" class="btn btn-sm btn-primary chat-panel-send">전송</button>
-          </div>
-        </form>
+        <button type="button" class="btn-close chat-panel-close" title="채팅방 닫기" aria-label="채팅방 닫기">✕</button>
       </div>
-    `;
-  } else {
-    root.innerHTML = `
-      <div class="chat-panel" role="dialog" aria-labelledby="chat-panel-title">
-        <div class="chat-panel-title" id="chat-panel-titlebar">
-          <h3 id="chat-panel-title">채팅</h3>
-          <button type="button" class="btn-close chat-panel-close" title="닫기" aria-label="채팅 닫기">✕</button>
-        </div>
-        <ul class="chat-panel-list" aria-live="polite"></ul>
-        <p class="chat-panel-status" aria-live="polite"></p>
-        <form class="chat-panel-form" action="#" autocomplete="off">
-          <input type="text" class="chat-panel-input" maxlength="400" placeholder="메시지 입력…" autocomplete="off" enterkeyhint="send">
-          <button type="submit" class="btn btn-sm btn-primary chat-panel-send">전송</button>
-        </form>
-      </div>
-    `;
-  }
+      <ul class="chat-panel-list" aria-live="polite"></ul>
+      <p class="chat-panel-status" aria-live="polite"></p>
+      <form class="chat-panel-form" action="#" autocomplete="off">
+        <input type="text" class="chat-panel-input" maxlength="400" placeholder="메시지 입력…" autocomplete="off" enterkeyhint="send">
+        <button type="submit" class="btn btn-sm btn-primary chat-panel-send">전송</button>
+      </form>
+    </div>
+  `;
   document.body.appendChild(root);
   return root;
 }
 
 function moveTo(x, y) {
-  const panel = document.querySelector('#chat-layer .chat-panel');
-  if (!panel) return;
-  panel.style.left = `${Math.round(x)}px`;
-  panel.style.top = `${Math.round(y)}px`;
-  panel.style.right = 'auto';
-  panel.style.bottom = 'auto';
-  clampPanel(panel);
+  // 도킹 사이드바 방식이므로 위치 이동 없음
 }
 
 function clampPanel(panel) {
-  const rect = panel.getBoundingClientRect();
-  const pad = 8;
-  let left = rect.left;
-  let top = rect.top;
-  const maxL = Math.max(pad, window.innerWidth - rect.width - pad);
-  const maxT = Math.max(pad, window.innerHeight - rect.height - pad);
-  left = Math.min(Math.max(pad, left), maxL);
-  top = Math.min(Math.max(pad, top), maxT);
-  panel.style.left = `${Math.round(left)}px`;
-  panel.style.top = `${Math.round(top)}px`;
-  panel.style.right = 'auto';
-  panel.style.bottom = 'auto';
+  // 도킹 사이드바 방식이므로 고정
 }
 
-function savePosition(panel, composeOnly = false) {
-  try {
-    const rect = panel.getBoundingClientRect();
-    const key = composeOnly ? POS_KEY_COMPOSE : POS_KEY;
-    sessionStorage.setItem(key, JSON.stringify({ left: rect.left, top: rect.top }));
-  } catch { /* ignore */ }
-}
-
-function restorePosition(panel, composeOnly = false) {
-  if (!panel) return;
-  const key = composeOnly ? POS_KEY_COMPOSE : POS_KEY;
-  try {
-    const raw = sessionStorage.getItem(key);
-    if (raw) {
-      const pos = JSON.parse(raw);
-      if (Number.isFinite(pos.left) && Number.isFinite(pos.top)) {
-        panel.style.left = `${pos.left}px`;
-        panel.style.top = `${pos.top}px`;
-        panel.style.right = 'auto';
-        panel.style.bottom = 'auto';
-        clampPanel(panel);
-        return;
-      }
-    }
-  } catch { /* ignore */ }
-  panel.style.right = '16px';
-  panel.style.top = '72px';
-  panel.style.left = 'auto';
-  panel.style.bottom = 'auto';
-}
+function savePosition() {}
+function restorePosition() {}

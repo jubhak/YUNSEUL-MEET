@@ -1,0 +1,21 @@
+# YUNSEUL-PPT & Deep-Live-Cam 통합 오프라인 필수 패키지 목록
+numpy
+typing-extensions
+opencv-python
+cv2_enumerate_cameras
+onnx
+insightface
+psutil
+PySide6
+pillow
+tqdm
+onnxruntime
+onnxruntime-directml
+sympy
+opennsfw2
+pygrabber
+scikit-image
+aiohttp
+websockets
+PyQt6
+pyinstaller
