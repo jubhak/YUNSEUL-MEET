@@ -1,6 +1,6 @@
-# YUNSEUL PPT (Apache 80/443 + Node Socket.io)
+# YUNSEUL MEET (화상 미팅 & 실시간 프레젠테이션 솔루션)
 
-Apache가 **프론트(80/443)** 를 맡고, Node는 **뒤단(127.0.0.1:3000)** 에서 Socket.io를 처리합니다.
+WebRTC SFU(Mediasoup) 기반 다자간 초고화질 화상 회의 및 실시간 양방향 프레젠테이션 솔루션입니다.
 
 ## 접속 주소
 
