@@ -1,5 +1,5 @@
 /**
- * YUNSEUL PPT — Node.js + Socket.io 실시간 서버
+ * YUNSEUL MEET — Node.js + Socket.io 실시간 서버
  * Apache SSE 대신 WebSocket으로 슬라이드/참가자 수 동기화
  */
 const path = require('path');
@@ -1665,7 +1665,7 @@ io.on('connection', (socket) => {
 server.listen(PORT, HOST, () => {
   console.log('');
   console.log('══════════════════════════════════════');
-  console.log('  YUNSEUL PPT  (SFU 단일 경로)');
+  console.log('  YUNSEUL MEET (SFU 단일 경로)');
   console.log(`  내부: http://${HOST}:${PORT}/`);
   console.log(`  SFU RTC: ${getRtcPort()} UDP+TCP (UDP 우선)`);
   console.log(`  SFU ICE IPs: ${getListenIps().map((x) => x.announcedAddress || x.announcedIp).join(', ')}`);

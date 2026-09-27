@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""YUNSEUL-PPT 앱 아이콘 (.png 및 .ico) 자동 생성 스크립트."""
+"""YUNSEUL-MEET 앱 아이콘 (.png 및 .ico) 자동 생성 스크립트."""
 
 import os
 import struct

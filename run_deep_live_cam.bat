@@ -1,34 +1,34 @@
 @echo off
-title YUNSEUL PPT - Deep-Live-Cam
+title YUNSEUL MEET - Deep-Live-Cam
 cls
 
 echo =======================================================
-echo          YUNSEUL-PPT : Deep-Live-Cam AI ½ÇÇà±â
+echo          YUNSEUL-MEET : Deep-Live-Cam AI ì‹¤í–‰ê¸°
 echo =======================================================
 echo.
-echo [1/2] Python È¯°æ ¹× ÇÊ¼ö ÆĞÅ°Áö Á¡°Ë Áß...
+echo [1/2] Python í™˜ê²½ ë° í•„ìˆ˜ íŒ¨í‚¤ì§€ ì ê²€ ì¤‘...
 
 python -c "import PySide6, insightface, cv2_enumerate_cameras" >nul 2>&1
 if errorlevel 1 (
-    echo [¾È³»] ÇÊ¼ö AI ÆĞÅ°Áö¸¦ ÀÚµ¿ ¼³Ä¡ÇÕ´Ï´Ù...
+    echo [ì•ˆë‚´] í•„ìˆ˜ AI íŒ¨í‚¤ì§€ë¥¼ ìë™ ì„¤ì¹˜í•©ë‹ˆë‹¤...
     python -m pip install PySide6 insightface cv2_enumerate_cameras pygrabber opennsfw2
 )
 
-echo [1/2] ÇÊ¼ö ÆĞÅ°Áö È®ÀÎ ¿Ï·á.
+echo [1/2] í•„ìˆ˜ íŒ¨í‚¤ì§€ í™•ì¸ ì™„ë£Œ.
 echo.
 echo =======================================================
-echo [»ç¿ë ¹æ¹ı]
-echo  1. Deep-Live-Cam Ã¢ÀÌ ¿­¸®¸é [Select a face] Å¬¸¯
-echo  2. photo Æú´õ ³» ¿µ¿õ »çÁø ¼±ÅÃ:
-echo     - photo\superman.jpg  (½´ÆÛ¸Ç)
-echo     - photo\batman.jpg    (¹èÆ®¸Ç)
-echo     - photo\spiderman.jpg (½ºÆÄÀÌ´õ¸Ç)
+echo [ì‚¬ìš© ë°©ë²•]
+echo  1. Deep-Live-Cam ì°½ì´ ì—´ë¦¬ë©´ [Select a face] í´ë¦­
+echo  2. photo í´ë” ë‚´ ì˜ì›… ì‚¬ì§„ ì„ íƒ:
+echo     - photo\superman.jpg  (ìŠˆí¼ë§¨)
+echo     - photo\batman.jpg    (ë°°íŠ¸ë§¨)
+echo     - photo\spiderman.jpg (ìŠ¤íŒŒì´ë”ë§¨)
 echo.
-echo  3. [Live] ¹öÆ° Å¬¸¯ - À¥Ä· ½Ç½Ã°£ ¾ó±¼ º¯È¯ ½ÃÀÛ
-echo  4. °¡»ó Ä«¸Ş¶ó(OBS Virtual Camera)·Î ¹ÌÆÃ ¼ÛÃâ
+echo  3. [Live] ë²„íŠ¼ í´ë¦­ - ì›¹ìº  ì‹¤ì‹œê°„ ì–¼êµ´ ë³€í™˜ ì‹œì‘
+echo  4. ê°€ìƒ ì¹´ë©”ë¼(OBS Virtual Camera)ë¡œ ë¯¸íŒ… ì†¡ì¶œ
 echo =======================================================
 echo.
-echo [2/2] Deep-Live-Cam ÇÁ·Î±×·¥À» ½ÃÀÛÇÕ´Ï´Ù...
+echo [2/2] Deep-Live-Cam í”„ë¡œê·¸ë¨ì„ ì‹œì‘í•©ë‹ˆë‹¤...
 cd /d "%~dp0deep-live-cam"
 python run.py
 cd /d "%~dp0"

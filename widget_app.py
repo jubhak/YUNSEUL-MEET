@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-widget_app.py - YUNSEUL-PPT 위젯 컨트롤러 데스크톱 앱
+widget_app.py - YUNSEUL-MEET 위젯 컨트롤러 데스크톱 앱
 서버 상태 실시간 표시, 서버 시작/정지 토글, 브라우저 열기 및 시스템 트레이 지원.
 """
 
@@ -118,13 +118,13 @@ class ConfirmExitDialog(QDialog):
         # 본문 안내 메시지 (실행 중일 때와 정지 상태일 때 분기)
         if is_running:
             msg_text = (
-                "실행 중인 PPT 미팅 서버를 중단하고\n"
+                "실행 중인 YUNSEUL MEET 서버를 중단하고\n"
                 "프로그램을 완전히 종료하시겠습니까?\n\n"
                 "※ 종료 시 진행 중인 발표 및 시청자 연결이 모두 종료됩니다."
             )
         else:
             msg_text = (
-                "PPT 미팅 서버를 종료합니다.\n"
+                "YUNSEUL MEET 서버를 종료합니다.\n"
                 "프로그램을 완전히 종료하시겠습니까?"
             )
 
@@ -526,7 +526,7 @@ class HealthCheckWorker(QThread):
     def run(self):
         url = f"http://127.0.0.1:{self.port}/api/health"
         try:
-            req = urllib.request.Request(url, headers={"User-Agent": "YUNSEUL-PPT-Widget"})
+            req = urllib.request.Request(url, headers={"User-Agent": "YUNSEUL-MEET-Widget"})
             with urllib.request.urlopen(req, timeout=1.0) as resp:
                 if resp.status == 200:
                     data = json.loads(resp.read().decode("utf-8"))
@@ -537,7 +537,7 @@ class HealthCheckWorker(QThread):
         self.status_signal.emit(False, {})
 
 
-class PPTWidget(QWidget):
+class MeetWidget(QWidget):
     def __init__(self):
         super().__init__()
         self.server_dir = find_server_dir()
@@ -557,7 +557,7 @@ class PPTWidget(QWidget):
         self.setWindowFlags(Qt.WindowType.FramelessWindowHint | Qt.WindowType.Window)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
         self.setFixedSize(460, 260)
-        self.setWindowTitle("YUNSEUL PPT Controller")
+        self.setWindowTitle("YUNSEUL MEET Controller")
 
         ico_path = str(get_base_dir() / "app_icon.ico")
         if os.path.exists(ico_path):
@@ -602,7 +602,7 @@ class PPTWidget(QWidget):
             icon_label.setPixmap(pix)
         header.addWidget(icon_label)
 
-        title_label = QLabel("YUNSEUL PPT")
+        title_label = QLabel("YUNSEUL MEET")
         title_label.setStyleSheet("font-size: 14px; font-weight: bold; color: #f8fafc; font-family: 'Segoe UI', sans-serif;")
         header.addWidget(title_label)
 
@@ -946,7 +946,7 @@ class PPTWidget(QWidget):
         if hasattr(self, "tray") and self.tray:
             self.tray.show()
             self.tray.showMessage(
-                "YUNSEUL PPT",
+                "YUNSEUL MEET",
                 "위젯이 트레이로 이동되었습니다. 트레이 아이콘을 클릭하거나 앱을 다시 실행하면 화면에 표시됩니다.",
                 QSystemTrayIcon.MessageIcon.Information,
                 1500
@@ -1170,7 +1170,7 @@ class PPTWidget(QWidget):
         if self.is_running:
             try:
                 url = f"http://127.0.0.1:{self.port}/api/host-url"
-                req = urllib.request.Request(url, headers={"User-Agent": "YUNSEUL-PPT-Widget"})
+                req = urllib.request.Request(url, headers={"User-Agent": "YUNSEUL-MEET-Widget"})
                 with urllib.request.urlopen(req, timeout=1.5) as resp:
                     if resp.status == 200:
                         data = json.loads(resp.read().decode("utf-8"))
@@ -1208,7 +1208,7 @@ class PPTWidget(QWidget):
             event.accept()
 
 
-SINGLE_INSTANCE_KEY = "YUNSEUL_PPT_SINGLE_INSTANCE_IPC"
+SINGLE_INSTANCE_KEY = "YUNSEUL_MEET_SINGLE_INSTANCE_IPC"
 
 
 def main():
@@ -1247,7 +1247,7 @@ def main():
         font = QFont("Segoe UI", 9)
     app.setFont(font)
 
-    widget = PPTWidget()
+    widget = MeetWidget()
     widget.show()
 
     # 이미 실행 중인 상태에서 사용자가 앱을 또 실행했을 때 기존 창을 복원/팝업하는 핸들러

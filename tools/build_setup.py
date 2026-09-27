@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-build_setup.py - YUNSEUL-PPT PyInstaller 단일 실행 파일 및 Setup.exe 빌드 스크립트
+build_setup.py - YUNSEUL-MEET PyInstaller 단일 실행 파일 및 Setup.exe 빌드 스크립트
 """
 
 import os
@@ -28,6 +28,8 @@ def build() -> None:
 
     # 실행 중인 프로세스 정리 (파일 잠금 해제)
     if os.name == "nt":
+        subprocess.run(["taskkill", "/f", "/im", "YUNSEUL-MEET.exe"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        subprocess.run(["taskkill", "/f", "/im", "YUNSEUL-MEET-Setup.exe"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         subprocess.run(["taskkill", "/f", "/im", "YUNSEUL-PPT.exe"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         subprocess.run(["taskkill", "/f", "/im", "YUNSEUL-PPT-Setup.exe"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         time.sleep(0.5)
@@ -61,14 +63,14 @@ def build() -> None:
         "--hidden-import=install_meta",
     ]
 
-    # 빌드 1: YUNSEUL-PPT-Setup.exe
-    print("\n[빌드 1/2] YUNSEUL-PPT-Setup.exe (인스톨 쉴드 설치 마법사)...")
+    # 빌드 1: YUNSEUL-MEET-Setup.exe
+    print("\n[빌드 1/2] YUNSEUL-MEET-Setup.exe (인스톨 쉴드 설치 마법사)...")
     cmd_setup = [
         sys.executable, "-m", "PyInstaller",
         "--noconfirm",
         "--onefile",
         "--windowed",
-        "--name", "YUNSEUL-PPT-Setup",
+        "--name", "YUNSEUL-MEET-Setup",
         "--icon", str(ICON_ICO),
         *add_datas,
         *hidden_imports,
@@ -79,14 +81,14 @@ def build() -> None:
     ]
     run_cmd(cmd_setup)
 
-    # 빌드 2: YUNSEUL-PPT.exe (단독 위젯 실행기)
-    print("\n[빌드 2/2] YUNSEUL-PPT.exe (위젯 단독 실행 파일)...")
+    # 빌드 2: YUNSEUL-MEET.exe (단독 위젯 실행기)
+    print("\n[빌드 2/2] YUNSEUL-MEET.exe (위젯 단독 실행 파일)...")
     cmd_app = [
         sys.executable, "-m", "PyInstaller",
         "--noconfirm",
         "--onefile",
         "--windowed",
-        "--name", "YUNSEUL-PPT",
+        "--name", "YUNSEUL-MEET",
         "--icon", str(ICON_ICO),
         *add_datas,
         *hidden_imports,
@@ -97,8 +99,8 @@ def build() -> None:
     ]
     run_cmd(cmd_app)
 
-    setup_exe = ROOT / "YUNSEUL-PPT-Setup.exe"
-    app_exe = ROOT / "YUNSEUL-PPT.exe"
+    setup_exe = ROOT / "YUNSEUL-MEET-Setup.exe"
+    app_exe = ROOT / "YUNSEUL-MEET.exe"
 
     print("\n=======================================================")
     print("[성공] 빌드 완료!")

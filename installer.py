@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-installer.py - YUNSEUL-PPT 모던 인스톨 쉴드 설치 마법사 (PyQt6)
+installer.py - YUNSEUL-MEET 모던 인스톨 쉴드 설치 마법사 (PyQt6)
 다크 테마 QWizard 기반 설치 프로그램.
 """
 
@@ -197,7 +197,7 @@ class InstallThread(QThread):
                 desktop = os.path.join(os.environ.get("USERPROFILE", ""), "Desktop")
                 if os.path.isdir(desktop):
                     desktop_lnk_path = os.path.join(desktop, DESKTOP_LNK_NAME)
-                    create_shortcut(target_exe, desktop_lnk_path, icon_file, "YUNSEUL-PPT 실시간 프레젠테이션 컨트롤러")
+                    create_shortcut(target_exe, desktop_lnk_path, icon_file, "YUNSEUL-MEET 실시간 화상 미팅 컨트롤러")
 
             startmenu_dir_path = ""
             if self.create_startmenu:
@@ -211,7 +211,7 @@ class InstallThread(QThread):
                     target_exe,
                     os.path.join(startmenu, DESKTOP_LNK_NAME),
                     icon_file,
-                    "YUNSEUL-PPT 실시간 프레젠테이션 컨트롤러"
+                    "YUNSEUL-MEET 실시간 화상 미팅 컨트롤러"
                 )
 
             self.progress_signal.emit(90, "설치 정보 기록 중...")
@@ -244,9 +244,9 @@ class WelcomePage(QWizardPage):
 
         title_box = QVBoxLayout()
         title_box.setSpacing(4)
-        t = QLabel("YUNSEUL-PPT 설치 마법사")
+        t = QLabel("YUNSEUL-MEET 설치 마법사")
         t.setObjectName("title")
-        sub = QLabel("실시간 PPT 공유 & 컨트롤러 (Node.js + Socket.io + SFU)")
+        sub = QLabel("실시간 화상 미팅 & 아바타 컨트롤러 (Node.js + Socket.io + SFU)")
         sub.setObjectName("subtitle")
         title_box.addWidget(t)
         title_box.addWidget(sub)
@@ -260,7 +260,7 @@ class WelcomePage(QWizardPage):
         layout.addWidget(line)
 
         desc = QLabel(
-            "이 마법사는 컴퓨터에 YUNSEUL-PPT를 설치합니다.\n\n"
+            "이 마법사는 컴퓨터에 YUNSEUL-MEET를 설치합니다.\n\n"
             "• 컴팩트한 데스크톱 위젯 컨트롤러 탑재\n"
             "• 원클릭 실시간 웹 서버 시작 / 정지 / 모니터링\n"
             "• 시스템 트레이 백그라운드 구동 지원\n\n"
@@ -407,7 +407,7 @@ class FinishPage(QWizardPage):
         layout.setContentsMargins(24, 20, 24, 20)
         layout.setSpacing(16)
 
-        t = QLabel("YUNSEUL-PPT 설치 완료")
+        t = QLabel("YUNSEUL-MEET 설치 완료")
         t.setObjectName("title")
         sub = QLabel("프로그램이 컴퓨터에 성공적으로 설치되었습니다.")
         sub.setObjectName("subtitle")
@@ -416,7 +416,7 @@ class FinishPage(QWizardPage):
 
         layout.addSpacing(10)
 
-        self.chk_launch = QCheckBox("지금 바로 YUNSEUL-PPT 실행")
+        self.chk_launch = QCheckBox("지금 바로 YUNSEUL-MEET 실행")
         self.chk_launch.setChecked(True)
         layout.addWidget(self.chk_launch)
 
@@ -426,7 +426,7 @@ class FinishPage(QWizardPage):
 class ModernInstallerWizard(QWizard):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("YUNSEUL-PPT 설치")
+        self.setWindowTitle("YUNSEUL-MEET 설치")
         self.setFixedSize(560, 420)
         self.setStyleSheet(get_wizard_style())
         self.setWizardStyle(QWizard.WizardStyle.ModernStyle)

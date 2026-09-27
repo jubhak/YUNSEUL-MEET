@@ -20,7 +20,7 @@ if errorlevel 1 (
 )
 
 echo ========================================================
-echo   YUNSEUL-PPT 자동 환경 구성 및 빌드 마법사 (install.bat)
+echo   YUNSEUL-MEET 자동 환경 구성 및 빌드 마법사 (install.bat)
 echo ========================================================
 echo.
 
@@ -120,19 +120,19 @@ echo [4/4] 윈도우 방화벽 인바운드 허용 포트 등록 중...
 echo.
 
 echo   (1) 웹 & 소켓 포트 등록 (TCP 3000)...
-netsh advfirewall firewall delete rule name="YUNSEUL-PPT 웹 서버 (TCP 3000)" >nul 2>&1
-netsh advfirewall firewall add rule name="YUNSEUL-PPT 웹 서버 (TCP 3000)" dir=in action=allow protocol=TCP localport=3000 profile=any description="YUNSEUL-PPT Web Server and Socket.io" >nul 2>&1
+netsh advfirewall firewall delete rule name="YUNSEUL-MEET 웹 서버 (TCP 3000)" >nul 2>&1
+netsh advfirewall firewall add rule name="YUNSEUL-MEET 웹 서버 (TCP 3000)" dir=in action=allow protocol=TCP localport=3000 profile=any description="YUNSEUL-MEET Web Server and Socket.io" >nul 2>&1
 
 echo   (2) 화상/미디어 스트리밍 포트 등록 (UDP/TCP 44444)...
-netsh advfirewall firewall delete rule name="YUNSEUL-PPT SFU 미디어 (UDP 44444)" >nul 2>&1
-netsh advfirewall firewall add rule name="YUNSEUL-PPT SFU 미디어 (UDP 44444)" dir=in action=allow protocol=UDP localport=44444 profile=any description="YUNSEUL-PPT WebRTC SFU RTC Port" >nul 2>&1
+netsh advfirewall firewall delete rule name="YUNSEUL-MEET SFU 미디어 (UDP 44444)" >nul 2>&1
+netsh advfirewall firewall add rule name="YUNSEUL-MEET SFU 미디어 (UDP 44444)" dir=in action=allow protocol=UDP localport=44444 profile=any description="YUNSEUL-MEET WebRTC SFU RTC Port" >nul 2>&1
 
-netsh advfirewall firewall delete rule name="YUNSEUL-PPT SFU 미디어 (TCP 44444)" >nul 2>&1
-netsh advfirewall firewall add rule name="YUNSEUL-PPT SFU 미디어 (TCP 44444)" dir=in action=allow protocol=TCP localport=44444 profile=any description="YUNSEUL-PPT WebRTC SFU RTC TCP Port" >nul 2>&1
+netsh advfirewall firewall delete rule name="YUNSEUL-MEET SFU 미디어 (TCP 44444)" >nul 2>&1
+netsh advfirewall firewall add rule name="YUNSEUL-MEET SFU 미디어 (TCP 44444)" dir=in action=allow protocol=TCP localport=44444 profile=any description="YUNSEUL-MEET WebRTC SFU RTC TCP Port" >nul 2>&1
 
 echo   (3) 다중 접속 보조 미디어 포트 대역 등록 (UDP 40000-49999)...
-netsh advfirewall firewall delete rule name="YUNSEUL-PPT SFU 미디어 범위 (UDP 40000-49999)" >nul 2>&1
-netsh advfirewall firewall add rule name="YUNSEUL-PPT SFU 미디어 범위 (UDP 40000-49999)" dir=in action=allow protocol=UDP localport=40000-49999 profile=any description="YUNSEUL-PPT WebRTC Dynamic Media Port Range" >nul 2>&1
+netsh advfirewall firewall delete rule name="YUNSEUL-MEET SFU 미디어 범위 (UDP 40000-49999)" >nul 2>&1
+netsh advfirewall firewall add rule name="YUNSEUL-MEET SFU 미디어 범위 (UDP 40000-49999)" dir=in action=allow protocol=UDP localport=40000-49999 profile=any description="YUNSEUL-MEET WebRTC Dynamic Media Port Range" >nul 2>&1
 
 echo.
 echo   - 윈도우 방화벽 허용 규칙 등록이 완료되었습니다.
@@ -141,8 +141,8 @@ echo.
 echo ========================================================
 echo   [성공] 모든 환경 설정, 빌드 및 방화벽 등록이 완료되었습니다!
 echo.
-echo   * 데스크톱 위젯: YUNSEUL-PPT.exe
-echo   * 설치 마법사:   YUNSEUL-PPT-Setup.exe
+echo   * 데스크톱 위젯: YUNSEUL-MEET.exe
+echo   * 설치 마법사:   YUNSEUL-MEET-Setup.exe
 echo   * 윈도우 방화벽: 포트 3000(TCP), 44444(UDP/TCP), 40000-49999(UDP) 등록 완료
 echo.
 echo   [안내] 외부 참가자가 접속할 수 있도록 공유기 포트포워딩 설정 안내 창이 열립니다.

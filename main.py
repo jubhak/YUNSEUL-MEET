@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-main.py - YUNSEUL-PPT 통합 진입점
+main.py - YUNSEUL-MEET 통합 진입점
 실행 파일명이 *Setup*.exe 이거나 --install 인자가 주어지면 인스톨러 마법사 실행,
 그 외에는 위젯 컨트롤러 앱(widget_app) 실행.
 """
