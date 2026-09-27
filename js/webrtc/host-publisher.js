@@ -1,6 +1,6 @@
 import { TRACK_KIND } from './config.js';
-import { SfuClient } from './sfu-client.js?v=20260919freeze1';
-import { VirtualAvatarManager } from '../virtual-avatar-manager.js?v=20260923priv3';
+import { SfuClient } from './sfu-client.js?v=20260926freeze2';
+import { VirtualAvatarManager, openWebcamFlexible, faceModeForRoomCount } from '../virtual-avatar-manager.js?v=20260926swapfix2';
 
 /**
  * Host -> SFU display share (+ optional tab audio / mic).
@@ -42,7 +42,8 @@ export class HostPublisher {
     this._ensureGlobalAudioUnlock();
     /** @type {((info: { peerId: string|null, active: boolean, stream?: MediaStream|null }) => void)|null} */
     this.onRelayChange = null;
-    this.avatarManager = new VirtualAvatarManager({ width: 640, height: 360 });
+    this.avatarManager = new VirtualAvatarManager({ width: 640, height: 360, fps: 28 });
+    this._faceRoomCount = 1;
     this.rawCameraStream = null;
     /** @type {MediaStream|null} */
     this.cameraStream = null;
@@ -82,11 +83,11 @@ export class HostPublisher {
   }
 
   get hasCamera() {
-    return !!this.cameraStream && this.cameraStream.getVideoTracks().some((t) => t && t.readyState === 'live');
+    return !!this.cameraWanted && !!this.cameraStream && this.cameraStream.getVideoTracks().some((t) => t && t.readyState === 'live');
   }
 
   get cameraEnabled() {
-    return this.hasCamera && this.cameraStream.getVideoTracks().some((t) => t.enabled);
+    return !!this.cameraWanted && this.hasCamera && this.cameraStream.getVideoTracks().some((t) => t.enabled);
   }
 
   get hasMic() {
@@ -111,10 +112,8 @@ export class HostPublisher {
     this.sfu.consumeFilter = (info) => {
       if (this.interactionMode === 'unidirectional') return false;
       const source = info?.appData?.source || '';
-      const kind = info?.kind || '';
-      const role = info?.role || '';
-      if (source === 'viewer-display' || source === 'viewer-mic' || source === 'viewer-camera') return true;
-      if (role === 'viewer' && (kind === 'audio' || kind === 'video')) return true;
+      // 얼굴/마이크만 기본 수신. viewer-display는 화면공유 릴레이용.
+      if (source === 'viewer-camera' || source === 'viewer-mic' || source === 'viewer-display') return true;
       return false;
     };
     this.sfu.onConsumed = (info, consumer) => this._onRemoteConsumed(info, consumer);
@@ -447,20 +446,15 @@ export class HostPublisher {
     try {
       let stream = null;
       try {
-        stream = await navigator.mediaDevices.getUserMedia({
-          video: {
-            width: { ideal: 1280, max: 1920 },
-            height: { ideal: 720, max: 1080 },
-            frameRate: { ideal: 30, max: 30 },
-          },
-          audio: false,
-        });
+        stream = await openWebcamFlexible();
       } catch (camErr) {
         console.warn('[HostPublisher] 실물 웹캠 시작 불가(장치 없음/점유 중 등) → 가상 얼굴(아바타)로 자동 대체:', camErr);
         return await this.startVirtualCamera();
       }
 
       this.rawCameraStream = stream;
+      const mode = faceModeForRoomCount(this._faceRoomCount || 1);
+      this.avatarManager.setFaceMode(mode);
       this.avatarManager.setWebcamStream(stream);
       if (this.hasMic && this._micTracks?.[0]) {
         this.avatarManager.attachMicTrack(this._micTracks[0]);
@@ -516,6 +510,8 @@ export class HostPublisher {
     }
     try {
       this.avatarManager.setWebcamStream(null);
+      const mode = faceModeForRoomCount(this._faceRoomCount || 1);
+      this.avatarManager.setFaceMode(mode);
       this.avatarManager.setMode('virtual');
       if (this.hasMic && this._micTracks?.[0]) {
         this.avatarManager.attachMicTrack(this._micTracks[0]);
@@ -544,7 +540,61 @@ export class HostPublisher {
     }
   }
 
+  /**
+   * 방 인원 수에 따라 얼굴 송출 화질 자동 전환
+   * 1명: 640×360 @ ~28fps / 2~5명: 256×144 @ 15fps / 6명+: 160×90 @ 10fps
+   * (얼굴은 호스트만 수신 — 클라이언트 디코드 없음)
+   */
+  async setFaceQualityByRoomSize(totalPeople = 1) {
+    const count = Math.max(1, Number(totalPeople) || 1);
+    this._faceRoomCount = count;
+    if (!this.avatarManager) return;
+    const mode = faceModeForRoomCount(count);
+    const profile = this.avatarManager.getFaceProfile();
+    // 카메라가 비활성 상태(사용자가 켜지 않음)일 때는 canvas 출력 스트림을 생성/재할당하지 않음
+    if (!this.cameraWanted || !this.cameraStream) {
+      this.avatarManager.setFaceMode(mode);
+      if (this.sfu) {
+        await this.sfu.updateCameraEncodings?.('camera', profile).catch(() => {});
+      }
+      return;
+    }
+    const prevTrack = this.cameraStream?.getVideoTracks?.()[0] || null;
+    const recreated = this.avatarManager.setFaceMode(mode);
+    const outgoing = this.avatarManager.getOutputStream();
+    this.cameraStream = outgoing;
+    const nextTrack = outgoing?.getVideoTracks?.()[0] || null;
+    if (this.cameraWanted && this.sfu && nextTrack && (recreated || nextTrack !== prevTrack)) {
+      try {
+        await this.sfu.publishStream(outgoing, {
+          source: 'camera',
+          trackKind: TRACK_KIND.CAMERA,
+        });
+        await this.sfu.updateCameraEncodings?.('camera', profile);
+      } catch (err) {
+        console.warn('[HostPublisher] face quality switch', err);
+      }
+      this.onCameraChange?.({ active: true, stream: outgoing });
+    } else if (this.sfu) {
+      await this.sfu.updateCameraEncodings?.('camera', profile).catch(() => {});
+    }
+  }
+
+  /** 화면 밖 참가자 얼굴 consumer pause (호스트 디코드 부하 절감) */
+  async pauseRemoteCamera(clientId) {
+    const cid = this.sfu?.findConsumerIdForClient?.(clientId, 'viewer-camera')
+      || this.sfu?.findConsumerIdForClient?.(clientId);
+    if (cid) await this.sfu.pauseConsumer?.(cid).catch(() => {});
+  }
+
+  async resumeRemoteCamera(clientId) {
+    const cid = this.sfu?.findConsumerIdForClient?.(clientId, 'viewer-camera')
+      || this.sfu?.findConsumerIdForClient?.(clientId);
+    if (cid) await this.sfu.resumeConsumer?.(cid).catch(() => {});
+  }
+
   stopCamera() {
+    this.cameraWanted = false;
     if (this.rawCameraStream) {
       this.rawCameraStream.getTracks().forEach((t) => {
         try { t.stop(); } catch { /* ignore */ }
@@ -552,8 +602,12 @@ export class HostPublisher {
       this.rawCameraStream = null;
     }
     this.avatarManager?.setWebcamStream(null);
+    if (this.cameraStream && this.cameraStream !== this.rawCameraStream) {
+      this.cameraStream.getTracks().forEach((t) => {
+        try { t.stop(); } catch { /* ignore */ }
+      });
+    }
     this.cameraStream = null;
-    this.cameraWanted = false;
     if (this.sfu) {
       this.sfu.stopPublishing({ source: 'camera' }).catch(() => {});
     }

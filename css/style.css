@@ -2806,9 +2806,6 @@ body.viewer-page.is-unidirectional #btn-av-cam {
   background: #000;
   display: block;
   pointer-events: none; /* 비디오 자체 클릭으로 인한 브라우저 내장 줌/확대 차단 */
-  /* 자연스러운 뷰티/피부 보정 필터: 미세 블러(주름/잡티 스무딩) + 은은한 화사함 & 톤 보정 */
-  filter: blur(0.65px) brightness(1.05) contrast(0.96) saturate(1.04);
-  will-change: filter, transform;
 }
 
 .cam-pip-video.is-mirror {
@@ -3914,6 +3911,8 @@ body.is-presenting .host-participants-view.is-overflowing .host-participants-gri
   aspect-ratio: 16 / 9;
   box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
   transition: transform 0.15s ease, border-color 0.15s ease, box-shadow 0.15s ease;
+  contain: layout style paint;
+  transform: translateZ(0);
 }
 
 .participant-card:hover {
@@ -3939,6 +3938,9 @@ body.is-presenting .host-participants-view.is-overflowing .host-participants-gri
   height: 100%;
   object-fit: cover;
   display: block;
+  transform: translateZ(0);
+  will-change: transform;
+  backface-visibility: hidden;
 }
 
 .participant-card-cam-off {

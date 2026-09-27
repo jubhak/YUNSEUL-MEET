@@ -260,11 +260,120 @@ class NonRepeatingDeck {
 /**
  * 가상 얼굴 매니저
  */
+/** 얼굴 송출 프로파일 */
+export const FACE_OUT_W = 480;
+export const FACE_OUT_H = 270;
+export const FACE_OUT_FPS = 22;
+export const FACE_OUT_W_HD = 640;
+export const FACE_OUT_H_HD = 360;
+export const FACE_OUT_FPS_HD = 28;
+export const FACE_OUT_W_CROWD = 480;
+export const FACE_OUT_H_CROWD = 270;
+export const FACE_OUT_FPS_CROWD = 20;
+
+/** 호스트만 수신하는 구조: 10명 이상 다자간 화상에서도 부드러운 20fps와 무지연 보장 */
+export const FACE_PROFILE_SOLO = { mode: 'solo', width: FACE_OUT_W_HD, height: FACE_OUT_H_HD, fps: FACE_OUT_FPS_HD, maxBitrate: 350_000 };
+export const FACE_PROFILE_MULTI = { mode: 'multi', width: FACE_OUT_W, height: FACE_OUT_H, fps: FACE_OUT_FPS, maxBitrate: 180_000 };
+export const FACE_PROFILE_CROWD = { mode: 'crowd', width: FACE_OUT_W_CROWD, height: FACE_OUT_H_CROWD, fps: FACE_OUT_FPS_CROWD, maxBitrate: 140_000 };
+
+export function faceModeForRoomCount(totalPeople = 1) {
+  const n = Math.max(1, Number(totalPeople) || 1);
+  if (n <= 1) return 'solo';
+  if (n <= 5) return 'multi';
+  return 'crowd'; // 6명+ (10명+ 포함)
+}
+
+export function faceProfileForMode(mode) {
+  if (mode === 'solo') return FACE_PROFILE_SOLO;
+  if (mode === 'crowd') return FACE_PROFILE_CROWD;
+  return FACE_PROFILE_MULTI;
+}
+
+/**
+ * OverconstrainedError 방지: max 하드 리밋 없이 ideal만 사용.
+ * 장비가 256을 지원하지 않으면 장치 기본/최소 해상도로 열고, 송출은 캔버스에서 다운스케일.
+ */
+export async function openWebcamFlexible() {
+  if (!navigator.mediaDevices?.getUserMedia) {
+    throw new Error('getUserMedia 미지원');
+  }
+
+  let videoDevices = [];
+  try {
+    const devs = await navigator.mediaDevices.enumerateDevices();
+    videoDevices = devs.filter((d) => d.kind === 'videoinput');
+    if (videoDevices.length === 0) {
+      const noDevErr = new Error('연결된 카메라(웹캠) 장치를 찾을 수 없습니다.');
+      noDevErr.name = 'NotFoundError';
+      throw noDevErr;
+    }
+  } catch (e) {
+    if (e.name === 'NotFoundError') throw e;
+  }
+
+  const attempts = [
+    // 솔로 품질 선호 (ideal만 — max 하드 리밋 금지)
+    { width: { ideal: 640 }, height: { ideal: 360 }, frameRate: { ideal: 28 } },
+    { width: { ideal: 640 }, height: { ideal: 480 }, frameRate: { ideal: 24 } },
+    { width: { ideal: 320 }, height: { ideal: 240 }, frameRate: { ideal: 24 } },
+    true, // 장치 기본
+  ];
+
+  let lastError = null;
+  for (const video of attempts) {
+    try {
+      return await navigator.mediaDevices.getUserMedia({
+        video: video === true ? true : video,
+        audio: false,
+      });
+    } catch (err) {
+      lastError = err;
+      if (err?.name === 'NotAllowedError' || err?.name === 'PermissionDeniedError') throw err;
+    }
+  }
+
+  if (videoDevices.length > 1) {
+    for (const dev of videoDevices) {
+      if (!dev.deviceId) continue;
+      try {
+        return await navigator.mediaDevices.getUserMedia({
+          video: { deviceId: { exact: dev.deviceId } },
+          audio: false,
+        });
+      } catch (err) {
+        lastError = err;
+      }
+    }
+  }
+
+  const isTouchDevice = ('ontouchstart' in window) || (navigator.maxTouchPoints > 0);
+  if (isTouchDevice) {
+    try {
+      return await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: 'user' },
+        audio: false,
+      });
+    } catch (err) {
+      lastError = err;
+    }
+  }
+
+  throw lastError || new Error('카메라 스트림을 시작할 수 없습니다.');
+}
+
 export class VirtualAvatarManager {
-  constructor({ width = 640, height = 360 } = {}) {
+  constructor({
+    width = FACE_OUT_W_HD,
+    height = FACE_OUT_H_HD,
+    fps = FACE_OUT_FPS_HD,
+    lockLowRes = false,
+  } = {}) {
     this.width = width;
     this.height = height;
-    this.isLarge = false; // 기본값: 작은 이미지(저부하 모드)
+    this.captureFps = fps;
+    this.lockLowRes = !!lockLowRes;
+    this.faceMode = 'solo'; // 'solo' | 'multi'
+    this.isLarge = width >= FACE_OUT_W_HD;
     this.deck = new NonRepeatingDeck(CELEBRITY_AVATARS);
     this._heroImages = new Map();
     HERO_AVATARS.forEach((h) => {
@@ -317,29 +426,91 @@ export class VirtualAvatarManager {
     this._offscreenCanvas = null;
     this._offscreenCtx = null;
     this._ws = null;
-    this._initSwapWebSocket();
+    // WebSocket은 스왑 모드 진입 시에만 연결 (항상 연결하면 워커 준비 후 부하 급증)
+    // this._initSwapWebSocket();
 
     this._startRenderLoop();
   }
 
   /**
-   * 화면 크기에 맞춰 동적 해상도 전환 (작은 화면: 640x360 저부하, 큰 화면: 1280x720 고화질)
+   * 화질 토글 (하위 호환) — solo/multi 프로파일로 위임
    */
   setHighRes(isLarge) {
-    this.isLarge = !!isLarge;
-    const targetW = this.isLarge ? 1280 : 640;
-    const targetH = this.isLarge ? 720 : 360;
-    if (this.width !== targetW || this.height !== targetH) {
-      this.width = targetW;
-      this.height = targetH;
-      this.canvas.width = targetW;
-      this.canvas.height = targetH;
-      if (this._offscreenCanvas) {
-        this._offscreenCanvas.width = targetW;
-        this._offscreenCanvas.height = targetH;
-      }
+    if (this.lockLowRes) {
+      this.setFaceMode('crowd');
+      return;
     }
-    this.onResolutionChange?.(this.isLarge, targetW, targetH);
+    this.setFaceMode(isLarge ? 'solo' : 'multi');
+  }
+
+  /**
+   * 방 인원 기반 송출 프로파일
+   * - solo: 640×360 @ ~28fps
+   * - multi: 256×144 @ 20fps
+   * @returns {boolean} 출력 트랙이 재생성된 경우 true
+   */
+  setFaceMode(mode) {
+    if (this.lockLowRes) mode = 'crowd';
+    const profile = faceProfileForMode(mode);
+    const nextMode = profile.mode;
+    const same = this.faceMode === nextMode
+      && this.width === profile.width
+      && this.height === profile.height
+      && this.captureFps === profile.fps;
+    this.faceMode = nextMode;
+    this.isLarge = nextMode === 'solo';
+    this.captureFps = profile.fps;
+
+    let recreated = false;
+    if (this.width !== profile.width || this.height !== profile.height) {
+      this.width = profile.width;
+      this.height = profile.height;
+      this.canvas.width = profile.width;
+      this.canvas.height = profile.height;
+      if (this._offscreenCanvas) {
+        this._offscreenCanvas.width = profile.width;
+        this._offscreenCanvas.height = profile.height;
+      }
+      recreated = true;
+    }
+    if (!same) {
+      this._recreateOutputStream();
+      recreated = true;
+      this._softApplyWebcamConstraints(profile);
+      // 인원 변화로 faceMode가 바뀌면 스왑 펌프 주기 갱신
+      if (this.mode === 'swap') this._startSwapPump();
+    }
+    this.onResolutionChange?.(this.isLarge, profile.width, profile.height);
+    return recreated;
+  }
+
+  getFaceProfile() {
+    return faceProfileForMode(this.faceMode || 'multi');
+  }
+
+  _softApplyWebcamConstraints(profile) {
+    try {
+      const vt = this.rawWebcamStream?.getVideoTracks?.()[0];
+      if (!vt) return;
+      // ideal만 — max 하드 리밋으로 OverconstrainedError 내지 않음
+      vt.applyConstraints?.({
+        width: { ideal: profile.width },
+        height: { ideal: profile.height },
+        frameRate: { ideal: profile.fps },
+      }).catch(() => {
+        // 장비가 해당 해상도를 못 내면 장치 기본 유지 → 캔버스에서 다운스케일
+      });
+    } catch { /* ignore */ }
+  }
+
+  _recreateOutputStream() {
+    const fps = this.captureFps || FACE_OUT_FPS;
+    // 이미 라이브 출력 스트림이 유지되고 있다면 트랙을 강제로 죽이지 않음 (WebRTC 송출 및 비디오 재생 중단 방지)
+    if (this.outputStream && this.outputStream.getVideoTracks().some((t) => t && t.readyState === 'live')) {
+      return this.outputStream;
+    }
+    this.outputStream = this.canvas.captureStream(fps);
+    return this.outputStream;
   }
 
   get isVirtual() {
@@ -363,31 +534,36 @@ export class VirtualAvatarManager {
   }
 
   /**
-   * 웹캠 원본 스트림 등록 (동적 해상도 반영)
+   * 웹캠 원본 스트림 등록 (송출 해상도는 faceMode 프로파일 유지)
    */
   setWebcamStream(stream) {
     this.rawWebcamStream = stream;
     if (stream) {
       if (this.activeSwapFace && this.activeSwapFace !== 'none' && this.activeSwapFace !== 'real') {
         this.mode = 'swap';
+        this._initSwapWebSocket();
+        this._startSwapPump();
       }
       this.rawWebcamVideo.srcObject = stream;
-      const updateDim = () => {
-        const targetW = this.isLarge ? 1280 : 640;
-        const targetH = this.isLarge ? 720 : 360;
-        this.width = targetW;
-        this.height = targetH;
-        this.canvas.width = targetW;
-        this.canvas.height = targetH;
-        if (this._offscreenCanvas) {
-          this._offscreenCanvas.width = targetW;
-          this._offscreenCanvas.height = targetH;
+      const ensureOutDim = () => {
+        const profile = this.getFaceProfile();
+        if (this.width !== profile.width || this.height !== profile.height) {
+          this.width = profile.width;
+          this.height = profile.height;
+          this.canvas.width = profile.width;
+          this.canvas.height = profile.height;
+          if (this._offscreenCanvas) {
+            this._offscreenCanvas.width = profile.width;
+            this._offscreenCanvas.height = profile.height;
+          }
         }
       };
-      this.rawWebcamVideo.onloadedmetadata = updateDim;
-      this.rawWebcamVideo.play?.().then(updateDim).catch(() => {});
+      this.rawWebcamVideo.onloadedmetadata = ensureOutDim;
+      this.rawWebcamVideo.play?.().then(ensureOutDim).catch(() => {});
+      this._softApplyWebcamConstraints(this.getFaceProfile());
     } else {
       this.rawWebcamVideo.srcObject = null;
+      this._stopSwapPump();
     }
   }
 
@@ -438,8 +614,7 @@ export class VirtualAvatarManager {
    */
   getOutputStream() {
     if (!this.outputStream || this.outputStream.getVideoTracks().every((t) => t.readyState === 'ended')) {
-      // 30fps 스트림 캡처
-      this.outputStream = this.canvas.captureStream(30);
+      this.outputStream = this.canvas.captureStream(this.captureFps || FACE_OUT_FPS);
     }
     return this.outputStream;
   }
@@ -451,12 +626,42 @@ export class VirtualAvatarManager {
     if (newMode === 'real') {
       this.activeSwapFace = null;
       this.mode = 'real';
+      this._stopSwapPump();
     } else if (newMode === 'swap') {
       this.mode = 'swap';
+      this._initSwapWebSocket();
+      this._startSwapPump();
     } else {
       this.mode = 'virtual';
+      this._stopSwapPump();
     }
     this.onModeChange?.(this.mode, this.currentAvatar, this.activeSwapFace);
+  }
+
+  /** 스왑 요청 fps — 송출 fps와 분리 (실시간 자연스러운 모션 보장) */
+  _swapRequestFps() {
+    if (this.faceMode === 'crowd') return 18;
+    if (this.faceMode === 'multi') return 22;
+    return 26; // solo
+  }
+
+  _startSwapPump() {
+    this._stopSwapPump();
+    const tick = () => {
+      if (this.mode !== 'swap') return;
+      this._requestFaceSwapFrame();
+    };
+    const ms = Math.round(1000 / Math.max(2, this._swapRequestFps()));
+    this._swapPumpTimer = setInterval(tick, ms);
+    // 즉시 1장
+    tick();
+  }
+
+  _stopSwapPump() {
+    if (this._swapPumpTimer) {
+      clearInterval(this._swapPumpTimer);
+      this._swapPumpTimer = null;
+    }
   }
 
   toggleMode() {
@@ -470,20 +675,6 @@ export class VirtualAvatarManager {
     } else {
       this.setMode('real');
     }
-  }
-
-  setRealMode() {
-    this.activeSwapFace = null;
-    this._lastSwappedImage = null;
-    if (this._lastBitmap) {
-      try { this._lastBitmap.close(); } catch { /* ignore */ }
-      this._lastBitmap = null;
-    }
-    if (this._lastSwappedUrl) {
-      try { URL.revokeObjectURL(this._lastSwappedUrl); } catch { /* ignore */ }
-      this._lastSwappedUrl = null;
-    }
-    this.setMode('real');
   }
 
   /**
@@ -505,6 +696,7 @@ export class VirtualAvatarManager {
     this.mode = 'swap';
 
     this._initSwapWebSocket();
+    this._startSwapPump();
 
     if (this._ws && this._ws.readyState === WebSocket.OPEN) {
       try {
@@ -518,11 +710,22 @@ export class VirtualAvatarManager {
   }
 
   /**
+   * 실물 웹캠 모드로 복귀 (AI 스왑 해제)
+   */
   setRealMode() {
     this.activeSwapFace = null;
-    this.mode = 'real';
     this._lastSwappedImage = null;
-    this.onModeChange?.(this.mode, this.currentAvatar, null);
+    this._stopSwapPump();
+    this._swapBusy = false;
+    if (this._lastBitmap) {
+      try { this._lastBitmap.close(); } catch { /* ignore */ }
+      this._lastBitmap = null;
+    }
+    if (this._lastSwappedUrl) {
+      try { URL.revokeObjectURL(this._lastSwappedUrl); } catch { /* ignore */ }
+      this._lastSwappedUrl = null;
+    }
+    this.setMode('real');
   }
 
   /**
@@ -576,23 +779,27 @@ export class VirtualAvatarManager {
   }
 
   _startRenderLoop() {
-    let lastRenderTime = performance.now();
-    const render = () => {
-      lastRenderTime = performance.now();
-      this._renderFrame();
+    let lastRenderTime = 0;
+    const render = (ts) => {
+      const targetFps = this.captureFps || FACE_OUT_FPS;
+      const minFrameMs = 1000 / Math.max(1, targetFps);
+      if (!lastRenderTime || (ts - lastRenderTime) >= minFrameMs) {
+        lastRenderTime = ts;
+        this._renderFrame();
+      }
       this._animId = requestAnimationFrame(render);
     };
     this._animId = requestAnimationFrame(render);
 
-    // 브라우저 탭 비활성화 또는 백그라운드 전환 시 rAF 중단으로 인한 웹캠/아바타 멈춤 방지
-    // 50ms 이상 rAF가 지연되면 인터벌이 강제로 프레임을 갱신하여 20~25fps 항시 보장
     if (this._heartbeatTimer) clearInterval(this._heartbeatTimer);
     this._heartbeatTimer = setInterval(() => {
-      if (performance.now() - lastRenderTime > 50) {
+      const targetFps = this.captureFps || FACE_OUT_FPS;
+      const minFrameMs = 1000 / Math.max(1, targetFps);
+      if (performance.now() - lastRenderTime > minFrameMs * 1.5) {
         lastRenderTime = performance.now();
         this._renderFrame();
       }
-    }, 45);
+    }, 50);
   }
 
   _updateMouthLevel() {
@@ -665,23 +872,18 @@ export class VirtualAvatarManager {
     }
 
     // 0. 실시간 Deep-Live-Cam 페이스 스왑 / 뷰티 모드
+    // 중요: 여기서는 "그리기만" 한다. toBlob/스왑 요청은 별도 펌프(_startSwapPump)에서만.
+    // 렌더마다 스왑 요청하면 워커 적체 → 10초 정지 진동의 주원인.
     if (this.mode === 'swap') {
-      if (this.rawWebcamVideo.readyState >= 2) {
-        this._requestFaceSwapFrame();
-
-        ctx.save();
-        if (this._lastBitmap) {
-          ctx.drawImage(this._lastBitmap, 0, 0, w, h);
-        } else if (this._lastSwappedImage && this._lastSwappedImage.complete && this._lastSwappedImage.naturalWidth) {
-          ctx.drawImage(this._lastSwappedImage, 0, 0, w, h);
-        } else {
-          // [사생활 절대 보호] 첫 프레임 도착 전: 원본 실물 얼굴은 1ms도 노출하지 않고 가상 얼굴 플레이스홀더를 렌더링
-          this._drawFacePrivacyPlaceholder(ctx, w, h);
-        }
-        ctx.restore();
+      ctx.save();
+      if (this._lastBitmap) {
+        ctx.drawImage(this._lastBitmap, 0, 0, w, h);
+      } else if (this._lastSwappedImage && this._lastSwappedImage.complete && this._lastSwappedImage.naturalWidth) {
+        ctx.drawImage(this._lastSwappedImage, 0, 0, w, h);
       } else {
         this._drawFacePrivacyPlaceholder(ctx, w, h);
       }
+      ctx.restore();
       return;
     }
 
@@ -1228,9 +1430,9 @@ export class VirtualAvatarManager {
       const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
       const wsUrl = `${proto}//${host}/face-swap-ws`;
       const ws = new WebSocket(wsUrl);
+      this._ws = ws;
       ws.binaryType = 'arraybuffer';
       ws.onopen = () => {
-        this._ws = ws;
         if (this.activeSwapFace) {
           try {
             ws.send(JSON.stringify({ type: 'set_source', source: this.activeSwapFace }));
@@ -1271,11 +1473,11 @@ export class VirtualAvatarManager {
         }
       };
       ws.onerror = () => {
-        this._ws = null;
+        if (this._ws === ws) this._ws = null;
         this._swapBusy = false;
       };
       ws.onclose = () => {
-        this._ws = null;
+        if (this._ws === ws) this._ws = null;
         this._swapBusy = false;
       };
     } catch {
@@ -1289,29 +1491,29 @@ export class VirtualAvatarManager {
       return;
     }
     const now = Date.now();
-    // 150ms 이상 지연 시 busy 플래그 자동 해제 (영상 멈춤 및 지연 즉시 방지)
+    // 응답 대기 중이면 추가 요청 금지 (워커 latest-frame과 맞춰 단일 비행)
     if (this._swapBusy) {
-      if (now - this._lastSwapReqTime > 150) {
+      if (now - this._lastSwapReqTime > 2500) {
         this._swapBusy = false;
       } else {
         return;
       }
     }
-    // 33ms 인터벌 제어 (최대 30 FPS 실시간 초고속 송출)
-    if (now - this._lastSwapReqTime < 33) {
-      return;
-    }
     this._lastSwapReqTime = now;
     this._swapBusy = true;
 
-    // WebSocket 단선 시 백그라운드 자동 재접속
     if (!this._ws || this._ws.readyState === WebSocket.CLOSED) {
       this._initSwapWebSocket();
     }
+    // WS 미연결이면 다음 틱에 재시도
+    if (!this._ws || this._ws.readyState !== WebSocket.OPEN) {
+      this._swapBusy = false;
+      return;
+    }
 
-    // AI 페이스 스왑 전송 크기 최적화 (480x270 고속 전송으로 네트워크 부하 90% 절감 및 실시간 FPS 유지)
-    const targetW = Math.min(this.width || 640, 480);
-    const targetH = Math.min(this.height || 360, 270);
+    // InsightFace 얼굴 검출에 최적인 표준 해상도 (최소 480x270 ~ 640x360 보장)
+    const targetW = Math.max(480, this.width || 640);
+    const targetH = Math.max(270, this.height || 360);
     if (!this._offscreenCanvas || this._offscreenCanvas.width !== targetW || this._offscreenCanvas.height !== targetH) {
       this._offscreenCanvas = document.createElement('canvas');
       this._offscreenCanvas.width = targetW;
@@ -1349,6 +1551,7 @@ export class VirtualAvatarManager {
           packet.set(nameBytes, 4);
           packet.set(blobBytes, 4 + nameBytes.length);
           this._ws.send(packet);
+          // busy는 onmessage에서 해제 (응답 없으면 2.5s 가드)
           return;
         } catch {
           this._ws = null;
@@ -1356,55 +1559,19 @@ export class VirtualAvatarManager {
         }
       }
 
-      // 2순위: HTTP POST /api/swap-frame
-      try {
-        const res = await fetch('/api/swap-frame', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'image/jpeg',
-            'X-Source-Face': targetFace,
-          },
-          body: blob,
-        });
-        if (res.ok) {
-          const swappedBlob = await res.blob();
-          if (typeof createImageBitmap === 'function') {
-            try {
-              const bitmap = await createImageBitmap(swappedBlob);
-              const old = this._lastBitmap;
-              this._lastBitmap = bitmap;
-              this._lastSwapSuccessTime = Date.now();
-              if (old) {
-                try { old.close(); } catch { /* ignore */ }
-              }
-              this._swapBusy = false;
-              return;
-            } catch { /* ignore */ }
-          }
-          const img = new Image();
-          img.onload = () => {
-            if (this._lastSwappedUrl) {
-              try { URL.revokeObjectURL(this._lastSwappedUrl); } catch { /* ignore */ }
-            }
-            this._lastSwappedImage = img;
-            this._lastSwappedUrl = img.src;
-            this._lastSwapSuccessTime = Date.now();
-            this._swapBusy = false;
-          };
-          img.src = URL.createObjectURL(swappedBlob);
-        } else {
-          this._swapBusy = false;
-        }
-      } catch {
-        this._swapBusy = false;
-      }
-    }, 'image/jpeg', 0.82);
+      this._swapBusy = false;
+    }, 'image/jpeg', 0.70);
   }
 
   destroy() {
+    this._stopSwapPump();
     if (this._animId) {
       cancelAnimationFrame(this._animId);
       this._animId = null;
+    }
+    if (this._heartbeatTimer) {
+      clearInterval(this._heartbeatTimer);
+      this._heartbeatTimer = null;
     }
     if (this._ws) {
       try { this._ws.close(); } catch { /* ignore */ }

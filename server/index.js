@@ -231,6 +231,7 @@ function persistRoom(room) {
     requireMic: normMode === 'bidirectional' && !!room.requireMic,
     ended: room.ended,
     endedAt: room.endedAt,
+    meetingStarted: !!room.meetingStarted,
     createdAt: room.createdAt,
     logDir: room.logDir || null,
     viewers: Object.fromEntries(
@@ -264,6 +265,8 @@ function loadRoomFromDisk(code) {
       requireMic: normMode === 'bidirectional' && !!raw.requireMic,
       ended: !!raw.ended,
       endedAt: raw.endedAt || 0,
+      // 미팅 시작 여부는 재접속·서버 재기동 후에도 유지 (송출 중인데 카드 대기실로 떨어지는 사고 방지)
+      meetingStarted: !!raw.meetingStarted,
       createdAt: raw.createdAt || Date.now(),
       logDir: raw.logDir || null,
       viewers: new Map(),
@@ -395,9 +398,25 @@ function schedulePeerDisconnectGrace(io, room, clientId, role) {
     clientId,
     setTimeout(() => {
       room._peerGraceTimers?.delete(clientId);
+
+      // 유예 중 재접속했으면 SFU(송출)를 절대 건드리지 않음
+      // (취소 누락·레이스 시에도 방송 중 get-producers=0 사고 방지)
+      if (role === 'host') {
+        if (room.hostConnected && room.hostClientId === clientId) {
+          console.log(`[grace-expired] skipped — host still connected ${clientId.slice(0, 8)}`);
+          return;
+        }
+      } else {
+        const v = room.viewers.get(clientId);
+        if (v?.connected) {
+          console.log(`[grace-expired] skipped — viewer still connected ${clientId.slice(0, 8)}`);
+          return;
+        }
+      }
+
       console.log(`[grace-expired] room=${room.code} role=${role} client=${clientId.slice(0, 8)}`);
 
-      // 30초 유예가 완전히 경과했을 때만 실제 SFU 리소스 해제
+      // 30초 유예가 완전히 경과했고 미재접속일 때만 SFU 리소스 해제
       cleanupSocketPeer(room.code, clientId, io);
 
       if (role === 'host') {
@@ -1450,7 +1469,7 @@ io.on('connection', (socket) => {
           }
           break;
         case 'start-meeting-countdown': {
-          room.meetingStarted = false;
+          room.meetingStarted = true;
           room.meetingCountdown = true;
           const countdownSec = Math.max(1, parseInt(payload?.duration, 10) || 5);
           if (room._countdownTimer) clearTimeout(room._countdownTimer);
@@ -1461,6 +1480,8 @@ io.on('connection', (socket) => {
               room.meetingCountdown = false;
               persistRoom(room);
               broadcastViewerCount(io, room);
+              // 카운트다운만 듣고 meeting-started를 못 받은 참가자 안전망
+              io.to(room.code).emit('meeting-started', {});
             }
           }, countdownSec * 1000 + 200);
           break;
@@ -1485,6 +1506,8 @@ io.on('connection', (socket) => {
           room.streamActive = false;
           room.streamKinds = [];
           room.activeBroadcasterId = null;
+          room.meetingStarted = false;
+          room.meetingCountdown = false;
           payload.message = payload.message || '호스트가 발표를 종료했습니다.';
           break;
         case 'request-screen-share': {
@@ -1543,8 +1566,8 @@ io.on('connection', (socket) => {
       }
 
       persistRoom(room);
-      // 슬라이드/낙서 등은 다른 클라이언트에게만, 종료 및 미팅 시작 카운트다운은 전원에게 브로드캐스트
-      if (type === 'session-end' || type === 'start-meeting-countdown') {
+      // 슬라이드/낙서 등은 다른 클라이언트에게만, 종료 및 미팅 시작 카운트다운/미팅 시작은 전원에게 브로드캐스트
+      if (type === 'session-end' || type === 'start-meeting-countdown' || type === 'meeting-started') {
         io.to(code).emit(type, payload);
       } else {
         socket.to(code).emit(type, payload);
@@ -1665,6 +1688,7 @@ server.listen(PORT, HOST, () => {
 // WebSocket upgrade proxy: /face-swap-ws -> face_swap_worker:8765/ws
 server.on('upgrade', (req, socket, head) => {
   if (req.url && (req.url.startsWith('/face-swap-ws') || req.url.startsWith('/ws'))) {
+    socket.pause();
     const net = require('net');
     const port = Number(process.env.FACE_SWAP_PORT || 8765);
     const proxySocket = net.connect(port, '127.0.0.1', () => {
@@ -1678,6 +1702,7 @@ server.on('upgrade', (req, socket, head) => {
       if (head && head.length) proxySocket.write(head);
       socket.pipe(proxySocket);
       proxySocket.pipe(socket);
+      socket.resume();
     });
     proxySocket.on('error', () => {
       try { socket.destroy(); } catch { /* ignore */ }
@@ -1708,6 +1733,22 @@ function getPythonCmd() {
 }
 
 function startFaceSwapWorker() {
+  if (faceSwapStopping) return;
+  if (faceSwapProcess) return;
+
+  const net = require('net');
+  const port = Number(process.env.FACE_SWAP_PORT || 8765);
+  // 포트 8765에 이미 워커가 동작 중인지 사전 프로브
+  const probe = net.connect(port, '127.0.0.1', () => {
+    probe.destroy();
+    console.log(`[FaceSwap] worker already listening on port ${port}`);
+  });
+  probe.on('error', () => {
+    _spawnFaceSwapWorkerProcess();
+  });
+}
+
+function _spawnFaceSwapWorkerProcess() {
   if (faceSwapStopping) return;
   if (faceSwapProcess) return;
 

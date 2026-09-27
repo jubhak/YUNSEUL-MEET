@@ -86,14 +86,26 @@ export class TarotLoungeManager {
   show() {
     if (!this.container) return;
     this.isActive = true;
+    this.container.style.display = '';
     this.container.classList.remove('hidden');
     document.body.classList.add('is-in-tarot-lounge');
   }
 
   hide() {
     if (!this.container) return;
+    if (this._countdownTimer) {
+      clearInterval(this._countdownTimer);
+      this._countdownTimer = null;
+    }
+    this._isCountingDown = false;
     this.isActive = false;
+    this.container.style.display = 'none';
     this.container.classList.add('hidden');
+    this.container.classList.remove('is-fading-out', 'is-dissolving-storm');
+    if (this.countdownOverlay) {
+      this.countdownOverlay.classList.remove('is-active');
+      this.countdownOverlay.classList.add('hidden');
+    }
     document.body.classList.remove('is-in-tarot-lounge');
   }
 

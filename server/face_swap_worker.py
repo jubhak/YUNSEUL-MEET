@@ -77,6 +77,7 @@ def load_source_face(source_name_or_path: str):
         PHOTO_DIR / f"{key}.jpg",
         PHOTO_DIR / f"{key}.jpeg",
         PHOTO_DIR / f"{key}.png",
+        PHOTO_DIR / f"{key}.webp",
         PHOTO_DIR / source_name_or_path,
         ROOT_DIR / source_name_or_path,
         Path(source_name_or_path),
@@ -123,7 +124,7 @@ def preload_all_photos():
     if not PHOTO_DIR.exists():
         return
     for f in PHOTO_DIR.iterdir():
-        if f.suffix.lower() in [".jpg", ".jpeg", ".png"]:
+        if f.suffix.lower() in [".jpg", ".jpeg", ".png", ".webp"]:
             try:
                 load_source_face(f.name)
             except Exception as e:
@@ -225,12 +226,12 @@ def process_frame(source_name: str, frame_bytes: bytes) -> bytes:
             _, encoded = cv2.imencode(".jpg", blurred, [int(cv2.IMWRITE_JPEG_QUALITY), 85])
             return encoded.tobytes()
 
-        # 얼굴 크기(면적) 순으로 정렬 (주 발표자 우선 처리, 최대 3명 동시 스왑)
+        # 실시간 라이브: 가장 큰 얼굴 1명만 (다중 얼굴은 지연 폭증)
         target_faces = sorted(
             target_faces,
             key=lambda f: (float(f.bbox[2]) - float(f.bbox[0])) * (float(f.bbox[3]) - float(f.bbox[1])),
             reverse=True
-        )[:3]
+        )[:1]
 
         # 화면에 잡힌 모든 인물에 스왑 적용 (다른 사람이 잡혀도 기존 얼굴 스왑이 해지되지 않고 전원 유지!)
         swapped = frame.copy()
@@ -280,8 +281,8 @@ def process_frame(source_name: str, frame_bytes: bytes) -> bytes:
             _, encoded = cv2.imencode(".jpg", safe_frame, [int(cv2.IMWRITE_JPEG_QUALITY), 85])
             return encoded.tobytes()
 
-        # 고속 JPEG 인코딩 (품질 80, 실시간 초고속 전송)
-        _, encoded = cv2.imencode(".jpg", swapped, [int(cv2.IMWRITE_JPEG_QUALITY), 80])
+        # 고속 JPEG 인코딩 (품질 70 — 실시간 지연 우선)
+        _, encoded = cv2.imencode(".jpg", swapped, [int(cv2.IMWRITE_JPEG_QUALITY), 70])
         result_bytes = encoded.tobytes()
         LAST_SWAPPED_FRAMES[source_key] = result_bytes
         LAST_SWAPPED_FRAMES["_latest"] = result_bytes

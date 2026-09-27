@@ -272,7 +272,7 @@ export class VoiceActivityMonitor {
         if (rms > this.threshold) {
           this._handleSpeaking(id);
         }
-      }, 120);
+      }, 400);
 
       track.addEventListener('ended', () => {
         this.detach(id);

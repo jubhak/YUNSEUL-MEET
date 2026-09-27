@@ -1,5 +1,5 @@
-import { SfuClient } from './sfu-client.js?v=20260919freeze1';
-import { VirtualAvatarManager } from '../virtual-avatar-manager.js?v=20260923priv3';
+import { SfuClient } from './sfu-client.js?v=20260926freeze2';
+import { VirtualAvatarManager, openWebcamFlexible, faceModeForRoomCount } from '../virtual-avatar-manager.js?v=20260926swapfix2';
 
 /**
  * 참가자: SFU에서 호스트 display 수신 + (선택) 마이크/화면 업링크
@@ -42,7 +42,8 @@ export class ViewerSubscriber {
     this._remoteAudioEl = null;
     /** @type {MediaStream|null} */
     this._remoteAudioStream = null;
-    this.avatarManager = new VirtualAvatarManager({ width: 640, height: 360 });
+    this.avatarManager = new VirtualAvatarManager({ width: 640, height: 360, fps: 28 });
+    this._faceRoomCount = 1;
     this.rawCameraStream = null;
     /** @type {MediaStream|null} */
     this.cameraStream = null;
@@ -92,11 +93,11 @@ export class ViewerSubscriber {
   }
 
   get hasCamera() {
-    return !!this.cameraStream && this.cameraStream.getVideoTracks().some((t) => t && t.readyState === 'live');
+    return !!this.cameraWanted && !!this.cameraStream && this.cameraStream.getVideoTracks().some((t) => t && t.readyState === 'live');
   }
 
   get cameraEnabled() {
-    return this.hasCamera && this.cameraStream.getVideoTracks().some((t) => t.enabled);
+    return !!this.cameraWanted && this.hasCamera && this.cameraStream.getVideoTracks().some((t) => t.enabled);
   }
 
   async _ensureSfu() {
@@ -111,13 +112,11 @@ export class ViewerSubscriber {
       sfu.consumeFilter = (info) => {
         const source = info?.appData?.source || '';
         const kind = info?.kind;
-        // 클라이언트는 영상 화면을 보는 제어권이 없고 오직 호스트 송출 화면만 봄
-        // 호스트 화면 1개만 소비하여 20명+ 접속 시에도 모바일 디코딩 부하 및 고속 재생 밀림 완벽 방지
+        // 얼굴(viewer-camera/camera)은 절대 수신하지 않음 — 호스트 display(+오디오)만
         if (kind === 'video') {
-          // 호스트의 메인 송출(display) 스트림만 수신. 모든 카메라 스트림(viewer-camera, camera 등)은 수신 거부
+          if (source === 'camera' || source === 'viewer-camera') return false;
           return info?.role === 'host' && (source === 'display' || !source);
         }
-        // 오디오는 호스트 음성/탭 오디오 및 참가자 마이크(양방향 모드 시) 수신
         if (kind === 'audio') {
           if (source === 'tab-audio' || source === 'mic') return true;
           if (source === 'viewer-mic') {
@@ -133,20 +132,10 @@ export class ViewerSubscriber {
       sfu.onConsumed = (info, consumer) => {
         const source = info?.appData?.source || '';
         const clientId = info?.clientId || info?.appData?.clientId;
+        // 카메라 경로는 서버/필터에서 차단됨 — 방어적 no-op
         if (source === 'camera' || source === 'viewer-camera') {
-          if (consumer.track) {
-            this._cameraTrackIds.add(consumer.track.id);
-            const camStream = new MediaStream([consumer.track]);
-            this.onRemoteCamera?.({
-              clientId,
-              stream: camStream,
-              role: info?.role || (source === 'camera' ? 'host' : 'viewer')
-            });
-            consumer.track.addEventListener('ended', () => {
-              this._cameraTrackIds.delete(consumer.track.id);
-              this.onRemoteCameraClosed?.(clientId);
-            });
-          }
+          try { consumer.close(); } catch { /* ignore */ }
+          return;
         }
         if (source === 'mic' || source === 'viewer-mic') {
           if (consumer.track) {
@@ -675,76 +664,46 @@ export class ViewerSubscriber {
   }
 
   async _obtainCameraStream() {
-    let lastError = null;
+    return openWebcamFlexible();
+  }
 
-    // 0단계: 장치 목록 사전 점검 (videoinput 장치가 하나라도 있는지 확인)
-    let videoDevices = [];
-    if (navigator.mediaDevices.enumerateDevices) {
-      try {
-        const devs = await navigator.mediaDevices.enumerateDevices();
-        videoDevices = devs.filter((d) => d.kind === 'videoinput');
-        if (videoDevices.length === 0) {
-          const noDevErr = new Error('연결된 카메라(웹캠) 장치를 찾을 수 없습니다.');
-          noDevErr.name = 'NotFoundError';
-          throw noDevErr;
-        }
-      } catch (e) {
-        if (e.name === 'NotFoundError') throw e;
+  /**
+   * 방 인원 수에 따라 얼굴 송출 화질 자동 전환
+   * (클라이언트는 업로드만 — 타인 얼굴 수신/디코드 없음)
+   */
+  async setFaceQualityByRoomSize(totalPeople = 1) {
+    const count = Math.max(1, Number(totalPeople) || 1);
+    this._faceRoomCount = count;
+    if (!this.avatarManager) return;
+    const mode = faceModeForRoomCount(count);
+    const profile = this.avatarManager.getFaceProfile();
+    // 카메라가 비활성 상태(사용자가 켜지 않음)일 때는 canvas 출력 스트림을 생성/재할당하지 않음
+    if (!this.cameraWanted || !this.cameraStream) {
+      this.avatarManager.setFaceMode(mode);
+      if (this.sfu) {
+        await this.sfu.updateCameraEncodings?.('viewer-camera', profile).catch(() => {});
       }
+      return;
     }
-
-    // 1단계: 기본 제약 video: true (가장 기본적이고 안정적으로 장치 개방 시도)
-    try {
-      return await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
-    } catch (err1) {
-      lastError = err1;
-      console.warn('[ViewerSubscriber] basic video:true failed:', err1);
-    }
-
-    // 2단계: 권장 해상도(640x480, 24~30fps)로 시도
-    try {
-      return await navigator.mediaDevices.getUserMedia({
-        video: {
-          width: { ideal: 1280, max: 1920 },
-          height: { ideal: 720, max: 1080 },
-          frameRate: { ideal: 30, max: 30 },
-        },
-        audio: false,
-      });
-    } catch (err2) {
-      if (!lastError) lastError = err2;
-      console.warn('[ViewerSubscriber] ideal constraints failed:', err2);
-    }
-
-    // 3단계: 장치가 여러 개인 경우(가상 카메라, 외장 웹캠 등) 개별 videoinput 장치 순회 시도
-    if (videoDevices.length > 1) {
-      for (const dev of videoDevices) {
-        if (!dev.deviceId) continue;
-        try {
-          return await navigator.mediaDevices.getUserMedia({
-            video: { deviceId: { exact: dev.deviceId } },
-            audio: false,
-          });
-        } catch (devErr) {
-          console.warn(`[ViewerSubscriber] device ${dev.label || dev.deviceId} failed:`, devErr);
-        }
-      }
-    }
-
-    // 4단계: 모바일/터치 기기 환경인 경우에만 facingMode: 'user' 시도 (데스크톱 USB 웹캠에서는 제외)
-    const isTouchDevice = ('ontouchstart' in window) || (navigator.maxTouchPoints > 0);
-    if (isTouchDevice) {
+    const prevTrack = this.cameraStream?.getVideoTracks?.()[0] || null;
+    const recreated = this.avatarManager.setFaceMode(mode);
+    const outgoing = this.avatarManager.getOutputStream();
+    this.cameraStream = outgoing;
+    const nextTrack = outgoing?.getVideoTracks?.()[0] || null;
+    if (this.cameraWanted && this.sfu && nextTrack && (recreated || nextTrack !== prevTrack)) {
       try {
-        return await navigator.mediaDevices.getUserMedia({
-          video: { facingMode: 'user' },
-          audio: false,
+        await this.sfu.publishStream(outgoing, {
+          source: 'viewer-camera',
+          trackKind: 'camera',
         });
-      } catch (err4) {
-        if (!lastError) lastError = err4;
+        await this.sfu.updateCameraEncodings?.('viewer-camera', profile);
+      } catch (err) {
+        console.warn('[ViewerSubscriber] face quality switch', err);
       }
+      this.onCameraChange?.({ active: true, stream: outgoing });
+    } else if (this.sfu) {
+      await this.sfu.updateCameraEncodings?.('viewer-camera', profile).catch(() => {});
     }
-
-    throw lastError || new Error('카메라 스트림을 시작할 수 없습니다.');
   }
 
   async setCameraEnabled(wanted = true) {
@@ -791,6 +750,8 @@ export class ViewerSubscriber {
       this.rawCameraStream = stream;
 
       // VirtualAvatarManager에 실제 웹캠 스트림 및 마이크 연결 후 실물 모드 활성화
+      const mode = faceModeForRoomCount(this._faceRoomCount || 1);
+      this.avatarManager.setFaceMode(mode);
       this.avatarManager.setWebcamStream(stream);
       if (this._micStream?.getAudioTracks?.()[0]) {
         this.avatarManager.attachMicTrack(this._micStream.getAudioTracks()[0]);
@@ -852,6 +813,8 @@ export class ViewerSubscriber {
 
     try {
       this.avatarManager.setWebcamStream(null);
+      const mode = faceModeForRoomCount(this._faceRoomCount || 1);
+      this.avatarManager.setFaceMode(mode);
       this.avatarManager.setMode('virtual');
       if (this._micStream?.getAudioTracks?.()[0]) {
         this.avatarManager.attachMicTrack(this._micStream.getAudioTracks()[0]);

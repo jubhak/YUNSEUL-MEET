@@ -205,12 +205,19 @@ function getPeer(room, clientId) {
   return peer;
 }
 
-function listProducers(room, { excludeClientId } = {}) {
+function isHostOnlyFaceSource(source = '') {
+  return source === 'camera' || source === 'viewer-camera';
+}
+
+function listProducers(room, { excludeClientId, forRole } = {}) {
   const list = [];
   for (const peer of room.peers.values()) {
     if (excludeClientId && peer.clientId === excludeClientId) continue;
     for (const producer of peer.producers.values()) {
       if (producer.closed) continue;
+      const source = producer.appData?.source || '';
+      // 얼굴 영상은 호스트만 수신 — 뷰어 목록/consume 대상에서 제외
+      if (forRole === 'viewer' && isHostOnlyFaceSource(source)) continue;
       list.push({
         producerId: producer.id,
         clientId: peer.clientId,
@@ -221,6 +228,20 @@ function listProducers(room, { excludeClientId } = {}) {
     }
   }
   return list;
+}
+
+function emitToHostPeers(io, room, event, payload) {
+  if (!io || !room) return;
+  for (const peer of room.peers.values()) {
+    if (peer.role !== 'host') continue;
+    if (peer.socketId) {
+      try { io.to(peer.socketId).emit(event, payload); } catch { /* ignore */ }
+    }
+  }
+}
+
+function emitProducerEvent(io, room, roomCode, event, payload, appData = {}) {
+  try { io.to(roomCode).emit(event, payload); } catch { /* ignore */ }
 }
 
 /**
@@ -368,9 +389,12 @@ async function getSfuSnapshot(roomCode) {
 function closePeer(room, clientId) {
   const peer = room.peers.get(clientId);
   if (!peer) return [];
-  const closedProducerIds = [];
+  const closedProducers = [];
   for (const producer of peer.producers.values()) {
-    closedProducerIds.push(producer.id);
+    closedProducers.push({
+      producerId: producer.id,
+      appData: producer.appData || {},
+    });
     try { producer.close(); } catch { /* ignore */ }
   }
   for (const consumer of peer.consumers.values()) {
@@ -380,7 +404,7 @@ function closePeer(room, clientId) {
     try { transport.close(); } catch { /* ignore */ }
   }
   room.peers.delete(clientId);
-  return closedProducerIds;
+  return closedProducers;
 }
 
 function closeRoomIfEmpty(roomCode) {
@@ -403,8 +427,12 @@ async function requestKeyframeThrottled(consumer) {
   const producerId = consumer.producerId;
   const now = Date.now();
   const lastTime = lastProducerPliTimes.get(producerId) || 0;
-  // 다중 시청자 동시 접속 시 키프레임(PLI) 폭풍 방지: 프로듀서당 최소 2.5초 간격 제한
-  if (now - lastTime < 2500) {
+  // 다중 시청자 동시 접속 시 키프레임(PLI) 폭풍 방지
+  // 얼굴(저해상)은 1.2초, 화면공유는 2.5초
+  const source = consumer.appData?.source || '';
+  const isFace = source === 'camera' || source === 'viewer-camera';
+  const minGap = isFace ? 3000 : 2500;
+  if (now - lastTime < minGap) {
     return;
   }
   lastProducerPliTimes.set(producerId, now);
@@ -420,9 +448,13 @@ function attachSfuHandlers(socket, ctx) {
       const clientId = ctx.getClientId();
       if (!code) return cb?.({ error: 'no-room' });
       const room = await getOrCreateRoom(code);
-      const producers = listProducers(room, { excludeClientId: clientId });
+      const role = ctx.getRole() || 'viewer';
+      const peer = getPeer(room, clientId);
+      peer.role = role;
+      peer.socketId = socket.id;
+      const producers = listProducers(room, { excludeClientId: clientId, forRole: role });
       console.log(
-        `[sfu] caps room=${code} peer=${String(clientId || '').slice(0, 8)} role=${ctx.getRole()} producers=${producers.length}`
+        `[sfu] caps room=${code} peer=${String(clientId || '').slice(0, 8)} role=${role} producers=${producers.length}`
       );
       cb?.({
         ok: true,
@@ -443,6 +475,7 @@ function attachSfuHandlers(socket, ctx) {
       const room = await getOrCreateRoom(code);
       const peer = getPeer(room, clientId);
       peer.role = ctx.getRole() || peer.role;
+      peer.socketId = socket.id;
       const direction = msg?.direction === 'recv' ? 'recv' : 'send';
       // 재접속/새로고침 시 동일 direction의 기존 트랜스포트가 남아 있다면 즉시 안전하게 종료 및 정리 (타임아웃 캐스케이드 차단)
       for (const [oldId, oldT] of [...peer.transports.entries()]) {
@@ -525,6 +558,7 @@ function attachSfuHandlers(socket, ctx) {
       const transport = peer?.transports.get(msg?.transportId);
       if (!transport) return cb?.({ error: 'transport-not-found' });
       peer.role = role || peer.role;
+      peer.socketId = socket.id;
 
       const producer = await transport.produce({
         kind: msg.kind,
@@ -539,7 +573,11 @@ function attachSfuHandlers(socket, ctx) {
       peer.producers.set(producer.id, producer);
       producer.on('transportclose', () => {
         peer.producers.delete(producer.id);
-        ctx.io.to(code).emit('sfu-producer-closed', { producerId: producer.id, clientId });
+        emitProducerEvent(ctx.io, room, code, 'sfu-producer-closed', {
+          producerId: producer.id,
+          clientId,
+          appData: producer.appData || {},
+        }, producer.appData || {});
       });
 
       console.log(
@@ -561,13 +599,14 @@ function attachSfuHandlers(socket, ctx) {
         }, 2000);
       }
 
-      socket.to(code).emit('sfu-new-producer', {
+      // 얼굴 영상은 호스트에게만 알림 (클라이언트 N명은 서로 consume하지 않음)
+      emitProducerEvent(ctx.io, room, code, 'sfu-new-producer', {
         producerId: producer.id,
         clientId,
         role: peer.role,
         kind: producer.kind,
         appData: producer.appData || {},
-      });
+      }, producer.appData || {});
 
       cb?.({ ok: true, id: producer.id });
     } catch (err) {
@@ -601,7 +640,21 @@ function attachSfuHandlers(socket, ctx) {
       let targetProducer = null;
       for (const p of room.peers.values()) {
         const prod = p.producers.get(producerId);
-        if (prod) { targetProducer = prod; break; }
+        if (prod) {
+          targetProducer = prod;
+          break;
+        }
+      }
+
+      // 얼굴 영상은 호스트만 consume 허용 (클라이언트끼리/클라이언트가 얼굴 수신 차단)
+      const src = targetProducer?.appData?.source || '';
+      const role = ctx.getRole() || peer.role || 'viewer';
+      peer.role = role;
+      peer.socketId = socket.id;
+      const isHost = role === 'host' || room.hostClientId === clientId || room.hostSocketId === socket.id;
+      if (!isHost && isHostOnlyFaceSource(src)) {
+        console.warn(`[sfu] face-consume-denied room=${code} peer=${String(clientId).slice(0, 8)} role=${role} source=${src}`);
+        return cb?.({ error: 'face-host-only' });
       }
 
       const consumer = await transport.consume({
@@ -638,6 +691,23 @@ function attachSfuHandlers(socket, ctx) {
     }
   });
 
+  socket.on('sfu-pause-consumer', async (msg, cb) => {
+    try {
+      const code = ctx.getRoomCode();
+      const clientId = ctx.getClientId();
+      const room = sfuRooms.get(code);
+      const peer = room?.peers.get(clientId);
+      const consumer = peer?.consumers.get(msg?.consumerId);
+      if (consumer && !consumer.closed) {
+        await consumer.pause();
+      }
+      cb?.({ ok: true });
+    } catch (err) {
+      console.error('[sfu-pause-consumer]', err);
+      cb?.({ error: err.message || 'sfu-error' });
+    }
+  });
+
   socket.on('sfu-resume-consumer', async (msg, cb) => {
     try {
       const code = ctx.getRoomCode();
@@ -660,16 +730,11 @@ function attachSfuHandlers(socket, ctx) {
       const clientId = ctx.getClientId();
       const room = sfuRooms.get(code);
       const peer = room?.peers.get(clientId);
+      // consumerId 없으면 전체 PLI 하지 않음 (과부하 방지)
       if (msg?.consumerId) {
         const consumer = peer?.consumers.get(msg.consumerId);
         if (consumer && consumer.kind === 'video') {
           await requestKeyframeThrottled(consumer);
-        }
-      } else if (peer?.consumers) {
-        for (const consumer of peer.consumers.values()) {
-          if (consumer && consumer.kind === 'video') {
-            await requestKeyframeThrottled(consumer);
-          }
         }
       }
       cb?.({ ok: true });
@@ -687,9 +752,14 @@ function attachSfuHandlers(socket, ctx) {
       const producer = peer?.producers.get(msg?.producerId);
       if (producer) {
         const id = producer.id;
+        const appData = producer.appData || {};
         producer.close();
         peer.producers.delete(id);
-        socket.to(code).emit('sfu-producer-closed', { producerId: id, clientId });
+        emitProducerEvent(ctx.io, room, code, 'sfu-producer-closed', {
+          producerId: id,
+          clientId,
+          appData,
+        }, appData);
       }
       cb?.({ ok: true });
     } catch (err) {
@@ -703,7 +773,7 @@ function attachSfuHandlers(socket, ctx) {
       const clientId = ctx.getClientId();
       if (!code) return cb?.({ ok: true, producers: [] });
       const room = await getOrCreateRoom(code);
-      const producers = listProducers(room, { excludeClientId: clientId });
+      const producers = listProducers(room, { excludeClientId: clientId, forRole: ctx.getRole() || 'viewer' });
       console.log(
         `[sfu] get-producers room=${code} peer=${String(clientId || '').slice(0, 8)} count=${producers.length}`
       );
@@ -718,8 +788,12 @@ function cleanupSocketPeer(roomCode, clientId, io) {
   const room = sfuRooms.get(roomCode);
   if (!room) return;
   const closed = closePeer(room, clientId);
-  for (const producerId of closed) {
-    io.to(roomCode).emit('sfu-producer-closed', { producerId, clientId });
+  for (const item of closed) {
+    emitProducerEvent(io, room, roomCode, 'sfu-producer-closed', {
+      producerId: item.producerId,
+      clientId,
+      appData: item.appData,
+    }, item.appData);
   }
   closeRoomIfEmpty(roomCode);
 }

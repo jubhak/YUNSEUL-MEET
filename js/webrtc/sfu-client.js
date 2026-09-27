@@ -22,6 +22,8 @@ export class SfuClient {
     this.producers = new Map();
     /** @type {Map<string, import('mediasoup-client').types.Consumer>} */
     this.consumers = new Map();
+    /** @type {Map<string, object>} producerId -> consume meta */
+    this.consumerMeta = new Map();
     this.remoteStream = new MediaStream();
     this._closed = false;
     this._pendingProducers = [];
@@ -253,9 +255,34 @@ export class SfuClient {
           const isCam = source === 'camera' || source === 'viewer-camera';
           // 화면공유 및 카메라 모두 프레임 지속 송출(0 fps 멈춤 방지)을 위해 'motion' 적용
           try { track.contentHint = 'motion'; } catch { /* ignore */ }
-          produceOpts.codecOptions = {
-            videoGoogleStartBitrate: isCam ? 800 : 1200,
-          };
+          if (isCam) {
+            const settings = track.getSettings?.() || {};
+            const w = Number(settings.width) || 640;
+            const fps = Math.min(Number(settings.frameRate) || 28, 30);
+            let maxBitrate = 350_000;
+            let maxFramerate = 28;
+            if (w <= 320 || fps <= 15) {
+              maxBitrate = 120_000;
+              maxFramerate = 18;
+            } else if (w <= 480 || fps <= 22) {
+              maxBitrate = 180_000;
+              maxFramerate = 22;
+            }
+            produceOpts.encodings = [{
+              maxBitrate,
+              maxFramerate,
+              scaleResolutionDownBy: 1,
+            }];
+            produceOpts.codecOptions = {
+              videoGoogleStartBitrate: Math.round(maxBitrate / 1500),
+              videoGoogleMaxBitrate: Math.round(maxBitrate / 1000),
+              videoGoogleMinBitrate: Math.max(40, Math.round(maxBitrate / 4000)),
+            };
+          } else {
+            produceOpts.codecOptions = {
+              videoGoogleStartBitrate: 1200,
+            };
+          }
         } else if (track.kind === 'audio') {
           try { track.contentHint = (source === 'mic' || source === 'viewer-mic') ? 'speech' : 'music'; } catch { /* ignore */ }
           produceOpts.codecOptions = {
@@ -270,8 +297,16 @@ export class SfuClient {
           try {
             const params = producer.rtpSender.getParameters();
             if (params) {
-              // 네트워크 변동 시에도 프레임레이트를 유지하여 화면 멈춤 및 0 fps 현상 방지
-              params.degradationPreference = 'maintain-framerate';
+              const isCam = source === 'camera' || source === 'viewer-camera';
+              params.degradationPreference = isCam ? 'maintain-framerate' : 'maintain-framerate';
+              if (isCam && Array.isArray(params.encodings) && params.encodings.length) {
+                const enc0 = produceOpts.encodings?.[0] || {};
+                params.encodings = params.encodings.map((enc) => ({
+                  ...enc,
+                  maxBitrate: enc0.maxBitrate || enc.maxBitrate,
+                  maxFramerate: enc0.maxFramerate || enc.maxFramerate,
+                }));
+              }
               producer.rtpSender.setParameters(params).catch(() => {});
             }
           } catch { /* ignore */ }
@@ -312,6 +347,30 @@ export class SfuClient {
     return true;
   }
 
+  /**
+   * 카메라 producer 인코딩을 현재 트랙 프로파일에 맞게 갱신
+   */
+  async updateCameraEncodings(source, profile = {}) {
+    const prefix = `${source}:`;
+    for (const [key, producer] of this.producers.entries()) {
+      if (!key.startsWith(prefix) || producer.closed || producer.kind !== 'video') continue;
+      try {
+        const sender = producer.rtpSender;
+        if (!sender) continue;
+        const params = sender.getParameters();
+        if (!params?.encodings?.length) continue;
+        const maxBitrate = profile.maxBitrate || 120_000;
+        const maxFramerate = profile.fps || 20;
+        params.encodings = params.encodings.map((enc) => ({
+          ...enc,
+          maxBitrate,
+          maxFramerate,
+        }));
+        await sender.setParameters(params);
+      } catch { /* ignore */ }
+    }
+  }
+
   async stopPublishing({ source } = {}) {
     for (const [key, producer] of [...this.producers.entries()]) {
       if (source && !key.startsWith(`${source}:`)) continue;
@@ -350,6 +409,11 @@ export class SfuClient {
         rtpParameters: res.rtpParameters,
       });
       this.consumers.set(info.producerId, consumer);
+      this.consumerMeta.set(info.producerId, {
+        ...info,
+        kind: res.kind,
+        appData: { ...(info.appData || {}), ...(res.appData || {}) },
+      });
       try {
         const receiver = consumer.rtpReceiver;
         if (receiver) {
@@ -362,6 +426,11 @@ export class SfuClient {
       this.remoteStream.addTrack(consumer.track);
       await this.request('sfu-resume-consumer', { consumerId: consumer.id });
       try { await consumer.resume(); } catch { /* ignore */ }
+      // 얼굴 수신 직후 키프레임 1회 — 첫 프레임/멈춤 공백 축소
+      const src = info?.appData?.source || res?.appData?.source || '';
+      if (res.kind === 'video' && (src === 'camera' || src === 'viewer-camera')) {
+        try { await this.requestKeyFrame(consumer.id); } catch { /* ignore */ }
+      }
       try {
         await this.waitTransportConnected(this.recvTransport, '수신', 15000);
       } catch (err) {
@@ -374,11 +443,7 @@ export class SfuClient {
           await consumer.resume();
         } catch { /* ignore */ }
       }
-      const meta = {
-        ...info,
-        kind: res.kind,
-        appData: { ...(info.appData || {}), ...(res.appData || {}) },
-      };
+      const meta = this.consumerMeta.get(info.producerId);
       this.onConsumed?.(meta, consumer);
       this.onRemoteStream?.(this.remoteStream);
       return consumer;
@@ -405,15 +470,57 @@ export class SfuClient {
     }
   }
 
+  async pauseConsumer(consumerId) {
+    if (!consumerId || this._closed) return;
+    for (const consumer of this.consumers.values()) {
+      if (!consumer || consumer.closed || consumer.id !== consumerId) continue;
+      if (consumer.paused) return;
+      try {
+        await consumer.pause();
+        await this.request('sfu-pause-consumer', { consumerId: consumer.id });
+      } catch { /* ignore */ }
+      return;
+    }
+  }
+
+  async resumeConsumer(consumerId) {
+    if (!consumerId || this._closed) return;
+    for (const consumer of this.consumers.values()) {
+      if (!consumer || consumer.closed || consumer.id !== consumerId) continue;
+      try {
+        await this.request('sfu-resume-consumer', { consumerId: consumer.id });
+        await consumer.resume();
+      } catch { /* ignore */ }
+      return;
+    }
+  }
+
   async requestKeyFrame(producerIdOrConsumerId) {
     if (this._closed || !this.socket?.connected) return;
+    if (!producerIdOrConsumerId) return; // 전체 PLI 금지 — 대상 consumer 필수
     try {
       let targetConsumerId = producerIdOrConsumerId;
-      if (producerIdOrConsumerId && this.consumers.has(producerIdOrConsumerId)) {
+      if (this.consumers.has(producerIdOrConsumerId)) {
         targetConsumerId = this.consumers.get(producerIdOrConsumerId)?.id;
       }
+      if (!targetConsumerId) return;
       await this.request('sfu-request-keyframe', { consumerId: targetConsumerId });
     } catch { /* ignore */ }
+  }
+
+  /** 원격 clientId(+선택 source)에 해당하는 video consumerId */
+  findConsumerIdForClient(clientId, sourceHint = null) {
+    if (!clientId) return null;
+    for (const [producerId, consumer] of this.consumers.entries()) {
+      if (!consumer || consumer.closed || consumer.kind !== 'video') continue;
+      const meta = this.consumerMeta.get(producerId);
+      if (!meta || meta.clientId !== clientId) continue;
+      const source = meta.appData?.source || '';
+      if (sourceHint && source !== sourceHint) continue;
+      if (!sourceHint && source && source !== 'viewer-camera' && source !== 'camera') continue;
+      return consumer.id;
+    }
+    return null;
   }
 
   async consumeExistingProducers() {
@@ -454,6 +561,7 @@ export class SfuClient {
         consumer.close();
       } catch { /* ignore */ }
       this.consumers.delete(producerId);
+      this.consumerMeta.delete(producerId);
     }
     this.onRemoteStream?.(this.remoteStream);
     this.onProducerClosed?.(msg);

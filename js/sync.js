@@ -134,6 +134,7 @@ export class RoomSync {
       'viewer-count',
       'session-end',
       'start-meeting-countdown',
+      'meeting-started',
       'stream-status',
       'peer-joined',
       'peer-left',

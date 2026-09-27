@@ -1,6 +1,6 @@
 import { OverlayManager } from './overlay-manager.js?v=20260826link1';
 import { DrawCanvas } from './draw-canvas.js?v=20260918pen2';
-import { RoomSync } from './sync.js?v=20260919failsafe1';
+import { RoomSync } from './sync.js?v=20260926meetmobile1';
 import { goToSlide, getPptEngine } from './host-ppt-loader.js?v=20260715ah';
 import { findHttpLinkAt, findVideoHitAt } from './link-utils.js?v=20260715z';
 import {
@@ -10,11 +10,11 @@ import {
   getLatestViewers,
 } from './viewers-panel.js?v=20260826mic1';
 import { WebrtcSignaling } from './webrtc/signaling.js?v=20260715j';
-import { HostPublisher } from './webrtc/host-publisher.js?v=20260919clean1';
+import { HostPublisher } from './webrtc/host-publisher.js?v=20260926camfix2';
 import { setupChatPanel } from './chat-panel.js?v=20260918fix2';
-import { CamFocusManager, VoiceActivityMonitor } from './cam-focus-manager.js?v=20260918focus1';
-import { TarotLoungeManager } from './tarot-lounge-manager.js?v=20260918pen2';
-import { attachVideoFreezeWatchdog } from './webrtc/video-freeze-watchdog.js?v=20260925smooth1';
+import { CamFocusManager, VoiceActivityMonitor } from './cam-focus-manager.js?v=20260926perf1';
+import { TarotLoungeManager } from './tarot-lounge-manager.js?v=20260926meetmobile1';
+import { attachVideoFreezeWatchdog } from './webrtc/video-freeze-watchdog.js?v=20260926swapfix1';
 
 const params = new URLSearchParams(window.location.search);
 const roomCode = (params.get('code') || sessionStorage.getItem('roomCode') || '').replace(/[^0-9]/g, '').slice(0, 4);
@@ -223,11 +223,8 @@ const btnLaunchDlc = document.getElementById('btn-launch-dlc');
 const camOverlayContainer = document.getElementById('cam-overlay-container');
 const camFocusManager = new CamFocusManager({ containerId: 'cam-overlay-container' });
 camFocusManager.onFocusChange = (focusedId) => {
-  const avMgr = webrtcPublisher?.avatarManager;
-  if (avMgr) {
-    avMgr.setHighRes(focusedId === 'local');
-    updateAvatarUi();
-  }
+  // 호스트 얼굴 송출은 256×144 고정 — 포커스해도 해상도 올리지 않음
+  updateAvatarUi();
 };
 const vadMonitor = new VoiceActivityMonitor({ threshold: 0.026, holdMs: 5000 });
 const tarotLounge = new TarotLoungeManager({ containerId: 'tarot-waiting-lounge', isHost: true });
@@ -349,15 +346,13 @@ class HostParticipantsGridManager {
           const video = card.querySelector('video');
           if (!video) return;
           if (entry.isIntersecting) {
-            // 화면에 조금이라도 노출되는 사용자: 영상 재생 재개
+            // 화면 복귀: play만 (SFU consumer는 계속 수신 — pause 후 키프레임 공백으로 멈춤 방지)
             if (card.dataset.hasCam === '1') {
               video.play?.().catch(() => {});
             }
-          } else {
-            // 세로 스크롤로 화면에서 완전히 벗어난 사용자만 일시정지 (화면이 스크롤 중일 때만 적용)
-            if (this.viewEl?.classList.contains('is-overflowing') && !video.paused) {
-              video.pause?.();
-            }
+          } else if (this.viewEl?.classList.contains('is-overflowing') && !video.paused) {
+            // 스크롤로 완전히 벗어난 카드만 element pause (디코더/패킷은 유지)
+            video.pause?.();
           }
         });
       }, {
@@ -413,12 +408,31 @@ class HostParticipantsGridManager {
 
   setHostName(name) {
     this.hostInfo.name = name || '호스트';
-    this.render();
+    this.patchCardMeta('local');
   }
 
   setViewers(viewers = []) {
-    this.viewers = (viewers || []).filter((v) => v && v.role !== 'host');
-    this.render();
+    const next = (viewers || []).filter((v) => v && v.role !== 'host');
+    const prevIds = new Set(this.viewers.map((v) => v.id || v.clientId));
+    const nextIds = new Set(next.map((v) => v.id || v.clientId));
+    this.viewers = next;
+
+    let membershipChanged = prevIds.size !== nextIds.size;
+    if (!membershipChanged) {
+      for (const id of nextIds) {
+        if (!prevIds.has(id)) { membershipChanged = true; break; }
+      }
+    }
+
+    if (membershipChanged) {
+      // 추가/삭제만 반영 — 기존 카드의 video/srcObject는 유지
+      this.syncCardsIncremental();
+    } else {
+      // 이름 등 메타만 갱신
+      for (const v of next) {
+        this.patchCardMeta(v.id || v.clientId);
+      }
+    }
   }
 
   setStream(id, stream) {
@@ -427,17 +441,19 @@ class HostParticipantsGridManager {
     } else {
       this.streams.delete(id);
     }
-    this.render();
+    // 얼굴 송출 중에는 전체 재배치 없이 해당 카드 미디어만 패치
+    this.patchCardMedia(id);
   }
 
   removeStream(id) {
     this.streams.delete(id);
-    this.render();
+    this.patchCardMedia(id);
   }
 
   updateVisibility() {
     const isLoungeActive = typeof tarotLounge !== 'undefined' && tarotLounge && tarotLounge.isActive;
     const shouldShow = interactionMode === 'bidirectional' && isMeetingStarted && !isLoungeActive;
+    const wasVisible = this.isVisible;
     this.isVisible = shouldShow;
     if (this.viewEl) {
       this.viewEl.classList.toggle('hidden', !shouldShow);
@@ -445,20 +461,35 @@ class HostParticipantsGridManager {
     if (typeof camOverlayContainer !== 'undefined' && camOverlayContainer) {
       camOverlayContainer.style.display = shouldShow ? 'none' : '';
     }
-    if (shouldShow) {
-      this.render();
+    // 미팅 그리드 표시 시 PIP 디코드 완전 중단 (display:none만으로는 부족)
+    if (shouldShow && typeof clearCameraPipDecoders === 'function') {
+      clearCameraPipDecoders();
+    }
+    if (shouldShow && !wasVisible) {
+      this.syncCardsIncremental();
     }
   }
 
-  render() {
-    if (!this.gridEl) return;
-    if (!this.isVisible && (interactionMode !== 'bidirectional' || tarotLounge.isActive)) return;
+  _resolveStream(pid, person = null) {
+    let stream = this.streams.get(pid);
+    if (!stream && person?.clientId) stream = this.streams.get(person.clientId);
+    if (!stream && person?.id) stream = this.streams.get(person.id);
+    if (!stream && pid === 'local') stream = this.streams.get('local');
+    return stream || null;
+  }
 
-    const list = [this.hostInfo, ...this.viewers];
+  _participantList() {
+    return [this.hostInfo, ...this.viewers];
+  }
+
+  syncCardsIncremental() {
+    if (!this.gridEl) return;
+    if (!this.isVisible && (interactionMode !== 'bidirectional' || tarotLounge?.isActive)) return;
+
+    const list = this._participantList();
     const presentIds = new Set(list.map((p) => p.id || p.clientId));
 
-    const existingCards = this.gridEl.querySelectorAll('.participant-card[data-participant-id]');
-    existingCards.forEach((card) => {
+    this.gridEl.querySelectorAll('.participant-card[data-participant-id]').forEach((card) => {
       const pid = card.dataset.participantId;
       if (!presentIds.has(pid)) {
         this.observer?.unobserve(card);
@@ -468,104 +499,154 @@ class HostParticipantsGridManager {
 
     list.forEach((p) => {
       const pid = p.id || p.clientId;
-      let stream = this.streams.get(pid);
-      if (!stream && p.clientId) stream = this.streams.get(p.clientId);
-      if (!stream && p.id) stream = this.streams.get(p.id);
-
-      const hasCam = !!stream && stream.getVideoTracks().some((t) => t && t.readyState === 'live' && t.enabled !== false);
-      const isHost = p.role === 'host' || pid === 'local';
       let card = this.gridEl.querySelector(`.participant-card[data-participant-id="${pid}"]`);
-
       if (!card) {
-        card = document.createElement('div');
-        card.className = 'participant-card';
-        card.dataset.participantId = pid;
-        card.innerHTML = `
-          <div class="participant-card-media"></div>
-          <div class="participant-card-footer">
-            <span class="participant-card-name"></span>
-            <div class="participant-card-meta">
-              <span class="participant-net-pill net-good">🟢 25ms</span>
-              <span class="participant-cam-state"></span>
-            </div>
-          </div>
-        `;
-        this.observer?.observe(card);
+        card = this._createCard(pid, p.role === 'host' || pid === 'local');
+        this.gridEl.appendChild(card);
+      } else if (card.parentElement !== this.gridEl) {
+        this.gridEl.appendChild(card);
       }
+      this.patchCardMeta(pid, p);
+      this.patchCardMedia(pid, p);
+    });
+
+    this.gridEl.querySelectorAll('.participant-card-empty').forEach((el) => el.remove());
+    const n = list.length;
+    this.gridEl.classList.toggle('solo-1', n === 1);
+    this.gridEl.classList.toggle('grid-5-col', n >= 10);
+    this._scheduleOverflowCheck();
+  }
+
+  _createCard(pid, isHost) {
+    const card = document.createElement('div');
+    card.className = 'participant-card';
+    card.dataset.participantId = pid;
+    card.innerHTML = `
+      <div class="participant-card-media"></div>
+      <div class="participant-card-footer">
+        <span class="participant-card-name"></span>
+        <div class="participant-card-meta">
+          <span class="participant-net-pill net-good">🟢 25ms</span>
+          <span class="participant-cam-state"></span>
+        </div>
+      </div>
+    `;
+    this.observer?.observe(card);
+    return card;
+  }
+
+  patchCardMeta(pid, person = null) {
+    if (!this.gridEl) return;
+    const card = this.gridEl.querySelector(`.participant-card[data-participant-id="${pid}"]`);
+    if (!card) return;
+    const p = person
+      || (pid === 'local' || pid === this.hostInfo.id ? this.hostInfo : null)
+      || this.viewers.find((v) => (v.id || v.clientId) === pid);
+    if (!p) return;
+    const isHost = p.role === 'host' || pid === 'local';
+    const nameEl = card.querySelector('.participant-card-name');
+    if (nameEl) {
+      const next = `${escapeHtml(p.name || (isHost ? '호스트' : '참가자'))} ${isHost ? '👑' : ''}`;
+      if (nameEl.innerHTML !== next) nameEl.innerHTML = next;
+    }
+    const netPill = card.querySelector('.participant-net-pill');
+    if (netPill) {
+      const net = this.netQualities.get(pid) || { pingMs: 25, lossRate: 0, quality: 'good' };
+      netPill.className = `participant-net-pill net-${net.quality}`;
+      const dot = net.quality === 'poor' ? '🔴' : net.quality === 'fair' ? '🟡' : '🟢';
+      const lossText = net.lossRate > 1 ? ` (${net.lossRate}%)` : '';
+      const text = `${dot} ${net.pingMs}ms${lossText}`;
+      if (netPill.textContent !== text) netPill.textContent = text;
+      netPill.title = `네트워크 지연시간(Ping): ${net.pingMs}ms / 패킷손실: ${net.lossRate}%`;
+    }
+  }
+
+  patchCardMedia(pid, person = null) {
+    if (!this.gridEl || !this.isVisible) return;
+    let card = this.gridEl.querySelector(`.participant-card[data-participant-id="${pid}"]`);
+    if (!card) {
+      // 스트림만 먼저 도착한 경우 카드 생성
+      const p = person
+        || (pid === 'local' ? this.hostInfo : null)
+        || this.viewers.find((v) => (v.id || v.clientId) === pid);
+      if (!p && pid !== 'local') return;
+      card = this._createCard(pid, pid === 'local' || p?.role === 'host');
       this.gridEl.appendChild(card);
-      card.dataset.hasCam = hasCam ? '1' : '0';
+      this.patchCardMeta(pid, p || this.hostInfo);
+      this._scheduleOverflowCheck();
+    }
 
-      const nameEl = card.querySelector('.participant-card-name');
-      if (nameEl) {
-        nameEl.innerHTML = `${escapeHtml(p.name || (isHost ? '호스트' : '참가자'))} ${isHost ? '👑' : ''}`;
-      }
-      const camStateEl = card.querySelector('.participant-cam-state');
-      if (camStateEl) {
-        camStateEl.className = `participant-cam-state ${hasCam ? 'is-on' : 'is-off'}`;
-        camStateEl.textContent = hasCam ? '● LIVE' : '✕ OFF';
-      }
+    const stream = this._resolveStream(pid, person);
+    const hasCam = !!stream && stream.getVideoTracks().some((t) => t && t.readyState === 'live' && t.enabled !== false);
+    const isHost = pid === 'local' || person?.role === 'host' || this.hostInfo.id === pid;
+    card.dataset.hasCam = hasCam ? '1' : '0';
 
-      const netPill = card.querySelector('.participant-net-pill');
-      if (netPill) {
-        const net = this.netQualities.get(pid) || { pingMs: 25, lossRate: 0, quality: 'good' };
-        netPill.className = `participant-net-pill net-${net.quality}`;
-        const dot = net.quality === 'poor' ? '🔴' : net.quality === 'fair' ? '🟡' : '🟢';
-        const lossText = net.lossRate > 1 ? ` (${net.lossRate}%)` : '';
-        netPill.textContent = `${dot} ${net.pingMs}ms${lossText}`;
-        netPill.title = `네트워크 지연시간(Ping): ${net.pingMs}ms / 패킷손실: ${net.lossRate}%`;
-      }
+    const camStateEl = card.querySelector('.participant-cam-state');
+    if (camStateEl) {
+      camStateEl.className = `participant-cam-state ${hasCam ? 'is-on' : 'is-off'}`;
+      const label = hasCam ? '● LIVE' : '✕ OFF';
+      if (camStateEl.textContent !== label) camStateEl.textContent = label;
+    }
 
-      const mediaEl = card.querySelector('.participant-card-media');
-      if (mediaEl) {
-        const currentVideo = mediaEl.querySelector('video');
-        if (hasCam) {
-          if (!currentVideo) {
-            mediaEl.innerHTML = '';
-            const video = document.createElement('video');
-            video.autoplay = true;
-            video.playsInline = true;
-            video.muted = true; // 음성은 WebRTC 오디오 엘리먼트에서 별도 처리되므로, 비디오는 항상 muted로 설정하여 브라우저 Autoplay 차단(멈춤) 원천 방지
-            video.defaultMuted = true;
-            video.className = `participant-card-video${isHost ? ' is-mirror' : ''}`;
-            video.srcObject = stream;
-            video.play?.().catch(() => {});
+    const mediaEl = card.querySelector('.participant-card-media');
+    if (!mediaEl) return;
+
+    if (hasCam) {
+      let video = mediaEl.querySelector('video');
+      if (!video) {
+        mediaEl.innerHTML = '';
+        video = document.createElement('video');
+        video.autoplay = true;
+        video.playsInline = true;
+        video.muted = true;
+        video.defaultMuted = true;
+        video.className = `participant-card-video${isHost ? ' is-mirror' : ''}`;
+        video.srcObject = stream;
+        video.play?.().catch(() => {});
             if (!isHost) {
               attachVideoFreezeWatchdog(video, {
                 label: `grid-${pid}`,
-                onRequestKeyFrame: () => webrtcPublisher?.sfu?.requestKeyFrame?.(),
-                onDecoderKick: () => webrtcPublisher?.sfu?.resumeAllConsumers?.(),
+                mode: 'face',
+                onRequestKeyFrame: () => {
+                  const cid = webrtcPublisher?.sfu?.findConsumerIdForClient?.(pid, 'viewer-camera')
+                    || webrtcPublisher?.sfu?.findConsumerIdForClient?.(pid);
+                  if (cid) webrtcPublisher?.sfu?.requestKeyFrame?.(cid);
+                },
               });
             }
-            mediaEl.appendChild(video);
-          } else if (currentVideo.srcObject !== stream) {
-            currentVideo.srcObject = stream;
-            currentVideo.muted = true;
-            currentVideo.defaultMuted = true;
-            currentVideo.play?.().catch(() => {});
-          }
-        } else {
-          if (!mediaEl.querySelector('.participant-card-cam-off')) {
-            mediaEl.innerHTML = `
-              <div class="participant-card-cam-off">
-                <div class="cam-off-icon-box" title="카메라 꺼짐">
-                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                    <path d="M16 16v1a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2h2m4 0h5a2 2 0 0 1 2 2v3.34l1 1L23 7v10"></path>
-                    <line x1="1" y1="1" x2="23" y2="23"></line>
-                  </svg>
-                </div>
-                <span class="cam-off-badge">카메라 꺼짐</span>
-              </div>
-            `;
-          }
-        }
+        mediaEl.appendChild(video);
+      } else if (video.srcObject !== stream) {
+        video.srcObject = stream;
+        video.muted = true;
+        video.defaultMuted = true;
+        video.play?.().catch(() => {});
       }
-    });
+    } else if (!mediaEl.querySelector('.participant-card-cam-off')) {
+      mediaEl.innerHTML = `
+        <div class="participant-card-cam-off">
+          <div class="cam-off-icon-box" title="카메라 꺼짐">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M16 16v1a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2h2m4 0h5a2 2 0 0 1 2 2v3.34l1 1L23 7v10"></path>
+              <line x1="1" y1="1" x2="23" y2="23"></line>
+            </svg>
+          </div>
+          <span class="cam-off-badge">카메라 꺼짐</span>
+        </div>
+      `;
+    }
+  }
 
-    // 빈 카드 채우는 로직 삭제 및 혹시 남아있을 수 있는 빈 슬롯 제거
-    this.gridEl.querySelectorAll('.participant-card-empty').forEach((el) => el.remove());
-    this.gridEl.classList.toggle('solo-1', list.length === 1);
-    this.gridEl.classList.toggle('grid-5-col', list.length >= 10);
-    requestAnimationFrame(this.checkOverflow);
+  _scheduleOverflowCheck() {
+    if (this._overflowRaf) cancelAnimationFrame(this._overflowRaf);
+    this._overflowRaf = requestAnimationFrame(() => {
+      this._overflowRaf = 0;
+      this.checkOverflow();
+    });
+  }
+
+  render() {
+    // 하위 호환: 전체 동기화는 증분 경로로 통일
+    this.syncCardsIncremental();
   }
 }
 
@@ -584,8 +665,24 @@ if (!isMeetingStarted) {
 }
 
 
+function clearCameraPipDecoders() {
+  if (!camOverlayContainer) return;
+  camOverlayContainer.querySelectorAll('video').forEach((v) => {
+    try {
+      v.srcObject = null;
+      v.removeAttribute('src');
+      v.load?.();
+    } catch { /* ignore */ }
+  });
+}
+
 function updateCameraPip(id, stream, { label = '카메라', isMirror = false, isHost = false } = {}) {
   if (!camOverlayContainer) return;
+  // 미팅 그리드가 보이는 동안에는 PIP에 붙이지 않음 (이중 디코드 방지)
+  if (hostParticipantsGrid?.isVisible) {
+    removeCameraPip(id);
+    return;
+  }
   let box = document.getElementById(`cam-box-${id}`);
   if (!stream) {
     removeCameraPip(id);
@@ -609,8 +706,11 @@ function updateCameraPip(id, stream, { label = '카메라', isMirror = false, is
     if (id !== 'local') {
       attachVideoFreezeWatchdog(video, {
         label: `pip-${id}`,
-        onRequestKeyFrame: () => webrtcPublisher?.sfu?.requestKeyFrame?.(),
-        onDecoderKick: () => webrtcPublisher?.sfu?.resumeAllConsumers?.(),
+        onRequestKeyFrame: () => {
+          const cid = webrtcPublisher?.sfu?.findConsumerIdForClient?.(id, 'viewer-camera')
+            || webrtcPublisher?.sfu?.findConsumerIdForClient?.(id);
+          if (cid) webrtcPublisher?.sfu?.requestKeyFrame?.(cid);
+        },
       });
     }
 
@@ -618,7 +718,7 @@ function updateCameraPip(id, stream, { label = '카메라', isMirror = false, is
       const toolbar = document.createElement('div');
       toolbar.className = 'cam-local-toolbar';
       toolbar.innerHTML = `
-        <button type="button" class="cam-btn-pill pill-hd" title="화질 전환 (클릭 시 저부하 SD ↔ 720p HD 토글)">HD</button>
+        <button type="button" class="cam-btn-pill pill-hd" title="화질 전환 (클릭 시 저부하 SD ↔ 640p 토글)">HD</button>
         <button type="button" class="cam-btn-pill pill-dlc" title="얼굴 변경 (사진·뷰티·내 얼굴 선택)">🎭</button>
       `;
       box.appendChild(toolbar);
@@ -665,7 +765,7 @@ const MIC_PREF_KEY = 'yunseulStreamMic';
 const TAB_AUDIO_PREF_KEY = 'yunseulStreamTabAudio';
 
 let preferTabAudio = sessionStorage.getItem(TAB_AUDIO_PREF_KEY) !== '0';
-let preferMic = sessionStorage.getItem(MIC_PREF_KEY) !== '0';
+let preferMic = sessionStorage.getItem(MIC_PREF_KEY) === '1'; // 기본: 꺼짐 (미팅 대기중 소리 송출 방지)
 
 function setStatus(msg) {
   if (uploadStatus && msg) uploadStatus.textContent = msg;
@@ -693,7 +793,7 @@ function syncAvButtons() {
   const micOn = webrtcPublisher?.isActive
     ? (webrtcPublisher.hasMic ? webrtcPublisher.micEnabled : preferMic)
     : preferMic;
-  const camOn = webrtcPublisher?.hasCamera ? webrtcPublisher.cameraEnabled : false;
+  const camOn = !!(webrtcPublisher?.cameraWanted && webrtcPublisher?.hasCamera && webrtcPublisher?.cameraEnabled);
 
   if (btnAvSpeaker) {
     btnAvSpeaker.classList.toggle('is-active', !!tabOn);
@@ -726,7 +826,7 @@ async function applyFaceAndStartCamera(faceApplyFn) {
   closeDeepLiveCamModal();
   if (!webrtcPublisher) return;
 
-  const camAlreadyActive = !!(webrtcPublisher.hasCamera && webrtcPublisher.cameraEnabled);
+  const camAlreadyActive = !!(webrtcPublisher?.cameraWanted && webrtcPublisher?.hasCamera && webrtcPublisher?.cameraEnabled);
 
   if (camAlreadyActive) {
     const avMgr = webrtcPublisher.avatarManager;
@@ -817,7 +917,7 @@ function closeDeepLiveCamModal() {
 
 function updateAvatarUi() {
   const avMgr = webrtcPublisher?.avatarManager;
-  const camOn = !!(webrtcPublisher?.hasCamera && webrtcPublisher?.cameraEnabled);
+  const camOn = !!(webrtcPublisher?.cameraWanted && webrtcPublisher?.hasCamera && webrtcPublisher?.cameraEnabled);
 
   // 카메라 활성화 시 상단 툴바에 얼굴 효과 버튼 표시
   const btnFaceEffect = document.getElementById('btn-face-effect');
@@ -838,11 +938,15 @@ function updateAvatarUi() {
 
     const pillHd = localBox.querySelector('.pill-hd');
     if (pillHd) {
-      pillHd.classList.toggle('is-active', !!avMgr.isLarge);
-      pillHd.textContent = avMgr.isLarge ? 'HD 720p' : 'SD 저부하';
-      pillHd.title = avMgr.isLarge
-        ? '현재 1280×720 HD 고화질 모드 (클릭 시 360p 저부하 모드로 전환)'
-        : '현재 640×360 저부하 모드 (더블클릭 집중화면 또는 클릭 시 720p HD 전환)';
+      const mode = avMgr.faceMode || (avMgr.isLarge ? 'solo' : 'multi');
+      pillHd.disabled = false;
+      pillHd.classList.toggle('is-active', mode === 'solo');
+      pillHd.textContent = mode === 'solo' ? '360p' : '270p';
+      pillHd.title = mode === 'solo'
+        ? '1명: 640×360 @ ~28fps'
+        : (mode === 'crowd'
+          ? '10명+: 480×270 @ 20fps (호스트 수신, 초고속 렉 없는 화상)'
+          : '2~9명: 480×270 @ 22fps (호스트 수신)');
     }
 
     const badge = localBox.querySelector('.cam-pip-badge');
@@ -925,7 +1029,7 @@ deepLiveCamModal?.querySelectorAll('.dlc-hero-card').forEach((card) => {
 
 async function toggleCamera() {
   if (!webrtcPublisher) return;
-  const camAlreadyActive = !!(webrtcPublisher.hasCamera && webrtcPublisher.cameraEnabled);
+  const camAlreadyActive = !!(webrtcPublisher.cameraWanted && webrtcPublisher.hasCamera && webrtcPublisher.cameraEnabled);
   if (camAlreadyActive) {
     btnAvCam.disabled = true;
     await webrtcPublisher.ensureCamera(false);
@@ -1089,7 +1193,7 @@ async function startCameraShare() {
     alert('방에 아직 연결되지 않았습니다.');
     return false;
   }
-  const withMic = preferMic !== false;
+  const withMic = !!preferMic;
   closeStreamOptions();
 
   if (btnStream) {
@@ -1496,6 +1600,8 @@ sync = new RoomSync({
         if (v?.id && v.role !== 'host') knownViewerIds.add(v.id);
       });
       hostParticipantsGrid.setViewers(payload.viewers || []);
+      // count = 호스트+참가자 총원 → 1명 solo HQ / 2명+ multi LQ
+      webrtcPublisher?.setFaceQualityByRoomSize?.(payload.count ?? 1).catch?.(() => {});
       if (tarotLounge.isActive && !tarotLounge._isCountingDown) {
         tarotLounge.renderParticipants(payload.viewers || []);
       }
@@ -1531,7 +1637,22 @@ sync = new RoomSync({
     }
   },
   // 재연결 후 3차 안전망: SFU 프로듀서 검증 및 송출 보장
-  onRejoined: () => {
+  onRejoined: (data) => {
+    const serverStarted = !!data?.state?.meetingStarted;
+    if (serverStarted) {
+      isMeetingStarted = true;
+    }
+    // 서버에는 없는데 로컬만 미팅 중 → 서버에 한 번 맞춤 (중복 카운트다운 유발 방지)
+    if (isMeetingStarted && !serverStarted) {
+      tarotLounge.hide();
+      btnMeetingWait?.classList.add('hidden');
+      try {
+        sync?.socket?.emit('host-event', { type: 'meeting-started', payload: {} });
+      } catch { /* ignore */ }
+    } else if (isMeetingStarted) {
+      tarotLounge.hide();
+      btnMeetingWait?.classList.add('hidden');
+    }
     if (webrtcPublisher?.isActive) {
       console.log('[host] reconnected & rejoined -> ensuring publication...');
       webrtcPublisher.ensurePublished?.();
@@ -1613,13 +1734,16 @@ sync.start()
       },
     });
     webrtcPublisher.interactionMode = interactionMode;
+    webrtcPublisher.setFaceQualityByRoomSize?.(data.state?.viewerCount ?? 1).catch?.(() => {});
     if (webrtcPublisher.avatarManager) {
       webrtcPublisher.avatarManager.onAvatarChange = () => updateAvatarUi();
       webrtcPublisher.avatarManager.onModeChange = () => updateAvatarUi();
     }
     webrtcPublisher.onCameraChange = ({ active, stream }) => {
       hostParticipantsGrid.setStream('local', active ? stream : null);
-      if (active && stream) {
+      if (hostParticipantsGrid?.isVisible) {
+        removeCameraPip('local');
+      } else if (active && stream) {
         updateCameraPip('local', stream, { label: `${hostName} (내 카메라)`, isMirror: true, isHost: true });
       } else {
         removeCameraPip('local');
@@ -1628,6 +1752,10 @@ sync.start()
     };
     webrtcPublisher.onRemoteCamera = ({ clientId, stream }) => {
       hostParticipantsGrid.setStream(clientId, stream);
+      if (hostParticipantsGrid?.isVisible) {
+        removeCameraPip(clientId);
+        return;
+      }
       const viewers = getLatestViewers() || [];
       const v = viewers.find((x) => x.clientId === clientId || x.id === clientId);
       const label = v ? `${v.name || '참가자'}` : '참가자';
@@ -1807,12 +1935,12 @@ document.getElementById('btn-end-session')?.addEventListener('click', async () =
   window.location.href = './';
 });
 
-// 백그라운드 탭 전환 등으로 일시정지된 비디오 재생 유지
+// 백그라운드 탭 전환 등으로 일시정지된 비디오 재생 유지 (보이는 것만)
 setInterval(() => {
   document.querySelectorAll('video').forEach((v) => {
-    if (v.srcObject && v.paused) {
-      v.play?.().catch(() => {});
-    }
+    if (!v.srcObject || !v.paused) return;
+    if (v.offsetParent === null && getComputedStyle(v).display === 'none') return;
+    v.play?.().catch(() => {});
   });
-}, 2000);
+}, 5000);
 

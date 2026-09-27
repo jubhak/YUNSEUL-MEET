@@ -1,9 +1,8 @@
 /**
  * video-freeze-watchdog.js
  * 실시간 WebRTC 비디오 스트림 멈춤(Freeze) / 끊김 자동 감지 및 안전 복구 워치독
- * - 정지 화면(슬라이드·카메라 대기)을 정상 상태로 인식하여 오작동 차단
- * - video.srcObject = null 등의 파괴적 디코더 리셋 차단 (깜빡임·렉 제거)
- * - 실제 네트워크 패킷 단절(track.muted === true) 시에만 최소 4초 간격 키프레임 요청
+ * - 얼굴(cam) 모드는 저프레임이라 키프레임 복구를 더 빠르게
+ * - video.srcObject = null 등 파괴적 디코더 리셋 차단
  */
 export function attachVideoFreezeWatchdog(videoEl, {
   label = 'video',
@@ -11,22 +10,34 @@ export function attachVideoFreezeWatchdog(videoEl, {
   onDecoderKick = null,
   onFullRecover = null,
   checkIntervalMs = 1500,
+  /** 'face' | 'display' — face는 빠른 PLI */
+  mode = 'display',
 } = {}) {
   if (!videoEl || videoEl._hasFreezeWatchdog) return;
   videoEl._hasFreezeWatchdog = true;
+
+  const isFace = mode === 'face';
+  const interval = isFace ? Math.min(checkIntervalMs, 1000) : checkIntervalMs;
+  // PLI를 너무 자주 보내면 인코더가 키프레임만 만들다 오히려 10초급 정지 진동이 남
+  const keyframeCooldownMs = isFace ? 4000 : 5000;
+  const mutedTicksBeforePli = isFace ? 3 : 2;
+  const stuckTicksBeforePli = isFace ? 5 : 7;
 
   let lastTime = -1;
   let freezeCount = 0;
   let lastKeyFrameTime = 0;
 
+  const requestKf = () => {
+    const now = Date.now();
+    if (now - lastKeyFrameTime < keyframeCooldownMs) return;
+    lastKeyFrameTime = now;
+    try { onRequestKeyFrame?.(); } catch { /* ignore */ }
+  };
+
   const onWaitingOrStalled = () => {
     if (!videoEl.isConnected) return;
     videoEl.play?.().catch(() => {});
-    const now = Date.now();
-    if (now - lastKeyFrameTime > 3000) {
-      lastKeyFrameTime = now;
-      try { onRequestKeyFrame?.(); } catch { /* ignore */ }
-    }
+    requestKf();
   };
 
   videoEl.addEventListener('waiting', onWaitingOrStalled);
@@ -35,17 +46,12 @@ export function attachVideoFreezeWatchdog(videoEl, {
   const onVisChange = () => {
     if (document.visibilityState === 'visible' && videoEl.isConnected) {
       if (videoEl.paused) videoEl.play?.().catch(() => {});
-      const now = Date.now();
-      if (now - lastKeyFrameTime > 2500) {
-        lastKeyFrameTime = now;
-        try { onRequestKeyFrame?.(); } catch { /* ignore */ }
-      }
+      requestKf();
     }
   };
   document.addEventListener('visibilitychange', onVisChange);
 
   const timer = setInterval(() => {
-    // DOM에서 제거된 경우 타이머 및 이벤트 리스너 자동 정리
     if (!videoEl.isConnected) {
       clearInterval(timer);
       videoEl._hasFreezeWatchdog = false;
@@ -68,43 +74,36 @@ export function attachVideoFreezeWatchdog(videoEl, {
       return;
     }
 
-    // 브라우저 백그라운드 탭 또는 정책으로 인한 일시정지 안전 해제
-    if (videoEl.paused) {
+    // 의도적 element pause(스크롤 밖)는 건드리지 않음
+    const card = videoEl.closest?.('.participant-card');
+    const offscreenPaused = !!(card && videoEl.paused && card.dataset.hasCam === '1'
+      && card.getBoundingClientRect().bottom < 0);
+    if (videoEl.paused && !offscreenPaused) {
       videoEl.play?.().catch(() => {});
     }
 
-    const now = Date.now();
-
-    // 1. 네트워크 패킷 단절 감지 (WebRTC 표준 track.muted === true)
     if (liveTrack.muted) {
       freezeCount++;
-      // 패킷이 약 3초(2틱) 이상 끊겨 음소거된 경우 키프레임 1회 요청
-      if (freezeCount >= 2 && now - lastKeyFrameTime > 4000) {
-        lastKeyFrameTime = now;
-        console.warn(`[FreezeWatchdog] ${label} 패킷 일시 중단 감지 -> 키프레임 복구 요청`);
-        try { onRequestKeyFrame?.(); } catch { /* ignore */ }
+      if (freezeCount >= mutedTicksBeforePli) {
+        console.warn(`[FreezeWatchdog] ${label} 패킷 일시 중단 -> 키프레임`);
+        requestKf();
         videoEl.play?.().catch(() => {});
       }
       return;
     }
 
-    // 2. 패킷이 정상 도착 중이면 freezeCount 리셋
     const cur = videoEl.currentTime;
     if (cur > 0 && cur === lastTime) {
-      // 프레젠테이션 정지 슬라이드는 정상 상태이므로 최소 10초(7틱) 이상 지속 시에만 부드러운 play() 및 키프레임 1회 시도
       freezeCount++;
-      if (freezeCount >= 7) {
-        if (now - lastKeyFrameTime > 5000) {
-          lastKeyFrameTime = now;
-          try { onRequestKeyFrame?.(); } catch { /* ignore */ }
-        }
-        videoEl.play?.().catch(() => {});
+      if (freezeCount >= stuckTicksBeforePli) {
+        requestKf();
+        if (!offscreenPaused) videoEl.play?.().catch(() => {});
       }
     } else {
       lastTime = cur;
       freezeCount = 0;
     }
-  }, checkIntervalMs);
+  }, interval);
 
   videoEl._freezeWatchdogTimer = timer;
 }
