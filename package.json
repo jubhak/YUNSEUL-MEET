@@ -1,8 +1,8 @@
 {
-  "name": "yunseul-ppt",
+  "name": "yunseul-meet",
   "version": "2.0.0",
   "private": true,
-  "description": "실시간 PPT 공유 — Node.js + Socket.io",
+  "description": "실시간 화상 미팅 및 프레젠테이션 솔루션 — YUNSEUL-MEET",
   "main": "server/index.js",
   "scripts": {
     "start": "node server/index.js",

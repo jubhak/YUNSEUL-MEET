@@ -12,6 +12,10 @@ import time
 import json
 import struct
 import logging
+import uuid
+import threading
+import multiprocessing as mp
+import queue as queue_mod
 from pathlib import Path
 
 # Windows 콘솔 인코딩 보호
@@ -38,19 +42,25 @@ from aiohttp import web
 
 import modules.globals
 
-# DirectML (DirectX 12 GPU 가속 - RTX 5070 Ti 등 하드웨어 가속) 활성화
+# GPU 실행 프로바이더 선택
+# CUDA를 최우선으로 사용한다: CUDA는 동일 세션에 대한 동시(멀티스레드/멀티프로세스) 추론
+# 호출을 공식 지원하므로, DirectML처럼 전역 락(dml_lock)으로 완전 직렬화할 필요가 없다.
+# RTX 계열 카드는 CUDA 실행 provider(onnxruntime-gpu + CUDA/cuDNN)가 설치되어 있으면
+# DirectML보다 이 워크로드에서 유리하다. CUDA가 없는 환경(예: CUDA 미설치, 다른 GPU
+# 벤더)에서는 DirectML로, 그것도 없으면 CPU로 자동 폴백한다.
 _avail_providers = []
 try:
     import onnxruntime as ort
     _all_avail = ort.get_available_providers()
-    if "DmlExecutionProvider" in _all_avail:
-        _avail_providers.append("DmlExecutionProvider")
     if "CUDAExecutionProvider" in _all_avail:
         _avail_providers.append("CUDAExecutionProvider")
+    elif "DmlExecutionProvider" in _all_avail:
+        _avail_providers.append("DmlExecutionProvider")
 except Exception:
     pass
 _avail_providers.append("CPUExecutionProvider")
 modules.globals.execution_providers = _avail_providers
+USING_CUDA = "CUDAExecutionProvider" in _avail_providers
 
 from modules.face_analyser import get_face_analyser, get_one_face, detect_one_face_fast, detect_many_faces_fast
 from modules.processors.frame.face_swapper import get_face_swapper, swap_face
@@ -184,9 +194,85 @@ def precision_beauty_skin(frame: np.ndarray, target_face=None) -> np.ndarray:
 
 
 LAST_SWAPPED_FRAMES = {}
+CLIENT_LAST_FRAMES = {}
+ACTIVE_SWAP_CLIENTS = {}
 
 
-def process_frame(source_name: str, frame_bytes: bytes) -> bytes:
+def get_dynamic_swap_fps() -> int:
+    n = len(CONNECTED_WS)
+    return get_adaptive_profile(n)["fps"]
+# 동시 접속자(딥페이크 활성 참가자) 수 기반 적응형 스로틀링
+#
+# 이 프로세스는 얼굴 검출/스왑용 ONNX 세션을 단 하나만 들고 있고,
+# DirectML 사용 시 modules.globals.dml_lock 이 모든 검출/스왑 호출을
+# 전역적으로 완전 직렬화한다 (DML 세션이 멀티스레드 동시 Run()을
+# 지원하지 않기 때문에 필요한 락). 즉 참가자가 늘어나도 처리량 자체는
+# 늘지 않고, 참가자 수만큼 순서를 기다리는 줄만 길어진다.
+#
+# 따라서 참가자 1명일 때는 고해상도/고fps로 처리하고, 참가자가 늘어날
+# 수록 처리 해상도와 클라이언트의 요청 fps를 함께 낮춰서, "동시 처리
+# 총량"이 실시간 예산(약 33~50ms/frame)을 넘지 않도록 맞춘다.
+# ----------------------------------------------------
+CONNECTED_WS = set()
+INFERENCE_SEMAPHORE = asyncio.Semaphore(3)  # 동시에 GPU 추론 스레드에 진입 가능한 최대 프레임 수
+
+
+def get_adaptive_profile(n_clients: int) -> dict:
+    """활성 딥페이크 클라이언트 수에 따른 처리 해상도 상한(max_w)과
+    클라이언트에 권고할 요청 fps(fps)를 반환한다."""
+    if n_clients <= 1:
+        return {"max_w": 640, "fps": 26}
+    if n_clients == 2:
+        return {"max_w": 480, "fps": 18}
+    if n_clients <= 4:
+        return {"max_w": 400, "fps": 14}
+    if n_clients <= 7:
+        return {"max_w": 320, "fps": 10}
+    return {"max_w": 256, "fps": 8}
+
+
+async def broadcast_throttle():
+    """현재 접속자 수에 맞는 fps 캡을 모든 클라이언트에게 알려준다."""
+    n = len(CONNECTED_WS)
+    profile = get_adaptive_profile(n)
+    logger.info(f"Active swap clients: {n} -> profile {profile}")
+    payload = json.dumps({"type": "throttle", "fps": profile["fps"], "clients": n})
+    dead = []
+    for client_ws in list(CONNECTED_WS):
+        try:
+            if not client_ws.closed:
+                await client_ws.send_str(payload)
+        except Exception:
+            dead.append(client_ws)
+    for d in dead:
+        CONNECTED_WS.discard(d)
+
+
+def _downscale_for_load(frame: np.ndarray, n_clients: int):
+    """현재 접속자 수 기준 처리 해상도 상한을 넘으면 축소한다.
+    반환값: (처리용 프레임, 원본 크기로 되돌리기 위한 (orig_w, orig_h) 또는 None)"""
+    max_w = get_adaptive_profile(n_clients)["max_w"]
+    h, w = frame.shape[:2]
+    if w <= max_w:
+        return frame, None
+    scale = max_w / float(w)
+    new_w, new_h = max_w, max(1, int(round(h * scale)))
+    small = cv2.resize(frame, (new_w, new_h), interpolation=cv2.INTER_AREA)
+    return small, (w, h)
+
+
+def _finalize_and_encode(img: np.ndarray, quality: int, restore_size, optimize: bool = False) -> bytes:
+    """(필요 시) 원본 해상도로 되돌린 뒤 JPEG로 인코딩한다."""
+    if restore_size is not None:
+        img = cv2.resize(img, restore_size, interpolation=cv2.INTER_LINEAR)
+    params = [int(cv2.IMWRITE_JPEG_QUALITY), quality]
+    if optimize:
+        params += [int(cv2.IMWRITE_JPEG_OPTIMIZE), 1]
+    _, encoded = cv2.imencode(".jpg", img, params)
+    return encoded.tobytes()
+
+
+def process_frame(source_name: str, frame_bytes: bytes, n_clients: int = 0, client_id: str = "default") -> bytes:
     """웹캠 프레임을 받아 선택된 얼굴로 스왑 또는 정밀 뷰티 스킨 처리한 최고화질 JPEG를 반환합니다."""
     source_key = (source_name or "").strip().lower()
     try:
@@ -195,13 +281,18 @@ def process_frame(source_name: str, frame_bytes: bytes) -> bytes:
         if frame is None:
             if source_key in ("none", "beauty", "real"):
                 return frame_bytes
-            return LAST_SWAPPED_FRAMES.get(source_key) or LAST_SWAPPED_FRAMES.get("_latest") or b""
+            return CLIENT_LAST_FRAMES.get(client_id) or LAST_SWAPPED_FRAMES.get(source_key) or LAST_SWAPPED_FRAMES.get("_latest") or b""
+
+        # 동시 접속자 수에 따라 처리 해상도를 낮춤 (전역 GPU 락 직렬화 부하 완화).
+        # n_clients는 호출부(메인 프로세스)가 CONNECTED_WS 크기를 보고 넘겨준다 —
+        # 이 함수 자체는 워커 프로세스(별도 프로세스) 안에서 실행될 수 있으므로
+        # 전역 CONNECTED_WS를 직접 읽으면 안 된다(그 상태는 메인 프로세스에만 있음).
+        frame, restore_size = _downscale_for_load(frame, n_clients)
 
         # 순수 뷰티 모드: 내 실제 얼굴에서 주름만 지우고 머리카락/안경/눈은 초고화질 유지
         if source_key in ("none", "beauty", "real"):
             enhanced = precision_beauty_skin(frame)
-            _, encoded = cv2.imencode(".jpg", enhanced, [int(cv2.IMWRITE_JPEG_QUALITY), 95, int(cv2.IMWRITE_JPEG_OPTIMIZE), 1])
-            return encoded.tobytes()
+            return _finalize_and_encode(enhanced, 95, restore_size, optimize=True)
 
         # [사생활 절대 보호] 소스 얼굴 로드 실패 시 원본 얼굴 유출 방지
         source_face = load_source_face(source_name)
@@ -211,8 +302,7 @@ def process_frame(source_name: str, frame_bytes: bytes) -> bytes:
             if "_latest" in LAST_SWAPPED_FRAMES:
                 return LAST_SWAPPED_FRAMES["_latest"]
             blurred = cv2.GaussianBlur(frame, (99, 99), 30)
-            _, encoded = cv2.imencode(".jpg", blurred, [int(cv2.IMWRITE_JPEG_QUALITY), 85])
-            return encoded.tobytes()
+            return _finalize_and_encode(blurred, 85, restore_size)
 
         # 고속 타겟 얼굴 다중 감지 (DirectML GPU 가속)
         target_faces = detect_many_faces_fast(frame)
@@ -223,8 +313,7 @@ def process_frame(source_name: str, frame_bytes: bytes) -> bytes:
             if "_latest" in LAST_SWAPPED_FRAMES:
                 return LAST_SWAPPED_FRAMES["_latest"]
             blurred = cv2.GaussianBlur(frame, (99, 99), 30)
-            _, encoded = cv2.imencode(".jpg", blurred, [int(cv2.IMWRITE_JPEG_QUALITY), 85])
-            return encoded.tobytes()
+            return _finalize_and_encode(blurred, 85, restore_size)
 
         # 실시간 라이브: 가장 큰 얼굴 1명만 (다중 얼굴은 지연 폭증)
         target_faces = sorted(
@@ -278,12 +367,12 @@ def process_frame(source_name: str, frame_bytes: bytes) -> bytes:
                     blurred_any = True
             if not blurred_any:
                 safe_frame = cv2.GaussianBlur(frame, (99, 99), 30)
-            _, encoded = cv2.imencode(".jpg", safe_frame, [int(cv2.IMWRITE_JPEG_QUALITY), 85])
-            return encoded.tobytes()
+            return _finalize_and_encode(safe_frame, 85, restore_size)
 
         # 고속 JPEG 인코딩 (품질 70 — 실시간 지연 우선)
-        _, encoded = cv2.imencode(".jpg", swapped, [int(cv2.IMWRITE_JPEG_QUALITY), 70])
-        result_bytes = encoded.tobytes()
+        result_bytes = _finalize_and_encode(swapped, 70, restore_size)
+        if client_id:
+            CLIENT_LAST_FRAMES[client_id] = result_bytes
         LAST_SWAPPED_FRAMES[source_key] = result_bytes
         LAST_SWAPPED_FRAMES["_latest"] = result_bytes
         return result_bytes
@@ -303,6 +392,138 @@ def process_frame(source_name: str, frame_bytes: bytes) -> bytes:
             _, encoded = cv2.imencode(".jpg", placeholder, [int(cv2.IMWRITE_JPEG_QUALITY), 80])
             return encoded.tobytes()
         return frame_bytes
+
+
+# ----------------------------------------------------
+# 멀티프로세스 GPU 워커 풀
+#
+# 기존 구조는 이 서버 프로세스 하나가 얼굴 검출/스왑 모델을 직접 들고
+# 있었다 (전역 dml_lock으로 사실상 완전 직렬화). 이제는 이 프로세스는
+# WebSocket/HTTP 입출력만 담당하는 "디스패처"가 되고, 실제 GPU 추론은
+# 별도 OS 프로세스(워커)들이 각자 자기 모델 인스턴스 + 자기 CUDA
+# 컨텍스트를 갖고 수행한다.
+#
+# - CUDA는 여러 프로세스/스레드에서 동시에 세션을 호출하는 것을
+#   공식적으로 지원하므로, 워커 프로세스마다 독립된 모델을 두면
+#   진짜 병렬 처리가 가능하다 (DirectML처럼 전역 락으로 묶일 필요가 없음).
+# - 모든 워커가 하나의 공유 작업 큐(POOL_TASK_QUEUE)를 소비하므로,
+#   놀고 있는 워커가 자연스럽게 다음 프레임을 가져가는 최소부하(least-busy)
+#   분산이 별도 구현 없이 이루어진다.
+# - 워커 프로세스 수(FACE_SWAP_WORKERS)는 GPU VRAM에 맞춰 조절해야 한다.
+#   모델 하나당 대략 1~2GB 내외를 쓰므로, 예를 들어 VRAM 12GB면
+#   워커 3~4개 정도가 현실적인 시작점이다. 값을 0으로 두면 예전처럼
+#   이 프로세스 안에서 직접 처리한다(GPU가 없는 개발 환경 등에서 유용).
+# ----------------------------------------------------
+
+WORKER_COUNT = int(os.environ.get("FACE_SWAP_WORKERS", "2"))
+POOL_TASK_QUEUE: "mp.Queue | None" = None
+POOL_RESULT_QUEUE: "mp.Queue | None" = None
+POOL_PROCESSES: list = []
+PENDING_FUTURES: dict = {}
+MAIN_LOOP = None
+POOL_ENABLED = WORKER_COUNT > 0
+
+
+def _gpu_worker_main(worker_id: int, task_queue: "mp.Queue", result_queue: "mp.Queue"):
+    """워커 프로세스의 진입점. 이 프로세스 안에서만 쓰이는 자기 모델 인스턴스를
+    한 번 로드한 뒤, 작업 큐에서 프레임을 받아 순서대로(이 프로세스는 단일
+    스레드로 돈다) 처리해서 결과 큐로 돌려준다."""
+    worker_logger = logging.getLogger(f"FaceSwapWorker.pool{worker_id}")
+    logging.basicConfig(level=logging.INFO, format="[FaceSwapWorker] %(asctime)s [%(levelname)s] %(message)s")
+    try:
+        worker_logger.info(f"GPU worker #{worker_id} starting (providers={modules.globals.execution_providers})...")
+        get_face_analyser()
+        get_face_swapper()
+        preload_all_photos()
+        worker_logger.info(f"GPU worker #{worker_id} ready.")
+    except Exception as e:
+        worker_logger.error(f"GPU worker #{worker_id} failed to initialize: {e}")
+        result_queue.put(("__worker_init_failed__", worker_id, str(e)))
+        return
+
+    while True:
+        try:
+            item = task_queue.get()
+        except (EOFError, OSError):
+            break
+        if item is None:  # 종료 신호
+            break
+        req_id, source_name, frame_bytes, n_clients = item
+        try:
+            result_bytes = process_frame(source_name, frame_bytes, n_clients)
+        except Exception as e:
+            worker_logger.warning(f"process_frame error: {e}")
+            result_bytes = b""
+        try:
+            result_queue.put((req_id, result_bytes))
+        except Exception as e:
+            worker_logger.warning(f"Failed to publish result: {e}")
+
+
+def _drain_pool_results():
+    """메인 프로세스의 백그라운드 스레드에서 실행. 워커들의 결과 큐를 계속
+    비우면서, 대기 중인 asyncio Future를 이벤트 루프 스레드에서 안전하게
+    완료시킨다 (call_soon_threadsafe)."""
+    while True:
+        try:
+            req_id, result_bytes = POOL_RESULT_QUEUE.get()
+        except (EOFError, OSError):
+            return
+        if req_id == "__worker_init_failed__":
+            logger.error(f"A GPU worker failed to initialize: {result_bytes}")
+            continue
+        if MAIN_LOOP is None:
+            continue
+
+        def _resolve(rid=req_id, data=result_bytes):
+            fut = PENDING_FUTURES.pop(rid, None)
+            if fut is not None and not fut.done():
+                fut.set_result(data)
+
+        MAIN_LOOP.call_soon_threadsafe(_resolve)
+
+
+def start_worker_pool():
+    """워커 프로세스들과 결과 드레인 스레드를 시작한다."""
+    global POOL_TASK_QUEUE, POOL_RESULT_QUEUE, MAIN_LOOP
+    if not POOL_ENABLED:
+        logger.info("FACE_SWAP_WORKERS=0 — 워커 풀을 쓰지 않고 이 프로세스에서 직접 처리합니다.")
+        return
+    MAIN_LOOP = asyncio.get_event_loop()
+    POOL_TASK_QUEUE = mp.Queue(maxsize=max(4, WORKER_COUNT * 4))
+    POOL_RESULT_QUEUE = mp.Queue()
+    for i in range(WORKER_COUNT):
+        p = mp.Process(target=_gpu_worker_main, args=(i, POOL_TASK_QUEUE, POOL_RESULT_QUEUE), daemon=True)
+        p.start()
+        POOL_PROCESSES.append(p)
+    threading.Thread(target=_drain_pool_results, daemon=True).start()
+    logger.info(f"✅ GPU worker pool started with {WORKER_COUNT} process(es).")
+
+
+async def submit_frame(source_name: str, frame_bytes: bytes, n_clients: int, timeout: float = 3.0) -> bytes:
+    """프레임 하나를 처리 요청한다. 풀이 활성화되어 있으면 워커 프로세스로,
+    아니면 이 프로세스의 스레드풀로 보낸다. 어느 쪽이든 호출부 입장에서는
+    동일하게 await 가능한 인터페이스다."""
+    if not POOL_ENABLED or POOL_TASK_QUEUE is None:
+        async with INFERENCE_SEMAPHORE:
+            return await asyncio.to_thread(process_frame, source_name, frame_bytes, n_clients)
+
+    req_id = uuid.uuid4().hex
+    future = MAIN_LOOP.create_future()
+    PENDING_FUTURES[req_id] = future
+    try:
+        POOL_TASK_QUEUE.put_nowait((req_id, source_name, frame_bytes, n_clients))
+    except queue_mod.Full:
+        PENDING_FUTURES.pop(req_id, None)
+        logger.warning("GPU worker pool queue full — dropping frame")
+        return LAST_SWAPPED_FRAMES.get("_latest") or b""
+
+    try:
+        return await asyncio.wait_for(future, timeout=timeout)
+    except asyncio.TimeoutError:
+        PENDING_FUTURES.pop(req_id, None)
+        logger.warning("GPU worker pool timed out on a frame — dropping")
+        return LAST_SWAPPED_FRAMES.get("_latest") or b""
 
 
 # ----------------------------------------------------
@@ -344,7 +565,7 @@ async def handle_swap_frame(request):
     if not body:
         return web.Response(status=400, text="Empty frame body")
 
-    swapped = await asyncio.to_thread(process_frame, source_name, body)
+    swapped = await submit_frame(source_name, body, len(CONNECTED_WS))
     return web.Response(body=swapped, content_type="image/jpeg", headers={
         "Access-Control-Allow-Origin": "*",
         "X-Source-Face": source_name,
@@ -385,6 +606,9 @@ async def handle_websocket(request):
     logger.info(f"WebSocket client connected: {client_id}")
     current_source = "superman"
 
+    CONNECTED_WS.add(ws)
+    await broadcast_throttle()
+
     latest_pending = None
     processing_event = asyncio.Event()
     is_closed = False
@@ -400,7 +624,7 @@ async def handle_websocket(request):
                 src_name, frame_bytes = latest_pending
                 latest_pending = None
                 try:
-                    swapped = await asyncio.to_thread(process_frame, src_name, frame_bytes)
+                    swapped = await submit_frame(src_name, frame_bytes, len(CONNECTED_WS))
                     if not ws.closed:
                         await ws.send_bytes(swapped)
                 except Exception as ex:
@@ -451,7 +675,7 @@ async def handle_websocket(request):
                             img_b64 = img_b64.split(",", 1)[1]
                         import base64
                         raw_bytes = base64.b64decode(img_b64)
-                        swapped = await asyncio.to_thread(process_frame, src_name, raw_bytes)
+                        swapped = await submit_frame(src_name, raw_bytes, len(CONNECTED_WS))
                         out_b64 = "data:image/jpeg;base64," + base64.b64encode(swapped).decode("ascii")
                         await ws.send_json({
                             "type": "swapped_base64",
@@ -468,6 +692,8 @@ async def handle_websocket(request):
         is_closed = True
         processing_event.set()
         worker_task.cancel()
+        CONNECTED_WS.discard(ws)
+        await broadcast_throttle()
         logger.info(f"WebSocket client disconnected: {client_id}")
 
     return ws
@@ -501,13 +727,17 @@ def create_app():
 
 
 async def start_server():
-    logger.info("Deep-Live-Cam models & engines initializing...")
-    get_face_analyser()
-    get_face_swapper()
-    logger.info("✅ Deep-Live-Cam AI models loaded successfully!")
-
-    preload_all_photos()
-    logger.info(f"✅ Preloaded {len(SOURCE_FACE_CACHE)} source face embeddings!")
+    if POOL_ENABLED:
+        logger.info(f"GPU worker pool mode: spawning {WORKER_COUNT} worker process(es)...")
+        start_worker_pool()
+        logger.info("(모델은 각 워커 프로세스 안에서 백그라운드로 로드됩니다 — 첫 몇 초간은 프레임이 지연/드롭될 수 있습니다.)")
+    else:
+        logger.info("Deep-Live-Cam models & engines initializing (in-process mode)...")
+        get_face_analyser()
+        get_face_swapper()
+        logger.info("✅ Deep-Live-Cam AI models loaded successfully!")
+        preload_all_photos()
+        logger.info(f"✅ Preloaded {len(SOURCE_FACE_CACHE)} source face embeddings!")
 
     app = create_app()
     runner = web.AppRunner(app)

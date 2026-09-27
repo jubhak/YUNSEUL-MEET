@@ -638,11 +638,14 @@ export class VirtualAvatarManager {
     this.onModeChange?.(this.mode, this.currentAvatar, this.activeSwapFace);
   }
 
-  /** 스왑 요청 fps — 송출 fps와 분리 (실시간 자연스러운 모션 보장) */
+  /** 스왑 요청 fps — 송출 fps와 분리 (실시간 자연스러운 모션 보장)
+   * 서버가 동시 딥페이크 참가자 수를 보고 보내주는 throttle 캡(_serverFpsCap)이 있으면
+   * 그 값을 넘지 않도록 클램프한다. 참가자가 많아질수록 서버가 캡을 낮춰 보내므로,
+   * 클라이언트가 자체 판단으로 계속 26fps를 밀어넣어 서버 GPU 락을 독점하는 상황을 막는다. */
   _swapRequestFps() {
-    if (this.faceMode === 'crowd') return 18;
-    if (this.faceMode === 'multi') return 22;
-    return 26; // solo
+    const base = this.faceMode === 'crowd' ? 18 : (this.faceMode === 'multi' ? 22 : 26);
+    if (this._serverFpsCap) return Math.min(base, this._serverFpsCap);
+    return base;
   }
 
   _startSwapPump() {
@@ -655,6 +658,17 @@ export class VirtualAvatarManager {
     this._swapPumpTimer = setInterval(tick, ms);
     // 즉시 1장
     tick();
+  }
+
+  /** 서버로부터 받은 동적 fps 캡을 적용하고, 펌프가 돌고 있으면 새 주기로 재시작한다. */
+  _applyServerThrottle(fps) {
+    const n = Number(fps);
+    if (!Number.isFinite(n) || n <= 0) return;
+    if (this._serverFpsCap === n) return;
+    this._serverFpsCap = n;
+    if (this.mode === 'swap' && this._swapPumpTimer) {
+      this._startSwapPump();
+    }
   }
 
   _stopSwapPump() {
@@ -1468,6 +1482,15 @@ export class VirtualAvatarManager {
             this._swapBusy = false;
           };
           img.src = URL.createObjectURL(blob);
+        } else if (typeof event.data === 'string') {
+          // 서버 제어 메시지 (동시 참가자 수 기반 fps 조절 등)
+          try {
+            const msg = JSON.parse(event.data);
+            if (msg.type === 'throttle' && msg.fps) {
+              this._applyServerThrottle(msg.fps);
+            }
+          } catch { /* ignore non-JSON text frames */ }
+          this._swapBusy = false;
         } else {
           this._swapBusy = false;
         }

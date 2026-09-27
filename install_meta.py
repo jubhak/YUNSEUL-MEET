@@ -8,10 +8,10 @@ import sys
 import tempfile
 
 MARKER_NAME = "install.json"
-PRODUCT_NAME = "YUNSEUL-PPT"
-APP_EXE_NAME = "YUNSEUL-PPT.exe"
-DESKTOP_LNK_NAME = "YUNSEUL-PPT.lnk"
-STARTMENU_FOLDER_NAME = "YUNSEUL-PPT"
+PRODUCT_NAME = "YUNSEUL-MEET"
+APP_EXE_NAME = "YUNSEUL-MEET.exe"
+DESKTOP_LNK_NAME = "YUNSEUL-MEET.lnk"
+STARTMENU_FOLDER_NAME = "YUNSEUL-MEET"
 
 
 def get_app_dir():
@@ -145,7 +145,7 @@ if (Test-Path $installDir) {{
 
 if ($showDone) {{
     [System.Reflection.Assembly]::LoadWithPartialName('System.Windows.Forms') | Out-Null
-    [System.Windows.Forms.MessageBox]::Show('YUNSEUL-PPT 프로그램이 성공적으로 제거되었습니다.', 'YUNSEUL-PPT 제거 완료', [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information) | Out-Null
+    [System.Windows.Forms.MessageBox]::Show('YUNSEUL-MEET 프로그램이 성공적으로 제거되었습니다.', 'YUNSEUL-MEET 제거 완료', [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information) | Out-Null
 }}
 """
     try:

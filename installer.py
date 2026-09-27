@@ -161,7 +161,9 @@ class InstallThread(QThread):
             self.progress_signal.emit(50, "웹 서버 및 구성 요소 복사 중...")
             src_root = get_bundle_dir()
             # 만약 개발 워크스페이스에 있다면 소스 루트 복사
-            dev_root = Path(r"D:\workspace\YUNSEUL-PPT")
+            dev_root = Path(r"D:\workspace\YUNSEUL-MEET")
+            if not dev_root.exists():
+                dev_root = Path(r"D:\workspace\YUNSEUL-PPT")
             root_to_copy = dev_root if dev_root.exists() else Path(src_root)
 
             copy_items = [

@@ -171,7 +171,11 @@ def detect_one_face_fast(frame: Frame) -> Any:
     """
     from insightface.app.common import Face
     fa = get_face_analyser()
-    bboxes, kpss = fa.det_model.detect(frame, max_num=0, metric='default')
+    if _is_dml():
+        with modules.globals.dml_lock:
+            bboxes, kpss = fa.det_model.detect(frame, max_num=0, metric='default')
+    else:
+        bboxes, kpss = fa.det_model.detect(frame, max_num=0, metric='default')
     if bboxes.shape[0] == 0:
         return None
     idx = int(bboxes[:, 0].argmin())
@@ -182,7 +186,11 @@ def detect_many_faces_fast(frame: Frame) -> Any:
     """Detection-only multi-face — skips landmark and recognition."""
     from insightface.app.common import Face
     fa = get_face_analyser()
-    bboxes, kpss = fa.det_model.detect(frame, max_num=0, metric='default')
+    if _is_dml():
+        with modules.globals.dml_lock:
+            bboxes, kpss = fa.det_model.detect(frame, max_num=0, metric='default')
+    else:
+        bboxes, kpss = fa.det_model.detect(frame, max_num=0, metric='default')
     if bboxes.shape[0] == 0:
         return None
     return [Face(bbox=bboxes[i, :4], kps=kpss[i], det_score=bboxes[i, 4])

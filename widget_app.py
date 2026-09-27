@@ -40,9 +40,12 @@ def find_server_dir():
     if (base.parent / "server" / "index.js").exists():
         return base.parent
     # 3. 개발 워크스페이스 고정 경로 폴더
-    dev_path = Path(r"D:\workspace\YUNSEUL-PPT")
+    dev_path = Path(r"D:\workspace\YUNSEUL-MEET")
     if (dev_path / "server" / "index.js").exists():
         return dev_path
+    dev_path_old = Path(r"D:\workspace\YUNSEUL-PPT")
+    if (dev_path_old / "server" / "index.js").exists():
+        return dev_path_old
     return base
 
 
