@@ -194,13 +194,8 @@ def precision_beauty_skin(frame: np.ndarray, target_face=None) -> np.ndarray:
 
 
 LAST_SWAPPED_FRAMES = {}
-CLIENT_LAST_FRAMES = {}
-ACTIVE_SWAP_CLIENTS = {}
 
-
-def get_dynamic_swap_fps() -> int:
-    n = len(CONNECTED_WS)
-    return get_adaptive_profile(n)["fps"]
+# ----------------------------------------------------
 # 동시 접속자(딥페이크 활성 참가자) 수 기반 적응형 스로틀링
 #
 # 이 프로세스는 얼굴 검출/스왑용 ONNX 세션을 단 하나만 들고 있고,
@@ -272,7 +267,7 @@ def _finalize_and_encode(img: np.ndarray, quality: int, restore_size, optimize: 
     return encoded.tobytes()
 
 
-def process_frame(source_name: str, frame_bytes: bytes, n_clients: int = 0, client_id: str = "default") -> bytes:
+def process_frame(source_name: str, frame_bytes: bytes, n_clients: int = 0) -> bytes:
     """웹캠 프레임을 받아 선택된 얼굴로 스왑 또는 정밀 뷰티 스킨 처리한 최고화질 JPEG를 반환합니다."""
     source_key = (source_name or "").strip().lower()
     try:
@@ -281,7 +276,7 @@ def process_frame(source_name: str, frame_bytes: bytes, n_clients: int = 0, clie
         if frame is None:
             if source_key in ("none", "beauty", "real"):
                 return frame_bytes
-            return CLIENT_LAST_FRAMES.get(client_id) or LAST_SWAPPED_FRAMES.get(source_key) or LAST_SWAPPED_FRAMES.get("_latest") or b""
+            return LAST_SWAPPED_FRAMES.get(source_key) or LAST_SWAPPED_FRAMES.get("_latest") or b""
 
         # 동시 접속자 수에 따라 처리 해상도를 낮춤 (전역 GPU 락 직렬화 부하 완화).
         # n_clients는 호출부(메인 프로세스)가 CONNECTED_WS 크기를 보고 넘겨준다 —
@@ -371,8 +366,6 @@ def process_frame(source_name: str, frame_bytes: bytes, n_clients: int = 0, clie
 
         # 고속 JPEG 인코딩 (품질 70 — 실시간 지연 우선)
         result_bytes = _finalize_and_encode(swapped, 70, restore_size)
-        if client_id:
-            CLIENT_LAST_FRAMES[client_id] = result_bytes
         LAST_SWAPPED_FRAMES[source_key] = result_bytes
         LAST_SWAPPED_FRAMES["_latest"] = result_bytes
         return result_bytes
