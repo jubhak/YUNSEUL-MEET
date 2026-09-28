@@ -147,6 +147,9 @@ const workerPool = [];
 let workerInitPromise = null;
 let poolSeq = 0;
 
+/** roomCode -> SfuRoom */
+const sfuRooms = new Map();
+
 /**
  * @typedef {{
  *  router: import('mediasoup').types.Router,
