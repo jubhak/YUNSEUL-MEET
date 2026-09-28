@@ -19,11 +19,7 @@ echo.
 echo =======================================================
 echo [사용 방법]
 echo  1. Deep-Live-Cam 창이 열리면 [Select a face] 클릭
-echo  2. photo 폴더 내 영웅 사진 선택:
-echo     - photo\superman.jpg  (슈퍼맨)
-echo     - photo\batman.jpg    (배트맨)
-echo     - photo\spiderman.jpg (스파이더맨)
-echo.
+echo  2. photo 폴더 내 원하는 인물 사진 선택 (또는 직접 사진 준비)
 echo  3. [Live] 버튼 클릭 - 웹캠 실시간 얼굴 변환 시작
 echo  4. 가상 카메라(OBS Virtual Camera)로 미팅 송출
 echo =======================================================

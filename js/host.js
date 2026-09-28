@@ -859,9 +859,9 @@ async function applyFaceAndStartCamera(faceApplyFn) {
   }
 }
 
-function onSelectHero(heroId) {
+function onSelectHero(heroId, photoUrl = '') {
   applyFaceAndStartCamera((avMgr) => {
-    avMgr.setSwapFace(heroId);
+    avMgr.setSwapFace(heroId, photoUrl);
   });
 }
 
@@ -897,7 +897,7 @@ async function loadModalPhotos() {
         <button type="button" class="dlc-hero-apply-btn">${isCur ? '✓ 적용 중' : '선택하기'}</button>
       `;
       card.addEventListener('click', () => {
-        onSelectHero(photo.id);
+        onSelectHero(photo.id, photo.url);
       });
       grid.appendChild(card);
     });
@@ -1006,7 +1006,7 @@ document.getElementById('dlc-file-input')?.addEventListener('change', async (e) 
     const data = await res.json();
     if (data.ok) {
       await loadModalPhotos();
-      onSelectHero(data.id);
+      onSelectHero(data.id, data.url);
     } else {
       alert(`사진 업로드 실패: ${data.error || '알 수 없는 오류'}`);
     }

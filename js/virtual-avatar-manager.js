@@ -7,37 +7,9 @@
  */
 
 /**
- * 실사 AI 영웅 아바타 목록 (photo/ 폴더 사진 기반)
+ * 실사 AI 영웅/인물 아바타 목록 (photo/ 폴더 사진 기반 - 동적 로드)
  */
-export const HERO_AVATARS = [
-  {
-    id: 'hero-superman',
-    heroId: 'superman',
-    name: '슈퍼맨 (Superman)',
-    badge: 'DC 히어로 / 실사 AI',
-    photo: 'photo/superman.jpg',
-    isHero: true,
-    bg: ['#0f172a', '#1e3a8a'],
-  },
-  {
-    id: 'hero-batman',
-    heroId: 'batman',
-    name: '배트맨 (Batman)',
-    badge: '다크나이트 / 실사 AI',
-    photo: 'photo/batman.jpg',
-    isHero: true,
-    bg: ['#09090b', '#18181b'],
-  },
-  {
-    id: 'hero-spiderman',
-    heroId: 'spiderman',
-    name: '스파이더맨 (Spider-Man)',
-    badge: '마블 히어로 / 실사 AI',
-    photo: 'photo/spiderman.jpg',
-    isHero: true,
-    bg: ['#1c1917', '#450a0a'],
-  },
-];
+export const HERO_AVATARS = [];
 
 export const CELEBRITY_AVATARS = [
   {
@@ -376,15 +348,10 @@ export class VirtualAvatarManager {
     this.isLarge = width >= FACE_OUT_W_HD;
     this.deck = new NonRepeatingDeck(CELEBRITY_AVATARS);
     this._heroImages = new Map();
-    HERO_AVATARS.forEach((h) => {
-      const img = new Image();
-      img.crossOrigin = 'anonymous';
-      img.src = h.photo;
-      this._heroImages.set(h.heroId, img);
-      this._heroImages.set(h.id, img);
-    });
+    this._customFaceImages = new Map();
+    this._selectedFaceImage = null;
     // 기본 아바타: 실물 웹캠 모드가 기본 (선명한 30~60fps 무지연 송출)
-    this.currentAvatar = HERO_AVATARS[0];
+    this.currentAvatar = CELEBRITY_AVATARS[0] || null;
     this.mode = 'real';
     this.swapModeLock = true;
 
@@ -718,18 +685,46 @@ export class VirtualAvatarManager {
 
   /**
    * 실시간 Deep-Live-Cam 페이스 스왑 대상 얼굴 설정
-   * @param {string} faceIdOrName ('superman' | 'batman' | 'spiderman' | 사진파일명)
+   * @param {string} faceIdOrName (사진 ID 또는 파일명)
+   * @param {string} [photoUrl] (사진 접근 URL - 첫 프레임 도착 전 플레이스홀더 표시용)
    */
-  setSwapFace(faceIdOrName) {
-    const key = (faceIdOrName || 'superman').toLowerCase();
+  setSwapFace(faceIdOrName, photoUrl = '') {
+    const key = (faceIdOrName || '').toLowerCase().trim();
+    if (!key) return null;
     this.activeSwapFace = key;
-    // [사생활 절대 보호 및 부드러운 전환]
-    // 새 얼굴의 첫 프레임이 도착할 때까지 이전 스왑 비트맵(_lastBitmap)을 계속 화면에 렌더링 유지.
-    // 기존 이미지를 파기하지 않음으로써 얼굴 변경 시에도 원본 실물 얼굴이 1ms도 노출되지 않도록 완벽 보장합니다.
+    this.activeSwapFaceUrl = photoUrl || '';
 
-    const hero = HERO_AVATARS.find((h) => h.heroId === key || h.id === key || h.photo.includes(key));
+    // [사생활 절대 보호: 선택한 사진 즉시 프리뷰]
+    // 딥페이크 모델이 로딩되어 첫 스왑 프레임이 도착할 때까지 실제 얼굴 대신
+    // 사용자가 방금 선택한 사진 자체를 화면에 띄워 1ms도 실물이 노출되지 않도록 완벽 보장합니다.
+    let img = this._customFaceImages?.get(key);
+    if (!img) {
+      img = new Image();
+      img.crossOrigin = 'anonymous';
+      if (photoUrl) {
+        img.src = photoUrl;
+      } else if (key.includes('.')) {
+        img.src = `/photo/${encodeURIComponent(key)}`;
+      } else {
+        img.src = `/photo/${encodeURIComponent(key)}.jpg`;
+      }
+      if (!this._customFaceImages) this._customFaceImages = new Map();
+      this._customFaceImages.set(key, img);
+    }
+    this._selectedFaceImage = img;
+
+    const hero = HERO_AVATARS.find((h) => h.heroId === key || h.id === key || h.photo?.includes(key));
     if (hero) {
       this.currentAvatar = hero;
+    } else {
+      this.currentAvatar = {
+        id: `photo-${key}`,
+        heroId: key,
+        name: key,
+        isCustomPhoto: true,
+        photoImg: img,
+        bg: ['#0f172a', '#1e293b'],
+      };
     }
 
     this.mode = 'swap';
@@ -753,6 +748,8 @@ export class VirtualAvatarManager {
    */
   setRealMode() {
     this.activeSwapFace = null;
+    this.activeSwapFaceUrl = '';
+    this._selectedFaceImage = null;
     this._lastSwappedImage = null;
     this._stopSwapPump();
     this._settleSwap();
@@ -879,17 +876,66 @@ export class VirtualAvatarManager {
   }
 
   _drawFacePrivacyPlaceholder(ctx, w, h) {
-    const a = this.currentAvatar;
-    if (a?.isHero) {
+    const img = this._selectedFaceImage;
+    if (img && img.complete && img.naturalWidth) {
       const now = Date.now();
-      const isBlinking = now < this._blinkUntil;
       const t = now * 0.002;
-      const breatheY = Math.sin(t) * 3.5;
-      const headTilt = Math.cos(t * 0.6) * 0.015;
-      this._drawHeroPhoto(ctx, a, w, h, breatheY, headTilt, isBlinking, this._smoothMouth);
+      const breatheY = Math.sin(t) * 3.0;
+      const headTilt = Math.cos(t * 0.6) * 0.01;
+
+      // 1. 배경 (은은한 다크 그라디언트)
+      ctx.save();
+      const bgGrad = ctx.createLinearGradient(0, 0, w, h);
+      bgGrad.addColorStop(0, '#090d16');
+      bgGrad.addColorStop(1, '#1e293b');
+      ctx.fillStyle = bgGrad;
+      ctx.fillRect(0, 0, w, h);
+
+      // 2. 사용자가 선택한 사진을 종횡비에 맞춰 중앙 렌더링
+      const imgRatio = img.naturalWidth / img.naturalHeight;
+      const canvasRatio = w / h;
+      let drawW, drawH;
+      if (canvasRatio > imgRatio) {
+        drawW = w;
+        drawH = w / imgRatio;
+      } else {
+        drawH = h;
+        drawW = h * imgRatio;
+      }
+
+      ctx.translate(w / 2, h / 2 + breatheY);
+      ctx.rotate(headTilt);
+      const scale = 1.02;
+      const finalW = drawW * scale;
+      const finalH = drawH * scale;
+      ctx.drawImage(img, -finalW / 2, -finalH / 2, finalW, finalH);
+      ctx.restore();
+
+      // 3. AI 모델 로딩 안내 오버레이 뱃지 (하단)
+      ctx.save();
+      ctx.fillStyle = 'rgba(15, 23, 42, 0.75)';
+      const badgeW = 220;
+      const badgeH = 28;
+      const bx = (w - badgeW) / 2;
+      const by = h - 42;
+      ctx.beginPath();
+      if (typeof ctx.roundRect === 'function') {
+        ctx.roundRect(bx, by, badgeW, badgeH, 14);
+      } else {
+        ctx.rect(bx, by, badgeW, badgeH);
+      }
+      ctx.fill();
+
+      ctx.fillStyle = '#38bdf8';
+      ctx.font = 'bold 12px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText('✨ AI 페이스 모델 준비 중...', w / 2, by + badgeH / 2);
+      ctx.restore();
       return;
     }
-    // 일반 아바타 또는 기본 대기 화면 (실물 얼굴 100% 비노출 보호)
+
+    // 일반 아바타 또는 사진 로딩 대기 (실물 얼굴 100% 비노출 보호)
     ctx.save();
     const bgGrad = ctx.createLinearGradient(0, 0, w, h);
     bgGrad.addColorStop(0, '#090d16');
@@ -905,7 +951,7 @@ export class VirtualAvatarManager {
 
     ctx.fillStyle = '#94a3b8';
     ctx.font = '14px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif';
-    ctx.fillText('실시간 AI 페이스를 적용하고 있습니다...', w / 2, h / 2 + 16);
+    ctx.fillText('선택한 AI 페이스를 적용하고 있습니다...', w / 2, h / 2 + 16);
     ctx.restore();
   }
 

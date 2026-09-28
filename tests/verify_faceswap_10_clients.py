@@ -50,8 +50,8 @@ async def client_task(session, url, cid, frame_bytes, duration, out):
     deadline = time.time() + duration
     async with session.ws_connect(url) as ws:
         await ws.send_json({"type": "hello", "clientId": cid})
-        await ws.send_json({"type": "set_source", "source": "superman"})
-        name = b"superman"
+        await ws.send_json({"type": "set_source", "source": "ID_photo_portrait_20260923152425"})
+        name = b"ID_photo_portrait_20260923152425"
         header = struct.pack(">I", len(name))
         packet = header + name + frame_bytes
         inflight = set()

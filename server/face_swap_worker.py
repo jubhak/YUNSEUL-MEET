@@ -739,6 +739,15 @@ async def handle_stats(request):
     })
 
 
+def get_default_photo_source() -> str:
+    """사용 가능한 첫 번째 사진의 stem을 기본값으로 반환합니다."""
+    if PHOTO_DIR.exists():
+        for p in sorted(PHOTO_DIR.iterdir()):
+            if p.suffix.lower() in [".jpg", ".jpeg", ".png", ".webp"]:
+                return p.stem
+    return ""
+
+
 async def handle_list_photos(request):
     """사용 가능한 얼굴 사진 목록 반환"""
     photos = []
@@ -746,10 +755,7 @@ async def handle_list_photos(request):
         for p in sorted(PHOTO_DIR.iterdir()):
             if p.suffix.lower() in [".jpg", ".jpeg", ".png", ".webp"]:
                 s = p.stem.lower()
-                name = ("슈퍼맨 (Superman)" if s == "superman"
-                        else "배트맨 (Batman)" if s == "batman"
-                        else "스파이더맨 (Spider-Man)" if s == "spiderman"
-                        else p.stem)
+                name = p.stem.replace("_", " ")
                 photos.append({
                     "id": s,
                     "filename": p.name,
@@ -761,7 +767,7 @@ async def handle_list_photos(request):
 
 async def handle_swap_frame(request):
     """HTTP POST 프레임 스왑 (바이너리 입력 -> 바이너리 출력)"""
-    source_name = request.headers.get("X-Source-Face", "superman")
+    source_name = request.headers.get("X-Source-Face") or get_default_photo_source()
     body = await request.read()
     if not body:
         return web.Response(status=400, text="Empty frame body")
@@ -811,7 +817,7 @@ async def handle_websocket(request):
                   or request.query.get("client")
                   or f"ws{client_id}")
     logger.info(f"WebSocket client connected: {client_id} key={client_key}")
-    current_source = "superman"
+    current_source = get_default_photo_source()
 
     CONNECTED_WS.add(ws)
     await broadcast_throttle()
@@ -873,7 +879,7 @@ async def handle_websocket(request):
                         await ws.send_json({"type": "hello_ack", "clientId": client_key})
 
                     elif mtype == "set_source":
-                        req_source = payload.get("source", "superman")
+                        req_source = payload.get("source") or get_default_photo_source()
                         face = await asyncio.to_thread(load_source_face, req_source)
                         current_source = req_source
                         await ws.send_json({
@@ -978,11 +984,12 @@ if __name__ == "__main__":
         get_face_analyser()
         get_face_swapper()
         preload_all_photos()
-        test_img_path = PHOTO_DIR / "superman.jpg"
-        if test_img_path.exists():
+        photos = [p for p in PHOTO_DIR.iterdir() if p.suffix.lower() in [".jpg", ".jpeg", ".png", ".webp"]] if PHOTO_DIR.exists() else []
+        if photos:
+            test_img_path = photos[0]
             test_bytes = test_img_path.read_bytes()
-            swapped = process_frame("superman", test_bytes)
-            print(f"Test swap finished. Input: {len(test_bytes)} bytes -> Output: {len(swapped)} bytes.")
+            swapped = process_frame(test_img_path.stem, test_bytes)
+            print(f"Test swap finished with {test_img_path.name}. Input: {len(test_bytes)} bytes -> Output: {len(swapped)} bytes.")
         print("Diagnostic test completed successfully.")
         sys.exit(0)
 

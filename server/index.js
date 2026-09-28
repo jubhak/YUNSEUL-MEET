@@ -679,12 +679,9 @@ app.get('/api/photos', (_req, res) => {
       const files = fs.readdirSync(PHOTO_DIR).filter((f) => /\.(jpe?g|png|webp)$/i.test(f));
       for (const f of files) {
         const s = path.parse(f).name.toLowerCase();
-        const name = (s === 'superman' ? '슈퍼맨 (Superman)'
-          : s === 'batman' ? '배트맨 (Batman)'
-          : s === 'spiderman' ? '스파이더맨 (Spider-Man)'
-          : path.parse(f).name);
+        const name = path.parse(f).name.replace(/_/g, ' ');
         photos.push({
-          id: path.parse(f).name.toLowerCase(),
+          id: s,
           filename: f,
           name,
           url: `/photo/${encodeURIComponent(f)}`,
@@ -713,7 +710,7 @@ app.post('/api/upload-face', photoUpload.single('photo'), (req, res) => {
 });
 
 app.post('/api/swap-frame', (req, res) => {
-  const sourceFace = req.headers['x-source-face'] || 'superman';
+  const sourceFace = req.headers['x-source-face'] || '';
   const proxyReq = http.request({
     hostname: '127.0.0.1',
     port: Number(process.env.FACE_SWAP_PORT || 8765),
