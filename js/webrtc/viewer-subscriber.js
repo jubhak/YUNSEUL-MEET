@@ -1,5 +1,5 @@
-import { SfuClient } from './sfu-client.js?v=20260926freeze2';
-import { VirtualAvatarManager, openWebcamFlexible, faceModeForRoomCount } from '../virtual-avatar-manager.js?v=20260926swapfix2';
+import { SfuClient } from './sfu-client.js?v=20260927tenuser1';
+import { VirtualAvatarManager, openWebcamFlexible, faceModeForRoomCount } from '../virtual-avatar-manager.js?v=20260927tenuser1';
 
 /**
  * 참가자: SFU에서 호스트 display 수신 + (선택) 마이크/화면 업링크
@@ -43,6 +43,8 @@ export class ViewerSubscriber {
     /** @type {MediaStream|null} */
     this._remoteAudioStream = null;
     this.avatarManager = new VirtualAvatarManager({ width: 640, height: 360, fps: 28 });
+    // 참가자 식별자를 아바타 매니저로 전달 → 워커가 참가자별로 스왑 프레임을 분리
+    try { this.avatarManager.setClientId?.(signaling?.localClientId || null); } catch { /* ignore */ }
     this._faceRoomCount = 1;
     this.rawCameraStream = null;
     /** @type {MediaStream|null} */
@@ -576,8 +578,24 @@ export class ViewerSubscriber {
       this.onMicTrack?.(audioTrack);
       this.avatarManager?.attachMicTrack(audioTrack);
     }
-    const sfu = await this._ensureSfu();
-    await sfu.publishStream(this._micStream, { source: 'viewer-mic' });
+    // 마이크 송출: 서버가 produce를 거부(단방향 방 등)하거나 send transport가
+    // 만료되면 예외가 나는데, 그대로 두면 "마이크를 켰는데 호스트에게 안 들림"
+    // 상태가 된다. 트랜스포트를 재생성해 1회 재시도한다.
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      try {
+        const sfu = await this._ensureSfu();
+        await sfu.publishStream(this._micStream, { source: 'viewer-mic' });
+        this._reportAudioDiag('mic-produce', audioTrack, `ok attempt=${attempt + 1}`);
+        return;
+      } catch (err) {
+        console.warn(`[ViewerSubscriber] mic produce attempt ${attempt + 1} failed`, err);
+        try { this.sfu?.sendTransportAudio?.close?.(); } catch { /* ignore */ }
+        if (this.sfu) this.sfu.sendTransportAudio = null;
+        await new Promise((r) => setTimeout(r, 400));
+      }
+    }
+    this._reportAudioDiag('mic-produce', audioTrack, 'failed');
+    throw new Error('마이크 송출 실패');
   }
 
   async _stopMic() {

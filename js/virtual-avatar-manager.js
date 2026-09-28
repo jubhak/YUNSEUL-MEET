@@ -429,6 +429,17 @@ export class VirtualAvatarManager {
     // WebSocket은 스왑 모드 진입 시에만 연결 (항상 연결하면 워커 준비 후 부하 급증)
     // this._initSwapWebSocket();
 
+    // ── 10인 동시 딥페이크 대응 상태 ─────────────────────────────
+    // clientId: 서버 워커가 참가자별로 프레임 캐시/얼굴 추적을 분리하는 키
+    this.clientId = null;
+    // 동시에 파이프라인에 띄우는 스왑 요청 수. 1이면 워커 응답이 늦을 때마다
+    // 프레임이 통째로 버려져 "정지 → 몰아서 재생"이 반복된다. 2로 올려 지연을 숨긴다.
+    this._maxInFlight = 2;
+    this._inFlight = 0;
+    this._serverFpsCap = 0;
+    this.swapStats = { sent: 0, recv: 0, dropped: 0 };
+    this.onSwapStats = null;
+
     this._startRenderLoop();
   }
 
@@ -678,6 +689,20 @@ export class VirtualAvatarManager {
     }
   }
 
+  /** 스왑 요청 1건 종료 처리 (성공/실패/드랍 공통) */
+  _settleSwap() {
+    this._swapBusy = false;
+    this._inFlight = Math.max(0, this._inFlight - 1);
+  }
+
+  /** 외부(호스트/참가자 코드)에서 참가자 식별자를 주입한다. */
+  setClientId(id) {
+    this.clientId = id || null;
+    if (this._ws && this._ws.readyState === WebSocket.OPEN) {
+      try { this._ws.send(JSON.stringify({ type: 'hello', clientId: this.clientId })); } catch { /* ignore */ }
+    }
+  }
+
   toggleMode() {
     if (this.activeSwapFace && this.activeSwapFace !== 'real' && this.activeSwapFace !== 'none') {
       this.mode = this.mode === 'swap' ? 'virtual' : 'swap';
@@ -730,7 +755,7 @@ export class VirtualAvatarManager {
     this.activeSwapFace = null;
     this._lastSwappedImage = null;
     this._stopSwapPump();
-    this._swapBusy = false;
+    this._settleSwap();
     if (this._lastBitmap) {
       try { this._lastBitmap.close(); } catch { /* ignore */ }
       this._lastBitmap = null;
@@ -804,6 +829,19 @@ export class VirtualAvatarManager {
       this._animId = requestAnimationFrame(render);
     };
     this._animId = requestAnimationFrame(render);
+
+    // 백그라운드 탭에서는 requestAnimationFrame이 멈춘다. 그 상태로 두면
+    // canvas가 마지막 프레임에 고정되고 그대로 captureStream 송출되어
+    // "상대 화면이 멈춤"으로 보인다. 탭 복귀 즉시 강제로 다시 그린다.
+    if (!this._visHandler) {
+      this._visHandler = () => {
+        if (document.visibilityState === 'visible') {
+          lastRenderTime = 0;
+          try { this._renderFrame(); } catch { /* ignore */ }
+        }
+      };
+      document.addEventListener('visibilitychange', this._visHandler);
+    }
 
     if (this._heartbeatTimer) clearInterval(this._heartbeatTimer);
     this._heartbeatTimer = setInterval(() => {
@@ -1442,11 +1480,15 @@ export class VirtualAvatarManager {
     try {
       const host = window.location.host;
       const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-      const wsUrl = `${proto}//${host}/face-swap-ws`;
+      const q = this.clientId ? `?client=${encodeURIComponent(this.clientId)}` : '';
+      const wsUrl = `${proto}//${host}/face-swap-ws${q}`;
       const ws = new WebSocket(wsUrl);
       this._ws = ws;
       ws.binaryType = 'arraybuffer';
       ws.onopen = () => {
+        try {
+          ws.send(JSON.stringify({ type: 'hello', clientId: this.clientId || null }));
+        } catch { /* ignore */ }
         if (this.activeSwapFace) {
           try {
             ws.send(JSON.stringify({ type: 'set_source', source: this.activeSwapFace }));
@@ -1455,6 +1497,8 @@ export class VirtualAvatarManager {
       };
       ws.onmessage = async (event) => {
         if (event.data instanceof ArrayBuffer) {
+          this.swapStats.recv += 1;
+          this.onSwapStats?.(this.swapStats);
           const blob = new Blob([event.data], { type: 'image/jpeg' });
           if (typeof createImageBitmap === 'function') {
             try {
@@ -1465,7 +1509,7 @@ export class VirtualAvatarManager {
               if (old) {
                 try { old.close(); } catch { /* ignore */ }
               }
-              this._swapBusy = false;
+              this._settleSwap();
               return;
             } catch {
               // fallback to DOM Image
@@ -1479,7 +1523,7 @@ export class VirtualAvatarManager {
             this._lastSwappedImage = img;
             this._lastSwappedUrl = img.src;
             this._lastSwapSuccessTime = Date.now();
-            this._swapBusy = false;
+            this._settleSwap();
           };
           img.src = URL.createObjectURL(blob);
         } else if (typeof event.data === 'string') {
@@ -1490,22 +1534,22 @@ export class VirtualAvatarManager {
               this._applyServerThrottle(msg.fps);
             }
           } catch { /* ignore non-JSON text frames */ }
-          this._swapBusy = false;
+          this._settleSwap();
         } else {
-          this._swapBusy = false;
+          this._settleSwap();
         }
       };
       ws.onerror = () => {
         if (this._ws === ws) this._ws = null;
-        this._swapBusy = false;
+        this._settleSwap();
       };
       ws.onclose = () => {
         if (this._ws === ws) this._ws = null;
-        this._swapBusy = false;
+        this._settleSwap();
       };
     } catch {
       this._ws = null;
-      this._swapBusy = false;
+      this._settleSwap();
     }
   }
 
@@ -1514,23 +1558,33 @@ export class VirtualAvatarManager {
       return;
     }
     const now = Date.now();
-    // 응답 대기 중이면 추가 요청 금지 (워커 latest-frame과 맞춰 단일 비행)
-    if (this._swapBusy) {
-      if (now - this._lastSwapReqTime > 2500) {
-        this._swapBusy = false;
-      } else {
-        return;
-      }
+    // [10인 확장 수정] 예전 로직은 _swapBusy 단일 비행 + 2.5초 가드였다.
+    // 워커가 바빠 응답이 늦으면 그 사이 프레임이 전부 버려지고, 마지막
+    // 비트맵만 계속 그려져 화면이 "멈춘 것처럼" 보였다(드랍 폭주 → 정지 →
+    // 몰아서 재생). 이제 상한(_maxInFlight)까지 요청을 파이프라인에 띄워
+    // 지연을 겹쳐 숨기고(pipelining), 상한 초과 시에만 최신 프레임을 버린다.
+    if (this._inFlight >= this._maxInFlight) {
+      this.swapStats.dropped += 1;
+      this.onSwapStats?.(this.swapStats);
+      return;
+    }
+    if (now - this._lastSwapReqTime > 4000) {
+      // 워커 재시작 등으로 응답이 장시간 없으면 카운터를 강제 복구
+      this._inFlight = 0;
+      this._swapBusy = false;
     }
     this._lastSwapReqTime = now;
     this._swapBusy = true;
+    this._inFlight += 1;
+    this.swapStats.sent += 1;
+    this.onSwapStats?.(this.swapStats);
 
     if (!this._ws || this._ws.readyState === WebSocket.CLOSED) {
       this._initSwapWebSocket();
     }
     // WS 미연결이면 다음 틱에 재시도
     if (!this._ws || this._ws.readyState !== WebSocket.OPEN) {
-      this._swapBusy = false;
+      this._settleSwap();
       return;
     }
 
@@ -1558,7 +1612,7 @@ export class VirtualAvatarManager {
 
     oc.toBlob(async (blob) => {
       if (!blob || this.mode !== 'swap') {
-        this._swapBusy = false;
+        this._settleSwap();
         return;
       }
 
@@ -1578,16 +1632,22 @@ export class VirtualAvatarManager {
           return;
         } catch {
           this._ws = null;
-          this._swapBusy = false;
+          this._settleSwap();
         }
       }
 
-      this._swapBusy = false;
+      this._settleSwap();
     }, 'image/jpeg', 0.70);
   }
 
   destroy() {
+    if (this._visHandler) {
+      try { document.removeEventListener('visibilitychange', this._visHandler); } catch { /* ignore */ }
+      this._visHandler = null;
+    }
     this._stopSwapPump();
+    this._inFlight = 0;
+    this._swapBusy = false;
     if (this._animId) {
       cancelAnimationFrame(this._animId);
       this._animId = null;

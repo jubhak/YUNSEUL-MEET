@@ -14,7 +14,7 @@ import { HostPublisher } from './webrtc/host-publisher.js?v=20260926camfix2';
 import { setupChatPanel } from './chat-panel.js?v=20260918fix2';
 import { CamFocusManager, VoiceActivityMonitor } from './cam-focus-manager.js?v=20260926perf1';
 import { TarotLoungeManager } from './tarot-lounge-manager.js?v=20260926meetmobile1';
-import { attachVideoFreezeWatchdog } from './webrtc/video-freeze-watchdog.js?v=20260926swapfix1';
+import { attachVideoFreezeWatchdog } from './webrtc/video-freeze-watchdog.js?v=20260927tenuser1';
 
 const params = new URLSearchParams(window.location.search);
 const roomCode = (params.get('code') || sessionStorage.getItem('roomCode') || '').replace(/[^0-9]/g, '').slice(0, 4);

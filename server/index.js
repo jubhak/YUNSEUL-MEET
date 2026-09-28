@@ -29,7 +29,7 @@ const { spawn } = require('child_process');
 const express = require('express');
 const multer = require('multer');
 const { Server } = require('socket.io');
-const { attachSfuHandlers, cleanupSocketPeer, disposeSfuRoom, detectAnnouncedIp, getListenIps, getRtcPort, getSfuSnapshot, getWorker } = require('./sfu');
+const { attachSfuHandlers, cleanupSocketPeer, disposeSfuRoom, detectAnnouncedIp, getListenIps, getRtcPort, getSfuSnapshot, getWorker, getWorkerCount } = require('./sfu');
 
 const ROOT = path.join(__dirname, '..');
 const DATA_DIR = path.join(ROOT, 'data');
@@ -729,6 +729,7 @@ app.post('/api/swap-frame', (req, res) => {
     proxyRes.pipe(res);
   });
 
+  proxyReq.setNoDelay?.(true);
   proxyReq.on('error', (err) => {
     console.warn('[FaceSwap Proxy] worker error:', err?.message || err);
     res.status(502).json({ ok: false, error: 'Face swap worker unavailable' });
@@ -739,6 +740,25 @@ app.post('/api/swap-frame', (req, res) => {
   });
 
   req.pipe(proxyReq);
+});
+
+/** 페이스스왑 워커 상태/부하/지연 실측 조회 (진단용) */
+app.get('/api/faceswap-status', (_req, res) => {
+  const proxyReq = http.request({
+    hostname: '127.0.0.1',
+    port: Number(process.env.FACE_SWAP_PORT || 8765),
+    path: '/stats',
+    method: 'GET',
+    timeout: 4000,
+  }, (proxyRes) => {
+    res.writeHead(proxyRes.statusCode || 200, proxyRes.headers);
+    proxyRes.pipe(res);
+  });
+  proxyReq.on('error', (err) => {
+    res.status(502).json({ ok: false, error: 'Face swap worker unavailable', detail: err?.message });
+  });
+  proxyReq.on('timeout', () => { proxyReq.destroy(); res.status(504).json({ ok: false, error: 'timeout' }); });
+  proxyReq.end();
 });
 
 app.post('/api/launch-deep-live-cam', (_req, res) => {
@@ -1667,7 +1687,8 @@ server.listen(PORT, HOST, () => {
   console.log('══════════════════════════════════════');
   console.log('  YUNSEUL MEET (SFU 단일 경로)');
   console.log(`  내부: http://${HOST}:${PORT}/`);
-  console.log(`  SFU RTC: ${getRtcPort()} UDP+TCP (UDP 우선)`);
+  console.log(`  SFU RTC: ${getRtcPort()}~${getRtcPort() + Math.max(0, getWorkerCount() - 1)} UDP+TCP (UDP 우선)`);
+  console.log(`  SFU Workers: ${getWorkerCount()}개 (MEDIASOUP_WORKERS)`);
   console.log(`  SFU ICE IPs: ${getListenIps().map((x) => x.announcedAddress || x.announcedIp).join(', ')}`);
   console.log('  공개: https://ppt.smrun.net/  (Apache 프록시)');
   console.log(`  빈 방 유예: ${Math.round(EMPTY_ROOM_GRACE_MS / 1000)}s · 스윕: ${Math.round(ROOM_SWEEP_MS / 1000)}s`);
@@ -1692,11 +1713,21 @@ server.on('upgrade', (req, socket, head) => {
     const net = require('net');
     const port = Number(process.env.FACE_SWAP_PORT || 8765);
     const proxySocket = net.connect(port, '127.0.0.1', () => {
+      // 실시간 프레임은 작은 바이너리 1건 = 1패킷이다. Nagle이 켜져 있으면
+      // 프레임이 최대 40ms씩 지연 병합되어 "고속 재생/멈칫거림"이 생긴다.
+      try { proxySocket.setNoDelay(true); } catch { /* ignore */ }
+      try { socket.setNoDelay(true); } catch { /* ignore */ }
       const targetPath = req.url.replace('/face-swap-ws', '/ws');
       const lines = [`${req.method} ${targetPath} HTTP/1.1`];
       for (const [k, v] of Object.entries(req.headers)) {
         lines.push(`${k}: ${v}`);
       }
+      // 참가자 식별자 전달 — 워커가 참가자별로 프레임 캐시/얼굴 추적을 분리한다
+      try {
+        const u = new URL(req.url, 'http://localhost');
+        const cid = u.searchParams.get('client');
+        if (cid) lines.push(`X-Client-Id: ${cid}`);
+      } catch { /* ignore */ }
       lines.push('\r\n');
       proxySocket.write(lines.join('\r\n'));
       if (head && head.length) proxySocket.write(head);
@@ -1756,7 +1787,8 @@ function _spawnFaceSwapWorkerProcess() {
   if (!fs.existsSync(workerScript)) return;
 
   const pythonCmd = getPythonCmd();
-  console.log(`[FaceSwap] starting worker with ${pythonCmd}...`);
+  const workersEnv = process.env.FACE_SWAP_WORKERS || 'auto';
+  console.log(`[FaceSwap] starting worker with ${pythonCmd} (FACE_SWAP_WORKERS=${workersEnv})...`);
 
   try {
     faceSwapProcess = spawn(pythonCmd, ['-u', workerScript], {

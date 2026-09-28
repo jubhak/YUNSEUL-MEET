@@ -172,7 +172,14 @@ export class SfuClient {
         kind,
         rtpParameters,
         appData,
-      }).then((res) => callback({ id: res.id })).catch(errback);
+      }).then((res) => {
+        // 서버가 produce를 거부(res.error)하면 callback이 영영 호출되지 않아
+        // 이후 마이크/영상 송출이 조용히 죽는다(가장 흔한 "마이크 안 들림" 원인).
+        if (!res || res.error || !res.id) {
+          return errback(new Error(res?.error || 'produce-rejected'));
+        }
+        return callback({ id: res.id });
+      }).catch(errback);
     });
     return transport;
   }
@@ -333,15 +340,31 @@ export class SfuClient {
     }
   }
 
-  getProducerByKind(kind) {
-    for (const producer of this.producers.values()) {
-      if (!producer.closed && producer.kind === kind) return producer;
+  /** 같은 kind 중 특정 source(display/camera/...)를 우선 선택한다.
+   * 기존 구현은 Map 삽입 순서상 'display' producer를 집어와, 카메라 교체
+   * 요청이 화면공유 트랙을 바꿔버리는 사고가 가능했다. */
+  getProducerByKind(kind, sourceHint = null) {
+    let fallback = null;
+    for (const [key, producer] of this.producers.entries()) {
+      if (!producer || producer.closed || producer.kind !== kind) continue;
+      if (!sourceHint) return producer;
+      if (key.startsWith(`${sourceHint}:`)) return producer;
+      if (!fallback) fallback = producer; // sourceHint가 있는데 못 찾으면 null
     }
-    return null;
+    return sourceHint ? null : fallback;
+  }
+
+  /** source별 video producer 트랙 교체 (예: 'camera', 'display') */
+  async replaceProducerTrackForSource(source, track) {
+    const producer = this.getProducerByKind('video', source);
+    if (!producer) return false;
+    await producer.replaceTrack({ track: track || null });
+    return true;
   }
 
   async replaceVideoTrack(track) {
-    const producer = this.getProducerByKind('video');
+    // 호환용: 기존 동작과 동일하게 display producer를 우선 교체
+    const producer = this.getProducerByKind('video', 'display') || this.getProducerByKind('video');
     if (!producer) return false;
     await producer.replaceTrack({ track: track || null });
     return true;
@@ -419,8 +442,10 @@ export class SfuClient {
         if (receiver) {
           // 모바일/무선 환경에서 0은 패킷 지터 시 버퍼 고갈로 인한 멈춤 후 고속 재생(fast-forward)의 치명적 원인이 됨
           // 100ms(0.1초)의 안정적인 적응형 재생 버퍼를 지정하여 프레임 밀림 및 고속 재생 완벽 제거
-          if ('playoutDelayHint' in receiver) receiver.playoutDelayHint = 0.1;
-          if ('jitterBufferTarget' in receiver) receiver.jitterBufferTarget = 100;
+          // 영상 150ms(프레임 드랍 없이 부드럽게) / 오디오 60ms(대화 지연 최소)
+          const isVideo = (res.kind || info?.kind) === 'video';
+          if ('playoutDelayHint' in receiver) receiver.playoutDelayHint = isVideo ? 0.15 : 0.06;
+          if ('jitterBufferTarget' in receiver) receiver.jitterBufferTarget = isVideo ? 150 : 60;
         }
       } catch { /* ignore */ }
       this.remoteStream.addTrack(consumer.track);

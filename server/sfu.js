@@ -97,14 +97,14 @@ function getRtcPort() {
  * 동일 ip:port를 announcedAddress만 바꿔 두 번 bind하면 EADDRINUSE →
  * 공인은 0.0.0.0, LAN은 LAN IPv4에 각각 바인드(가능하면 둘 다 ICE 후보).
  */
-function buildListenInfos() {
+function buildListenInfos(port = RTC_PORT) {
   const listenIp = process.env.MEDIASOUP_LISTEN_IP || '0.0.0.0';
   const publicIp = process.env.MEDIASOUP_ANNOUNCED_IP || null;
   const lanIp = detectLanIp();
   const infos = [];
   const pushPair = (ip, announcedAddress) => {
-    infos.push({ protocol: 'udp', ip, announcedAddress, port: RTC_PORT });
-    infos.push({ protocol: 'tcp', ip, announcedAddress, port: RTC_PORT });
+    infos.push({ protocol: 'udp', ip, announcedAddress, port });
+    infos.push({ protocol: 'tcp', ip, announcedAddress, port });
   };
 
   if (publicIp && lanIp && publicIp !== lanIp) {
@@ -119,17 +119,39 @@ function buildListenInfos() {
   return infos;
 }
 
-/** @type {import('mediasoup').types.Worker | null} */
-let worker = null;
-/** @type {import('mediasoup').types.WebRtcServer | null} */
-let webRtcServer = null;
+/**
+ * ── mediasoup Worker 풀 (10인 이상 다자간 확장의 핵심 수정) ──────────
+ * 기존 구현은 Worker 프로세스를 "단 1개"만 만들었다. mediasoup Worker는
+ * 단일 스레드(자체 이벤트 루프)에서 모든 RTP 패킷을 복사·라우팅하므로,
+ * 참가자가 4명을 넘어 producer/consumer 수가 늘어나면 그 한 프로세스가
+ * 병목이 되어 전 참가자의 영상이 함께 멈칫거린다(N명 × N-1 소비 구조).
+ * → CPU 코어 수에 맞춰 Worker를 여러 개 띄우고, 방(Router)을 least-loaded
+ *   로 분산한다. 각 Worker는 자기 전용 WebRtcServer(포트 자동 증가)를 갖는다.
+ */
+const osCpuCount = Math.max(1, (os.cpus() || []).length || 1);
 
-/** roomCode -> SfuRoom */
-const sfuRooms = new Map();
+function resolveWorkerCount() {
+  const raw = String(process.env.MEDIASOUP_WORKERS || '').trim().toLowerCase();
+  if (raw === 'auto') return Math.max(1, osCpuCount - 1);
+  const n = Number(raw);
+  if (Number.isFinite(n) && n > 0) return Math.max(1, Math.min(Math.floor(n), 16));
+  return Math.max(2, Math.min(8, Math.floor(osCpuCount / 2) || 2));
+}
+
+const WORKER_COUNT = resolveWorkerCount();
+/** 워커별 RTC 포트 간격 (기본 44444 → 44445, 44446 ...) */
+const RTC_PORT_SPAN = Number(process.env.MEDIASOUP_RTC_PORT_SPAN || 32);
+
+/** @type {Array<{index:number, worker:any, webRtcServer:any, routers:number}>} */
+const workerPool = [];
+let workerInitPromise = null;
+let poolSeq = 0;
 
 /**
  * @typedef {{
  *  router: import('mediasoup').types.Router,
+ *  webRtcServer: import('mediasoup').types.WebRtcServer|null,
+ *  entry: object|null,
  *  peers: Map<string, SfuPeer>,
  * }} SfuRoom
  *
@@ -142,52 +164,90 @@ const sfuRooms = new Map();
  * }} SfuPeer
  */
 
-async function getWorker() {
-  if (worker && !worker.closed && webRtcServer && !webRtcServer.closed) {
-    return worker;
-  }
-  if (webRtcServer && !webRtcServer.closed) {
-    try { webRtcServer.close(); } catch { /* ignore */ }
-  }
-  webRtcServer = null;
-  if (worker && !worker.closed) {
-    try { worker.close(); } catch { /* ignore */ }
-  }
-
-  worker = await mediasoup.createWorker({
+async function createPoolEntry(index) {
+  const port = RTC_PORT + (index % RTC_PORT_SPAN);
+  const w = await mediasoup.createWorker({
     logLevel: process.env.MEDIASOUP_LOG || 'warn',
   });
-  worker.on('died', () => {
-    console.error('[sfu] mediasoup worker died');
-    worker = null;
-    webRtcServer = null;
+  const entry = { index, worker: w, webRtcServer: null, routers: 0 };
+  workerPool.push(entry);
+
+  w.on('died', () => {
+    console.error(`[sfu] mediasoup worker#${index} died — respawning`);
+    try { entry.webRtcServer?.close(); } catch { /* ignore */ }
+    const i = workerPool.indexOf(entry);
+    if (i >= 0) workerPool.splice(i, 1);
+    setTimeout(() => { ensureWorkerPool().catch(() => {}); }, 500);
   });
 
-  const listenInfos = buildListenInfos();
-  webRtcServer = await worker.createWebRtcServer({ listenInfos });
+  try {
+    entry.webRtcServer = await w.createWebRtcServer({ listenInfos: buildListenInfos(port) });
+  } catch (err) {
+    console.error(`[sfu] worker#${index} RTC port ${port} bind failed: ${err.message}`);
+    entry.webRtcServer = null;
+  }
   console.log(
-    `[sfu] worker pid=${worker.pid} rtcPort=${RTC_PORT} ice=${getAnnouncedAddresses().join(',')}`
+    `[sfu] worker#${index} ready pid=${w.pid} rtcPort=${port} ice=${getAnnouncedAddresses().join(',')}`
   );
-  return worker;
+  return entry;
+}
+
+async function ensureWorkerPool() {
+  if (workerPool.length >= WORKER_COUNT) return workerPool;
+  if (workerInitPromise) return workerInitPromise;
+  workerInitPromise = (async () => {
+    const need = WORKER_COUNT - workerPool.length;
+    const jobs = [];
+    for (let i = 0; i < need; i += 1) {
+      jobs.push(createPoolEntry(poolSeq % RTC_PORT_SPAN));
+      poolSeq += 1;
+    }
+    await Promise.all(jobs);
+    console.log(`[sfu] worker pool ready: ${workerPool.length}/${WORKER_COUNT}`);
+    return workerPool;
+  })();
+  try { return await workerInitPromise; } finally { workerInitPromise = null; }
+}
+
+function pickLeastLoaded() {
+  if (!workerPool.length) return null;
+  return workerPool.reduce((a, b) => ((b.routers || 0) < (a.routers || 0) ? b : a), workerPool[0]);
+}
+
+async function getWorker() {
+  await ensureWorkerPool();
+  const entry = pickLeastLoaded();
+  if (!entry) throw new Error('mediasoup worker pool empty');
+  return entry.worker;
 }
 
 async function getWebRtcServer() {
-  await getWorker();
-  if (!webRtcServer || webRtcServer.closed) {
-    throw new Error('WebRtcServer unavailable');
-  }
-  return webRtcServer;
+  await ensureWorkerPool();
+  const entry = pickLeastLoaded();
+  if (!entry?.webRtcServer || entry.webRtcServer.closed) throw new Error('WebRtcServer unavailable');
+  return entry.webRtcServer;
 }
 
 async function getOrCreateRoom(roomCode) {
   const code = String(roomCode || '');
   let room = sfuRooms.get(code);
   if (room && !room.router.closed) return room;
-  const w = await getWorker();
-  const router = await w.createRouter({ mediaCodecs });
-  room = { router, peers: new Map() };
+  await ensureWorkerPool();
+  const entry = pickLeastLoaded();
+  if (!entry) throw new Error('mediasoup worker pool empty');
+  const router = await entry.worker.createRouter({ mediaCodecs });
+  entry.routers = (entry.routers || 0) + 1;
+  room = { router, webRtcServer: entry.webRtcServer, entry, peers: new Map() };
   sfuRooms.set(code, room);
+  console.log(`[sfu] router room=${code} worker#${entry.index} load=${entry.routers}`);
   return room;
+}
+
+/** 방 폐기 시 워커 부하 카운터 반환 */
+function releaseRoomWorker(room) {
+  if (!room || !room.entry) return;
+  room.entry.routers = Math.max(0, (room.entry.routers || 1) - 1);
+  room.entry = null;
 }
 
 function getPeer(room, clientId) {
@@ -264,17 +324,23 @@ const DEFAULT_ICE_SERVERS = [
   { urls: 'stun:stun2.l.google.com:19302' },
 ];
 
-async function createWebRtcTransport(router) {
-  const server = await getWebRtcServer();
+async function createWebRtcTransport(room) {
+  const router = room.router;
+  const server = (room.webRtcServer && !room.webRtcServer.closed)
+    ? room.webRtcServer
+    : await getWebRtcServer();
   const transport = await router.createWebRtcTransport({
     webRtcServer: server,
     enableUdp: true,
     enableTcp: true,
     // 공유기 UDP 40000–49999(44444 포함) 활용. TCP는 보조.
     preferUdp: true,
-    initialAvailableOutgoingBitrate: 1_000_000,
+    // 10인 다자간에서는 호스트 수신 트랜스포트가 카메라 10개 + 마이크 10개를
+    // 동시에 내려받는다. 초기 대역폭을 높여 ramp-up 동안의 화질 붕괴/멈춤을 줄인다.
+    initialAvailableOutgoingBitrate: 2_500_000,
     minimumAvailableOutgoingBitrate: 300_000,
-    maxIncomingBitrate: 3_500_000,
+    maxIncomingBitrate: 8_000_000,
+    enableSctp: false,
   });
   return {
     transport,
@@ -320,6 +386,8 @@ async function getSfuSnapshot(roomCode) {
       exists: false,
       rtcPort: RTC_PORT,
       iceIps: getAnnouncedAddresses(),
+      workerCount: WORKER_COUNT,
+      workers: workerPool.map((e) => ({ index: e.index, pid: e.worker.pid, routers: e.routers })),
       peers: [],
     };
   }
@@ -379,6 +447,8 @@ async function getSfuSnapshot(roomCode) {
     code,
     exists: true,
     rtcPort: RTC_PORT,
+    workerCount: WORKER_COUNT,
+    workers: workerPool.map((e) => ({ index: e.index, pid: e.worker.pid, routers: e.routers })),
     iceIps: getAnnouncedAddresses(),
     peerCount: peers.length,
     producerCount: peers.reduce((n, p) => n + p.producers.length, 0),
@@ -412,6 +482,7 @@ function closeRoomIfEmpty(roomCode) {
   if (!room) return;
   if (room.peers.size > 0) return;
   try { room.router.close(); } catch { /* ignore */ }
+  releaseRoomWorker(room);
   sfuRooms.delete(roomCode);
 }
 
@@ -421,20 +492,33 @@ function closeRoomIfEmpty(roomCode) {
  * @param {{ getRoomCode: () => string, getClientId: () => string, getRole: () => string, io: import('socket.io').Server }} ctx
  */
 const lastProducerPliTimes = new Map(); // producerId -> timestamp
+const consumerInitialPliDone = new Set(); // consumerId -> 최초 PLI 완료
 
-async function requestKeyframeThrottled(consumer) {
+/**
+ * 키프레임(PLI) 요청 스로틀.
+ * [멈춤 원인 수정] 기존에는 producer 단위 전역 쿨다운만 있어서, 늦게 입장한
+ * 참가자의 "최초 키프레임 요청"이 직전 참가자의 요청에 막혀 최대 수 초간
+ * 검은 화면/정지 상태로 남았다. 이제 각 consumer의 첫 요청은 무조건 통과시키고,
+ * 부하(활성 비디오 producer 수)가 클수록 쿨다운을 늘려 PLI 폭풍을 막는다.
+ */
+async function requestKeyframeThrottled(consumer, { force = false } = {}) {
   if (!consumer || consumer.closed || consumer.kind !== 'video') return;
   const producerId = consumer.producerId;
   const now = Date.now();
-  const lastTime = lastProducerPliTimes.get(producerId) || 0;
-  // 다중 시청자 동시 접속 시 키프레임(PLI) 폭풍 방지
-  // 얼굴(저해상)은 1.2초, 화면공유는 2.5초
-  const source = consumer.appData?.source || '';
-  const isFace = source === 'camera' || source === 'viewer-camera';
-  const minGap = isFace ? 3000 : 2500;
-  if (now - lastTime < minGap) {
+
+  if (force || !consumerInitialPliDone.has(consumer.id)) {
+    consumerInitialPliDone.add(consumer.id);
+    lastProducerPliTimes.set(producerId, now);
+    try { await consumer.requestKeyFrame(); } catch { /* ignore */ }
     return;
   }
+
+  const lastTime = lastProducerPliTimes.get(producerId) || 0;
+  const source = consumer.appData?.source || '';
+  const isFace = source === 'camera' || source === 'viewer-camera';
+  const loadFactor = Math.min(4000, lastProducerPliTimes.size * 250);
+  const minGap = (isFace ? 3000 : 2500) + loadFactor;
+  if (now - lastTime < minGap) return;
   lastProducerPliTimes.set(producerId, now);
   try {
     await consumer.requestKeyFrame();
@@ -485,7 +569,7 @@ function attachSfuHandlers(socket, ctx) {
           peer.transports.delete(oldId);
         }
       }
-      const { transport, params } = await createWebRtcTransport(room.router);
+      const { transport, params } = await createWebRtcTransport(room);
       peer.transports.set(transport.id, transport);
       transport.appData = { direction, clientId };
       const label = `${code}/${peer.role}/${direction}/${String(clientId).slice(0, 8)}`;
@@ -665,8 +749,14 @@ function attachSfuHandlers(socket, ctx) {
         ignoreDtx: true,
         paused: true,
       });
+      // 참가자 입장 직후 "화면이 몇 초간 멈춘 채" 보이는 현상 제거:
+      // consumer 생성 즉시 강제 키프레임을 1장 받아 디코더를 바로 깨운다.
+      if (consumer.kind === 'video') {
+        try { await consumer.requestKeyFrame(); } catch { /* ignore */ }
+      }
       peer.consumers.set(consumer.id, consumer);
       consumer.on('transportclose', () => peer.consumers.delete(consumer.id));
+      consumer.on('close', () => consumerInitialPliDone.delete(consumer.id));
       consumer.on('producerclose', () => {
         peer.consumers.delete(consumer.id);
         socket.emit('sfu-producer-closed', { producerId, consumerId: consumer.id });
@@ -806,6 +896,7 @@ function disposeSfuRoom(roomCode) {
     closePeer(room, clientId);
   }
   try { room.router.close(); } catch { /* ignore */ }
+  releaseRoomWorker(room);
   sfuRooms.delete(roomCode);
 }
 
@@ -822,4 +913,5 @@ module.exports = {
   getAnnouncedAddresses,
   getWorker,
   getWebRtcServer,
+  getWorkerCount: () => WORKER_COUNT,
 };

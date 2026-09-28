@@ -1,6 +1,6 @@
 import { TRACK_KIND } from './config.js';
-import { SfuClient } from './sfu-client.js?v=20260926freeze2';
-import { VirtualAvatarManager, openWebcamFlexible, faceModeForRoomCount } from '../virtual-avatar-manager.js?v=20260926swapfix2';
+import { SfuClient } from './sfu-client.js?v=20260927tenuser1';
+import { VirtualAvatarManager, openWebcamFlexible, faceModeForRoomCount } from '../virtual-avatar-manager.js?v=20260927tenuser1';
 
 /**
  * Host -> SFU display share (+ optional tab audio / mic).
@@ -43,6 +43,8 @@ export class HostPublisher {
     /** @type {((info: { peerId: string|null, active: boolean, stream?: MediaStream|null }) => void)|null} */
     this.onRelayChange = null;
     this.avatarManager = new VirtualAvatarManager({ width: 640, height: 360, fps: 28 });
+    // 참가자 식별자를 아바타 매니저로 전달 → 워커가 참가자별로 스왑 프레임을 분리
+    try { this.avatarManager.setClientId?.(signaling?.localClientId || null); } catch { /* ignore */ }
     this._faceRoomCount = 1;
     this.rawCameraStream = null;
     /** @type {MediaStream|null} */
@@ -409,7 +411,7 @@ export class HostPublisher {
           trackKind: TRACK_KIND.MIC,
         });
       } catch (err) {
-        console.warn('[HostPublisher] mic produce', err);
+        console.warn('[HostPublisher] mic produce failed', err);
       }
     }
 
@@ -665,15 +667,9 @@ export class HostPublisher {
       if (!this.kinds.includes(TRACK_KIND.MIC)) this.kinds.push(TRACK_KIND.MIC);
       this.micWanted = !!enabled;
       if (this.active) {
-        try {
-          const sfu = await this._ensureSfu();
-          await sfu.publishStream(new MediaStream([rawTrack]), {
-            source: 'mic',
-            trackKind: TRACK_KIND.MIC,
-          });
-        } catch (err) {
-          console.warn('[HostPublisher] mic produce', err);
-        }
+        // 마이크 송출은 실패를 조용히 삼키면 "상대에게 내 목소리가 안 들림"이
+        // 되고 사용자는 아무 단서를 못 얻는다. 실패 시 1회 재시도 후 상태 보고.
+        await this._publishMicWithRetry(rawTrack);
       }
       this._startHostMicLevelWatch(rawTrack);
       this.onMicTrack?.(rawTrack);
@@ -684,6 +680,60 @@ export class HostPublisher {
       console.warn('[HostPublisher] mic failed', err);
       return false;
     }
+  }
+
+  /**
+   * 마이크 트랙 송출 (실패 시 짧은 지연 후 1회 재시도).
+   * 서버가 produce를 거부하거나 send transport가 만료된 경우에도
+   * 사용자가 마이크를 껐다 켜는 번거로움 없이 자동 복구되게 한다.
+   */
+  async _publishMicWithRetry(track) {
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      try {
+        const sfu = await this._ensureSfu();
+        if (!sfu) throw new Error('sfu-unavailable');
+        await sfu.publishStream(new MediaStream([track]), {
+          source: 'mic',
+          trackKind: TRACK_KIND.MIC,
+        });
+        this.hostMicState = 'on';
+        this._reportMicState('on');
+        return true;
+      } catch (err) {
+        console.warn(`[HostPublisher] mic produce attempt ${attempt + 1} failed`, err);
+        try { this.sfu?.sendTransportAudio?.close?.(); } catch { /* ignore */ }
+        if (this.sfu) this.sfu.sendTransportAudio = null; // 다음 시도에서 재생성
+        await new Promise((r) => setTimeout(r, 400));
+      }
+    }
+    this.hostMicState = 'error';
+    this._reportMicState('error');
+    return false;
+  }
+
+  /** 서버 room.hostMicState 갱신 + 진단 로그 */
+  _reportMicState(state) {
+    try {
+      this.signaling?.socket?.emit?.('mic-status', { state });
+      this.signaling?.socket?.emit?.('client-diag', {
+        kind: state === 'error' ? 'host-mic' : 'host-mic',
+        event: 'produce',
+        state,
+        tracks: (this._micTracks || []).map((t) => ({
+          enabled: t?.enabled, muted: t?.muted, readyState: t?.readyState,
+        })),
+      });
+    } catch { /* ignore */ }
+  }
+
+  /** 마이크가 실제로 살아 있는지(송출 producer 존재 여부) */
+  hasLiveMicProducer() {
+    const sfu = this.sfu;
+    if (!sfu?.producers) return false;
+    for (const [key, producer] of sfu.producers.entries()) {
+      if (key.startsWith('mic:') && producer && !producer.closed) return true;
+    }
+    return false;
   }
 
   setTabAudioEnabled(on) {
@@ -697,6 +747,11 @@ export class HostPublisher {
     this._micTracks.forEach((t) => {
       if (t) t.enabled = !!on;
     });
+    // 켜는 순간 producer가 유실되어 있으면(트랜스포트 재협상/서버 거부 등)
+    // 여기서 즉시 재송출한다. 이 경로가 없으면 "켰는데 안 들린다" 상태로 굳는다.
+    if (on && this.active && this._micTracks[0] && !this.hasLiveMicProducer()) {
+      this._publishMicWithRetry(this._micTracks[0]).catch(() => {});
+    }
     const activeMicTrack = on ? (this._micTracks[0] || null) : null;
     this.onMicTrack?.(activeMicTrack);
     this.avatarManager?.attachMicTrack(activeMicTrack);
@@ -746,10 +801,13 @@ export class HostPublisher {
     return ms;
   }
 
-  async _replaceOutboundVideo(track) {
+  async _replaceOutboundVideo(track, source = 'display') {
     if (!this.sfu) return;
     try {
-      await this.sfu.replaceVideoTrack(track || null);
+      // 소스별로 정확한 producer만 교체한다. 예전에는 Map 삽입 순서로 첫 video
+      // producer를 집어서, 카메라 트랙 교체가 화면공유 송출을 바꿔버릴 수 있었다.
+      const ok = await this.sfu.replaceProducerTrackForSource(source, track || null);
+      if (!ok) await this.sfu.replaceVideoTrack(track || null);
     } catch (err) {
       console.warn('[HostPublisher] replace video', err);
       await this._publishToSfu();

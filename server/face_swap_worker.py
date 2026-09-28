@@ -14,6 +14,7 @@ import struct
 import logging
 import uuid
 import threading
+import collections
 import multiprocessing as mp
 import queue as queue_mod
 from pathlib import Path
@@ -34,6 +35,16 @@ if str(DLC_DIR) not in sys.path:
     sys.path.insert(0, str(DLC_DIR))
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
+
+# ONNX Runtime / OpenMP 스레드 수를 워커당 1~2로 제한한다.
+# 워커(추론 프로세스)를 여러 개 띄울 때 각 프로세스가 CPU 전 코어를 잡으면
+# 스레드 스래싱으로 총 처리량이 오히려 떨어진다. 반드시 onnxruntime/cv2
+# import 이전에 설정해야 하므로 여기(최상단 주입부)에서 처리한다.
+if os.environ.get("FACE_SWAP_SET_THREADS", "1") == "1":
+    _thr = str(int(os.environ.get("FACE_SWAP_OMP_THREADS", "2")))
+    for _k in ("OMP_NUM_THREADS", "ORT_NUM_THREADS", "MKL_NUM_THREADS",
+               "OPENBLAS_NUM_THREADS", "NUMEXPR_NUM_THREADS"):
+        os.environ.setdefault(_k, _thr)
 
 import cv2
 import numpy as np
@@ -193,7 +204,125 @@ def precision_beauty_skin(frame: np.ndarray, target_face=None) -> np.ndarray:
         return frame
 
 
+# ── 참가자별 최근 스왑 프레임 캐시 ──────────────────────────────
+# 키: f"{client_key}|{source_key}"
+# 기존 구현은 소스 얼굴 이름만으로 전역 키를 만들었다. 그래서 두 참가자가
+# 같은 얼굴(superman 등)을 쓰면 서로의 스왑 프레임을 폴백으로 받아가
+# 화면 크로스토크가 발생했다(사생활 보호 관점에서도 치명적).
 LAST_SWAPPED_FRAMES = {}
+_MAX_CLIENT_CACHE = int(os.environ.get("FACE_SWAP_CACHE_PER_CLIENT", "48"))
+
+# ── 참가자별 얼굴 추적 캐시 ─────────────────────────────────────
+# 매 프레임 RetinaFace 전체 검출(640×640, 15~30ms)을 돌리는 것이 10인
+# 동시 접속에서 처리량이 무너지는 1순위 원인이었다. 프레임마다가 아니라
+# N프레임(FACE_SWAP_DETECT_EVERY)마다 1회만 검출하고 그 사이는 bbox/kps를
+# 재사용한다. 재사용 전에 해당 영역 픽셀 변화량을 확인하여 얼굴이 크게
+# 움직였거나 다른 사람이 들어오면 즉시 재검출한다.
+_TRACK_CACHE = {}
+_FRAME_SEQ = collections.Counter()
+_DETECT_EVERY = max(1, int(os.environ.get("FACE_SWAP_DETECT_EVERY", "5")))
+
+
+def _cache_key(client_key: str, source_key: str) -> str:
+    return f"{(client_key or 'anon')}|{source_key or 'none'}"
+
+
+def _cache_get(client_key: str, source_key: str):
+    return LAST_SWAPPED_FRAMES.get(_cache_key(client_key, source_key))
+
+
+def _cache_put(client_key: str, source_key: str, data: bytes):
+    if not data:
+        return
+    k = _cache_key(client_key, source_key)
+    if len(LAST_SWAPPED_FRAMES) > _MAX_CLIENT_CACHE and k not in LAST_SWAPPED_FRAMES:
+        for kk in list(LAST_SWAPPED_FRAMES.keys())[: max(1, _MAX_CLIENT_CACHE // 4)]:
+            LAST_SWAPPED_FRAMES.pop(kk, None)
+    LAST_SWAPPED_FRAMES[k] = data
+
+
+def _blur_faces(frame: np.ndarray, faces) -> np.ndarray:
+    """[사생활 보호] 스왑이 실패한 프레임에서 얼굴 영역만 안전하게 가린다."""
+    out = frame.copy()
+    blurred_any = False
+    for tf in faces or []:
+        fx1, fy1, fx2, fy2 = [int(v) for v in tf.bbox]
+        fx1, fy1 = max(0, fx1), max(0, fy1)
+        fx2, fy2 = min(frame.shape[1], fx2), min(frame.shape[0], fy2)
+        if fx2 > fx1 + 5 and fy2 > fy1 + 5:
+            roi = out[fy1:fy2, fx1:fx2]
+            kw = max(15, min(99, ((fx2 - fx1) // 2) * 2 + 1))
+            kh = max(15, min(99, ((fy2 - fy1) // 2) * 2 + 1))
+            out[fy1:fy2, fx1:fx2] = cv2.GaussianBlur(roi, (kw, kh), 30)
+            blurred_any = True
+    if not blurred_any:
+        out = cv2.GaussianBlur(frame, (99, 99), 30)
+    return out
+
+
+def _track_faces(frame: np.ndarray, client_key: str):
+    """추적 기반 얼굴 검출 (검출 횟수를 1/N로 축소)."""
+    from insightface.app.common import Face
+
+    seq = _FRAME_SEQ[client_key] + 1
+    _FRAME_SEQ[client_key] = seq
+    cached = _TRACK_CACHE.get(client_key)
+
+    reuse = False
+    if cached and (seq % _DETECT_EVERY) != 0:
+        bx1, by1, bx2, by2 = cached["bbox"]
+        h, w = frame.shape[:2]
+        x1, y1 = max(0, int(bx1)), max(0, int(by1))
+        x2, y2 = min(w, int(bx2)), min(h, int(by2))
+        if x2 - x1 > 12 and y2 - y1 > 12:
+            try:
+                patch = cv2.resize(frame[y1:y2, x1:x2], (16, 16),
+                                   interpolation=cv2.INTER_AREA).astype(np.float32)
+                ref = cached.get("patch")
+                if ref is None:
+                    reuse = True
+                else:
+                    # 조명/미세 움직임은 diff가 작고, 자리 이동·다른 사람 등장은 크다
+                    reuse = float(np.mean(np.abs(patch - ref))) < 18.0
+                cached["patch"] = patch
+            except Exception:
+                reuse = False
+
+    if reuse:
+        return [Face(bbox=np.asarray(cached["bbox"], dtype=np.float32),
+                     kps=np.asarray(cached["kps"], dtype=np.float32),
+                     det_score=float(cached.get("det_score", 0.9)))]
+
+    faces = detect_many_faces_fast(frame)
+    if not faces:
+        _TRACK_CACHE.pop(client_key, None)
+        return []
+
+    # 실시간 라이브: 가장 큰 얼굴 1명 (다중 얼굴 스왑은 지연 폭증)
+    faces = sorted(
+        faces,
+        key=lambda f: (float(f.bbox[2]) - float(f.bbox[0])) * (float(f.bbox[3]) - float(f.bbox[1])),
+        reverse=True,
+    )[:1]
+    f = faces[0]
+    bx1, by1, bx2, by2 = [float(v) for v in f.bbox]
+    h, w = frame.shape[:2]
+    x1, y1 = max(0, int(bx1)), max(0, int(by1))
+    x2, y2 = min(w, int(bx2)), min(h, int(by2))
+    patch = None
+    if x2 - x1 > 12 and y2 - y1 > 12:
+        try:
+            patch = cv2.resize(frame[y1:y2, x1:x2], (16, 16),
+                               interpolation=cv2.INTER_AREA).astype(np.float32)
+        except Exception:
+            patch = None
+    _TRACK_CACHE[client_key] = {
+        "bbox": [bx1, by1, bx2, by2],
+        "kps": np.asarray(f.kps, dtype=np.float32),
+        "det_score": float(getattr(f, "det_score", 0.9) or 0.9),
+        "patch": patch,
+    }
+    return [f]
 
 # ----------------------------------------------------
 # 동시 접속자(딥페이크 활성 참가자) 수 기반 적응형 스로틀링
@@ -209,21 +338,78 @@ LAST_SWAPPED_FRAMES = {}
 # 총량"이 실시간 예산(약 33~50ms/frame)을 넘지 않도록 맞춘다.
 # ----------------------------------------------------
 CONNECTED_WS = set()
-INFERENCE_SEMAPHORE = asyncio.Semaphore(3)  # 동시에 GPU 추론 스레드에 진입 가능한 최대 프레임 수
+INFERENCE_SEMAPHORE = asyncio.Semaphore(3)  # (비풀 모드) 동시 추론 상한
+WORKER_COUNT_EFFECTIVE = 0  # start_server 에서 확정
+
+# ── 처리 지연 실측 기반 백프레셔 ────────────────────────────────
+# 기존 구현은 "접속자 수"만 보고 고정 표로 fps를 낮췄다(10명이면 8fps).
+# 하지만 8fps × 10명 = 80fps 요구인데 워커 2개 처리능력은 ~30fps →
+# 여전히 큐가 무너져 프레임 드랍 폭주 → 화면 정지가 반복된다.
+# 실제로 중요한 값은 "프레임 1장 처리에 걸리는 실측 시간"이므로,
+# p50/p90 지연과 워커 수로 초당 처리능력을 계산해 요청 fps를 그 예산
+# 안으로 되돌린다(과부하 자동 강하 / 여유 시 자동 상향).
+_LATENCY_SAMPLES = collections.deque(maxlen=60)
+
+
+def record_latency(ms: float):
+    if ms and ms > 0:
+        _LATENCY_SAMPLES.append(float(ms))
+
+
+def _latency_percentile(p: float = 0.5) -> float:
+    if not _LATENCY_SAMPLES:
+        return 0.0
+    vals = sorted(_LATENCY_SAMPLES)
+    idx = min(len(vals) - 1, max(0, int(round((len(vals) - 1) * p))))
+    return vals[idx]
 
 
 def get_adaptive_profile(n_clients: int) -> dict:
-    """활성 딥페이크 클라이언트 수에 따른 처리 해상도 상한(max_w)과
-    클라이언트에 권고할 요청 fps(fps)를 반환한다."""
-    if n_clients <= 1:
-        return {"max_w": 640, "fps": 26}
-    if n_clients == 2:
-        return {"max_w": 480, "fps": 18}
-    if n_clients <= 4:
-        return {"max_w": 400, "fps": 14}
-    if n_clients <= 7:
-        return {"max_w": 320, "fps": 10}
-    return {"max_w": 256, "fps": 8}
+    """활성 클라이언트 수 + 실측 지연 + 워커 수로
+    처리 해상도 상한(max_w)과 클라이언트 권고 fps를 계산한다."""
+    n = max(1, int(n_clients or 1))
+    workers = max(1, WORKER_COUNT_EFFECTIVE or WORKER_COUNT)
+    p50 = _latency_percentile(0.5)
+    p90 = _latency_percentile(0.9)
+
+    per_worker_fps = (1000.0 / p50) if p50 > 0 else 16.0
+    capacity_fps = per_worker_fps * workers
+    per_client = max(4.0, (capacity_fps * 0.8) / n)
+
+    if n <= 1:
+        fps_cap = 26.0
+    elif n == 2:
+        fps_cap = 22.0
+    elif n <= 4:
+        fps_cap = 18.0
+    elif n <= 7:
+        fps_cap = 16.0
+    else:
+        fps_cap = 14.0
+
+    fps = float(max(4, min(fps_cap, per_client)))
+    if p90 > 0 and p50 > 0 and p90 > p50 * 2.5:
+        fps = max(4.0, fps * 0.7)  # 꼬리 지연이 크면 더 보수적으로
+
+    if n <= 1:
+        max_w = 640
+    elif n <= 4:
+        max_w = 480
+    elif n <= 8:
+        max_w = 384
+    else:
+        max_w = 320
+
+    return {
+        "max_w": max_w,
+        "fps": int(round(fps)),
+        "detect_every": _DETECT_EVERY,
+        "workers": workers,
+        "clients": n,
+        "p50_ms": round(p50, 1),
+        "p90_ms": round(p90, 1),
+        "capacity_fps": round(capacity_fps, 1),
+    }
 
 
 async def broadcast_throttle():
@@ -231,7 +417,8 @@ async def broadcast_throttle():
     n = len(CONNECTED_WS)
     profile = get_adaptive_profile(n)
     logger.info(f"Active swap clients: {n} -> profile {profile}")
-    payload = json.dumps({"type": "throttle", "fps": profile["fps"], "clients": n})
+    payload = json.dumps({"type": "throttle", "fps": profile["fps"], "clients": n,
+                          "max_w": profile["max_w"], "p50_ms": profile["p50_ms"]})
     dead = []
     for client_ws in list(CONNECTED_WS):
         try:
@@ -267,73 +454,65 @@ def _finalize_and_encode(img: np.ndarray, quality: int, restore_size, optimize: 
     return encoded.tobytes()
 
 
-def process_frame(source_name: str, frame_bytes: bytes, n_clients: int = 0) -> bytes:
-    """웹캠 프레임을 받아 선택된 얼굴로 스왑 또는 정밀 뷰티 스킨 처리한 최고화질 JPEG를 반환합니다."""
+def process_frame(source_name: str, frame_bytes: bytes, n_clients: int = 0,
+                  client_key: str = "anon") -> bytes:
+    """웹캠 프레임을 받아 선택된 얼굴로 스왑(또는 뷰티 스킨)한 JPEG를 반환한다.
+
+    - client_key 단위로 프레임 캐시/추적 캐시를 분리한다(참가자 간 결과 혼입 방지).
+    - 처리 지연을 계측해 get_adaptive_profile 의 백프레셔 계산에 반영한다.
+    - [사생활 보호] 스왑이 1건도 성공하지 않으면 원본 프레임을 절대 반환하지 않는다.
+    """
     source_key = (source_name or "").strip().lower()
+    t0 = time.perf_counter()
+    frame = None
     try:
         np_arr = np.frombuffer(frame_bytes, np.uint8)
         frame = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
         if frame is None:
             if source_key in ("none", "beauty", "real"):
                 return frame_bytes
-            return LAST_SWAPPED_FRAMES.get(source_key) or LAST_SWAPPED_FRAMES.get("_latest") or b""
+            return (_cache_get(client_key, source_key)
+                    or _cache_get(client_key, "_latest") or b"")
 
-        # 동시 접속자 수에 따라 처리 해상도를 낮춤 (전역 GPU 락 직렬화 부하 완화).
-        # n_clients는 호출부(메인 프로세스)가 CONNECTED_WS 크기를 보고 넘겨준다 —
-        # 이 함수 자체는 워커 프로세스(별도 프로세스) 안에서 실행될 수 있으므로
-        # 전역 CONNECTED_WS를 직접 읽으면 안 된다(그 상태는 메인 프로세스에만 있음).
-        frame, restore_size = _downscale_for_load(frame, n_clients)
-
-        # 순수 뷰티 모드: 내 실제 얼굴에서 주름만 지우고 머리카락/안경/눈은 초고화질 유지
+        # 순수 뷰티 모드 (얼굴 검출 1회만 사용)
         if source_key in ("none", "beauty", "real"):
-            enhanced = precision_beauty_skin(frame)
-            return _finalize_and_encode(enhanced, 95, restore_size, optimize=True)
+            frame_s, restore_size = _downscale_for_load(frame, n_clients)
+            enhanced = precision_beauty_skin(frame_s)
+            return _finalize_and_encode(enhanced, 92, restore_size, optimize=True)
 
         # [사생활 절대 보호] 소스 얼굴 로드 실패 시 원본 얼굴 유출 방지
         source_face = load_source_face(source_name)
         if source_face is None:
-            if source_key in LAST_SWAPPED_FRAMES:
-                return LAST_SWAPPED_FRAMES[source_key]
-            if "_latest" in LAST_SWAPPED_FRAMES:
-                return LAST_SWAPPED_FRAMES["_latest"]
-            blurred = cv2.GaussianBlur(frame, (99, 99), 30)
-            return _finalize_and_encode(blurred, 85, restore_size)
+            return (_cache_get(client_key, source_key)
+                    or _cache_get(client_key, "_latest")
+                    or _finalize_and_encode(cv2.GaussianBlur(frame, (99, 99), 30), 80, None))
 
-        # 고속 타겟 얼굴 다중 감지 (DirectML GPU 가속)
-        target_faces = detect_many_faces_fast(frame)
+        frame_s, restore_size = _downscale_for_load(frame, n_clients)
+
+        target_faces = _track_faces(frame_s, client_key)
         if not target_faces:
-            # 타겟 얼굴 미감지 시에도 실물 얼굴 유출 0% 보장: 직전 스왑 프레임 또는 블러 반환
-            if source_key in LAST_SWAPPED_FRAMES:
-                return LAST_SWAPPED_FRAMES[source_key]
-            if "_latest" in LAST_SWAPPED_FRAMES:
-                return LAST_SWAPPED_FRAMES["_latest"]
-            blurred = cv2.GaussianBlur(frame, (99, 99), 30)
-            return _finalize_and_encode(blurred, 85, restore_size)
+            return (_cache_get(client_key, source_key)
+                    or _cache_get(client_key, "_latest")
+                    or _finalize_and_encode(_blur_faces(frame_s, None), 80, restore_size))
 
-        # 실시간 라이브: 가장 큰 얼굴 1명만 (다중 얼굴은 지연 폭증)
-        target_faces = sorted(
-            target_faces,
-            key=lambda f: (float(f.bbox[2]) - float(f.bbox[0])) * (float(f.bbox[3]) - float(f.bbox[1])),
-            reverse=True
-        )[:1]
-
-        # 화면에 잡힌 모든 인물에 스왑 적용 (다른 사람이 잡혀도 기존 얼굴 스왑이 해지되지 않고 전원 유지!)
-        swapped = frame.copy()
+        swapped = frame_s.copy()
         successful_swaps = 0
         for target_face in target_faces:
             try:
-                # 얼굴 영역 샘플링으로 실제 스왑 적용 여부 검증
                 bx1, by1, bx2, by2 = [int(v) for v in target_face.bbox]
                 bx1, by1 = max(0, bx1), max(0, by1)
-                bx2, by2 = min(frame.shape[1], bx2), min(frame.shape[0], by2)
+                bx2, by2 = min(frame_s.shape[1], bx2), min(frame_s.shape[0], by2)
                 cx, cy = (bx1 + bx2) // 2, (by1 + by2) // 2
                 r = min(15, max(3, (bx2 - bx1) // 8))
-                pre_sample = swapped[max(0, cy - r):min(frame.shape[0], cy + r), max(0, cx - r):min(frame.shape[1], cx + r)].copy()
+                pre_sample = swapped[max(0, cy - r):min(frame_s.shape[0], cy + r),
+                                     max(0, cx - r):min(frame_s.shape[1], cx + r)].copy()
 
                 res = swap_face(source_face, target_face, swapped)
                 if res is not None:
-                    post_sample = res[max(0, cy - r):min(frame.shape[0], cy + r), max(0, cx - r):min(frame.shape[1], cx + r)]
-                    diff = np.mean(np.abs(post_sample.astype(np.float32) - pre_sample.astype(np.float32)))
+                    post_sample = res[max(0, cy - r):min(frame_s.shape[0], cy + r),
+                                      max(0, cx - r):min(frame_s.shape[1], cx + r)]
+                    diff = float(np.mean(np.abs(post_sample.astype(np.float32)
+                                                - pre_sample.astype(np.float32))))
                     if diff > 1.0:
                         swapped = res
                         successful_swaps += 1
@@ -342,49 +521,35 @@ def process_frame(source_name: str, frame_bytes: bytes, n_clients: int = 0) -> b
             except Exception as swap_err:
                 logger.warning(f"Face swap error on target face: {swap_err}")
 
-        # [사생활 절대 보호] 스왑이 성공하지 않은 경우 (성공 0건), 절대 원본 frame을 인코딩하거나 반환해서는 안 됨!
+        # 스왑 성공 0건이면 원본 반환 금지 (직전 스왑 프레임 → 얼굴 블러)
         if successful_swaps == 0:
-            if source_key in LAST_SWAPPED_FRAMES:
-                return LAST_SWAPPED_FRAMES[source_key]
-            if "_latest" in LAST_SWAPPED_FRAMES:
-                return LAST_SWAPPED_FRAMES["_latest"]
-            safe_frame = frame.copy()
-            blurred_any = False
-            for tf in target_faces:
-                fx1, fy1, fx2, fy2 = [int(v) for v in tf.bbox]
-                fx1, fy1 = max(0, fx1), max(0, fy1)
-                fx2, fy2 = min(frame.shape[1], fx2), min(frame.shape[0], fy2)
-                if fx2 > fx1 + 5 and fy2 > fy1 + 5:
-                    roi = safe_frame[fy1:fy2, fx1:fx2]
-                    kw = max(15, min(99, ((fx2 - fx1) // 2) * 2 + 1))
-                    kh = max(15, min(99, ((fy2 - fy1) // 2) * 2 + 1))
-                    safe_frame[fy1:fy2, fx1:fx2] = cv2.GaussianBlur(roi, (kw, kh), 30)
-                    blurred_any = True
-            if not blurred_any:
-                safe_frame = cv2.GaussianBlur(frame, (99, 99), 30)
-            return _finalize_and_encode(safe_frame, 85, restore_size)
+            return (_cache_get(client_key, source_key)
+                    or _cache_get(client_key, "_latest")
+                    or _finalize_and_encode(_blur_faces(frame_s, target_faces), 80, restore_size))
 
-        # 고속 JPEG 인코딩 (품질 70 — 실시간 지연 우선)
-        result_bytes = _finalize_and_encode(swapped, 70, restore_size)
-        LAST_SWAPPED_FRAMES[source_key] = result_bytes
-        LAST_SWAPPED_FRAMES["_latest"] = result_bytes
+        result_bytes = _finalize_and_encode(swapped, 74, restore_size)
+        _cache_put(client_key, source_key, result_bytes)
+        _cache_put(client_key, "_latest", result_bytes)
         return result_bytes
     except Exception as e:
         logger.error(f"Error processing frame: {e}")
         if source_key not in ("none", "beauty", "real"):
-            if "_latest" in LAST_SWAPPED_FRAMES:
-                return LAST_SWAPPED_FRAMES["_latest"]
+            cached = _cache_get(client_key, "_latest") or _cache_get(client_key, source_key)
+            if cached:
+                return cached
             try:
-                blurred = cv2.GaussianBlur(frame, (99, 99), 30)
-                _, encoded = cv2.imencode(".jpg", blurred, [int(cv2.IMWRITE_JPEG_QUALITY), 85])
-                return encoded.tobytes()
+                base = frame if frame is not None else np.zeros((360, 640, 3), dtype=np.uint8)
+                return _finalize_and_encode(cv2.GaussianBlur(base, (99, 99), 30), 80, None)
             except Exception:
                 pass
             placeholder = np.zeros((360, 640, 3), dtype=np.uint8)
-            cv2.putText(placeholder, "Protecting Face...", (180, 180), cv2.FONT_HERSHEY_SIMPLEX, 1, (200, 200, 200), 2)
+            cv2.putText(placeholder, "Protecting Face...", (180, 180),
+                        cv2.FONT_HERSHEY_SIMPLEX, 1, (200, 200, 200), 2)
             _, encoded = cv2.imencode(".jpg", placeholder, [int(cv2.IMWRITE_JPEG_QUALITY), 80])
             return encoded.tobytes()
-        return frame_bytes
+        return frame_bytes or b""
+    finally:
+        record_latency((time.perf_counter() - t0) * 1000.0)
 
 
 # ----------------------------------------------------
@@ -408,7 +573,26 @@ def process_frame(source_name: str, frame_bytes: bytes, n_clients: int = 0) -> b
 #   이 프로세스 안에서 직접 처리한다(GPU가 없는 개발 환경 등에서 유용).
 # ----------------------------------------------------
 
-WORKER_COUNT = int(os.environ.get("FACE_SWAP_WORKERS", "2"))
+def _resolve_worker_count() -> int:
+    """GPU 추론 워커(=독립 프로세스) 수.
+
+    - 10명이 동시에 딥페이크를 돌리려면 (10명 × 12fps = 120fps 요구)
+      워커가 최소 3~4개는 있어야 한다. 워커 1개 ≈ 초당 15~20프레임.
+    - 워커 1개당 VRAM 1~2GB를 쓰므로 12GB 카드에서 4개가 현실적 상한.
+    - 저VRAM/CPU 환경이면 FACE_SWAP_WORKERS=1 로 낮추면 된다.
+    """
+    raw = str(os.environ.get("FACE_SWAP_WORKERS", "auto")).strip().lower()
+    if raw in ("auto", ""):
+        cpu = os.cpu_count() or 2
+        return int(max(2, min(4, cpu // 2 if cpu >= 4 else 2)))
+    try:
+        n = int(raw)
+    except ValueError:
+        n = 2
+    return int(max(0, min(n, 8)))
+
+
+WORKER_COUNT = _resolve_worker_count()
 POOL_TASK_QUEUE: "mp.Queue | None" = None
 POOL_RESULT_QUEUE: "mp.Queue | None" = None
 POOL_PROCESSES: list = []
@@ -441,9 +625,9 @@ def _gpu_worker_main(worker_id: int, task_queue: "mp.Queue", result_queue: "mp.Q
             break
         if item is None:  # 종료 신호
             break
-        req_id, source_name, frame_bytes, n_clients = item
+        req_id, source_name, frame_bytes, n_clients, client_key = item
         try:
-            result_bytes = process_frame(source_name, frame_bytes, n_clients)
+            result_bytes = process_frame(source_name, frame_bytes, n_clients, client_key)
         except Exception as e:
             worker_logger.warning(f"process_frame error: {e}")
             result_bytes = b""
@@ -483,7 +667,7 @@ def start_worker_pool():
         logger.info("FACE_SWAP_WORKERS=0 — 워커 풀을 쓰지 않고 이 프로세스에서 직접 처리합니다.")
         return
     MAIN_LOOP = asyncio.get_event_loop()
-    POOL_TASK_QUEUE = mp.Queue(maxsize=max(4, WORKER_COUNT * 4))
+    POOL_TASK_QUEUE = mp.Queue(maxsize=max(8, WORKER_COUNT * 6))
     POOL_RESULT_QUEUE = mp.Queue()
     for i in range(WORKER_COUNT):
         p = mp.Process(target=_gpu_worker_main, args=(i, POOL_TASK_QUEUE, POOL_RESULT_QUEUE), daemon=True)
@@ -493,30 +677,35 @@ def start_worker_pool():
     logger.info(f"✅ GPU worker pool started with {WORKER_COUNT} process(es).")
 
 
-async def submit_frame(source_name: str, frame_bytes: bytes, n_clients: int, timeout: float = 3.0) -> bytes:
+async def submit_frame(source_name: str, frame_bytes: bytes, n_clients: int,
+                       client_key: str = "anon", timeout: float = None) -> bytes:
     """프레임 하나를 처리 요청한다. 풀이 활성화되어 있으면 워커 프로세스로,
     아니면 이 프로세스의 스레드풀로 보낸다. 어느 쪽이든 호출부 입장에서는
     동일하게 await 가능한 인터페이스다."""
+    if timeout is None:
+        prof = get_adaptive_profile(len(CONNECTED_WS))
+        timeout = max(1.5, min(6.0, (1000.0 / max(4, prof["fps"])) * 3 / 1000.0))
+
     if not POOL_ENABLED or POOL_TASK_QUEUE is None:
         async with INFERENCE_SEMAPHORE:
-            return await asyncio.to_thread(process_frame, source_name, frame_bytes, n_clients)
+            return await asyncio.to_thread(process_frame, source_name, frame_bytes, n_clients, client_key)
 
     req_id = uuid.uuid4().hex
     future = MAIN_LOOP.create_future()
     PENDING_FUTURES[req_id] = future
     try:
-        POOL_TASK_QUEUE.put_nowait((req_id, source_name, frame_bytes, n_clients))
+        POOL_TASK_QUEUE.put_nowait((req_id, source_name, frame_bytes, n_clients, client_key))
     except queue_mod.Full:
         PENDING_FUTURES.pop(req_id, None)
         logger.warning("GPU worker pool queue full — dropping frame")
-        return LAST_SWAPPED_FRAMES.get("_latest") or b""
+        return _cache_get(client_key, "_latest") or b""
 
     try:
         return await asyncio.wait_for(future, timeout=timeout)
     except asyncio.TimeoutError:
         PENDING_FUTURES.pop(req_id, None)
         logger.warning("GPU worker pool timed out on a frame — dropping")
-        return LAST_SWAPPED_FRAMES.get("_latest") or b""
+        return _cache_get(client_key, "_latest") or b""
 
 
 # ----------------------------------------------------
@@ -528,6 +717,25 @@ async def handle_ping(request):
         "status": "ok",
         "service": "deep-live-cam-faceswap",
         "cached_faces": list(SOURCE_FACE_CACHE.keys())
+    })
+
+
+async def handle_stats(request):
+    """워커 수 / 참가자 수 / 실측 지연 / 현재 백프레셔 프로파일."""
+    n = len(CONNECTED_WS)
+    return web.json_response({
+        "status": "ok",
+        "workers": max(1, WORKER_COUNT_EFFECTIVE or WORKER_COUNT),
+        "clients": n,
+        "profile": get_adaptive_profile(n),
+        "latency": {
+            "p50_ms": round(_latency_percentile(0.5), 1),
+            "p90_ms": round(_latency_percentile(0.9), 1),
+            "samples": len(_LATENCY_SAMPLES),
+        },
+        "detect_every": _DETECT_EVERY,
+        "tracked_clients": len(_TRACK_CACHE),
+        "cached_faces": list(SOURCE_FACE_CACHE.keys()),
     })
 
 
@@ -558,7 +766,8 @@ async def handle_swap_frame(request):
     if not body:
         return web.Response(status=400, text="Empty frame body")
 
-    swapped = await submit_frame(source_name, body, len(CONNECTED_WS))
+    client_key = request.headers.get("X-Client-Id") or "http"
+    swapped = await submit_frame(source_name, body, len(CONNECTED_WS), client_key)
     return web.Response(body=swapped, content_type="image/jpeg", headers={
         "Access-Control-Allow-Origin": "*",
         "X-Source-Face": source_name,
@@ -593,10 +802,15 @@ async def handle_upload_photo(request):
 
 async def handle_websocket(request):
     """실시간 양방향 WebSocket 핸들러 - 최신 프레임 우선 처리(버퍼 적체 및 고속 재생 완벽 방지)"""
-    ws = web.WebSocketResponse(max_msg_size=10 * 1024 * 1024)
+    ws = web.WebSocketResponse(max_msg_size=10 * 1024 * 1024, heartbeat=30.0)
     await ws.prepare(request)
     client_id = id(ws)
-    logger.info(f"WebSocket client connected: {client_id}")
+    # Node 프록시가 넘겨준 X-Client-Id(또는 ?client=)를 우선 사용한다.
+    # 참가자별로 프레임 캐시·얼굴 추적을 분리해 서로의 결과가 섞이지 않게 한다.
+    client_key = (request.headers.get("X-Client-Id")
+                  or request.query.get("client")
+                  or f"ws{client_id}")
+    logger.info(f"WebSocket client connected: {client_id} key={client_key}")
     current_source = "superman"
 
     CONNECTED_WS.add(ws)
@@ -617,7 +831,7 @@ async def handle_websocket(request):
                 src_name, frame_bytes = latest_pending
                 latest_pending = None
                 try:
-                    swapped = await submit_frame(src_name, frame_bytes, len(CONNECTED_WS))
+                    swapped = await submit_frame(src_name, frame_bytes, len(CONNECTED_WS), client_key)
                     if not ws.closed:
                         await ws.send_bytes(swapped)
                 except Exception as ex:
@@ -651,6 +865,13 @@ async def handle_websocket(request):
                     if mtype == "ping":
                         await ws.send_json({"type": "pong", "time": time.time()})
 
+                    elif mtype == "hello":
+                        # 클라이언트가 명시적으로 보낸 식별자를 우선 적용
+                        cid = str(payload.get("clientId") or "").strip()
+                        if cid:
+                            client_key = cid
+                        await ws.send_json({"type": "hello_ack", "clientId": client_key})
+
                     elif mtype == "set_source":
                         req_source = payload.get("source", "superman")
                         face = await asyncio.to_thread(load_source_face, req_source)
@@ -668,7 +889,7 @@ async def handle_websocket(request):
                             img_b64 = img_b64.split(",", 1)[1]
                         import base64
                         raw_bytes = base64.b64decode(img_b64)
-                        swapped = await submit_frame(src_name, raw_bytes, len(CONNECTED_WS))
+                        swapped = await submit_frame(src_name, raw_bytes, len(CONNECTED_WS), client_key)
                         out_b64 = "data:image/jpeg;base64," + base64.b64encode(swapped).decode("ascii")
                         await ws.send_json({
                             "type": "swapped_base64",
@@ -686,8 +907,9 @@ async def handle_websocket(request):
         processing_event.set()
         worker_task.cancel()
         CONNECTED_WS.discard(ws)
+        _TRACK_CACHE.pop(client_key, None)
         await broadcast_throttle()
-        logger.info(f"WebSocket client disconnected: {client_id}")
+        logger.info(f"WebSocket client disconnected: {client_id} key={client_key}")
 
     return ws
 
@@ -711,6 +933,7 @@ def create_app():
     app.middlewares.append(cors_middleware)
 
     app.router.add_get("/ping", handle_ping)
+    app.router.add_get("/stats", handle_stats)
     app.router.add_get("/api/photos", handle_list_photos)
     app.router.add_post("/api/swap-frame", handle_swap_frame)
     app.router.add_post("/api/upload-face", handle_upload_photo)
@@ -720,11 +943,15 @@ def create_app():
 
 
 async def start_server():
+    global WORKER_COUNT_EFFECTIVE, INFERENCE_SEMAPHORE
+    WORKER_COUNT_EFFECTIVE = max(1, WORKER_COUNT)
     if POOL_ENABLED:
         logger.info(f"GPU worker pool mode: spawning {WORKER_COUNT} worker process(es)...")
+        logger.info("(워커 1개당 VRAM 1~2GB 사용 — 부족하면 FACE_SWAP_WORKERS 값을 낮추세요)")
         start_worker_pool()
         logger.info("(모델은 각 워커 프로세스 안에서 백그라운드로 로드됩니다 — 첫 몇 초간은 프레임이 지연/드롭될 수 있습니다.)")
     else:
+        INFERENCE_SEMAPHORE = asyncio.Semaphore(max(2, WORKER_COUNT_EFFECTIVE))
         logger.info("Deep-Live-Cam models & engines initializing (in-process mode)...")
         get_face_analyser()
         get_face_swapper()
@@ -738,6 +965,8 @@ async def start_server():
     site = web.TCPSite(runner, HOST, PORT)
     await site.start()
     logger.info(f"🚀 Face swap worker running on http://{HOST}:{PORT} and ws://{HOST}:{PORT}/ws")
+    logger.info(f"   workers={WORKER_COUNT_EFFECTIVE} detectEvery={_DETECT_EVERY} "
+                f"threads={os.environ.get('OMP_NUM_THREADS')}")
 
     while True:
         await asyncio.sleep(3600)
