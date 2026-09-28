@@ -3215,7 +3215,7 @@ body.viewer-page.is-unidirectional #btn-av-cam {
   user-select: none;
   transition: opacity 0.6s ease, transform 0.6s ease;
   box-sizing: border-box;
-  padding: 0 1rem 1.25rem 1rem;
+  padding: max(0.75rem, env(safe-area-inset-top, 0px)) 1rem 1.5rem 1rem;
 }
 
 .tarot-waiting-lounge.is-fading-out {
@@ -3228,20 +3228,29 @@ body.viewer-page.is-unidirectional #btn-av-cam {
   display: none !important;
 }
 
-/* 미팅 준비중 헤더 */
+/* 미팅 준비중 헤더 (상단 툴바 및 모바일 노치와 충분한 안전 여백 확보) */
 .tarot-lounge-header {
   text-align: center;
-  margin-top: 32px;
+  margin-top: clamp(2.2rem, 5.5vh, 4.2rem);
   margin-bottom: 1.2rem;
+  padding: 0.4rem 1rem 0;
   z-index: 2;
   flex-shrink: 0;
+  max-width: 100%;
+  box-sizing: border-box;
+}
+
+body.is-fullscreen.fs-chrome-open .tarot-lounge-header {
+  margin-top: clamp(4.5rem, 9vh, 6.2rem);
 }
 
 .tarot-lounge-title {
-  margin: 0 0 0.4rem;
-  font-size: 2.1rem;
+  margin: 0 0 0.45rem;
+  font-size: clamp(1.45rem, 3.8vw, 2.15rem);
+  line-height: 1.3;
+  padding-top: 0.15rem;
   font-weight: 850;
-  letter-spacing: 0.12em;
+  letter-spacing: 0.1em;
   background: linear-gradient(135deg, #fef08a 0%, #facc15 40%, #eab308 70%, #ca8a04 100%);
   -webkit-background-clip: text;
   -webkit-text-fill-color: transparent;
@@ -3250,18 +3259,51 @@ body.viewer-page.is-unidirectional #btn-av-cam {
 
 .tarot-lounge-subtitle {
   margin: 0;
-  font-size: 0.95rem;
+  font-size: clamp(0.84rem, 1.8vw, 0.98rem);
+  line-height: 1.45;
   color: #cbd5e1;
-  letter-spacing: 0.04em;
+  letter-spacing: 0.03em;
+  word-break: keep-all;
+  max-width: 92vw;
 }
 
 .tarot-lounge-host-actions {
-  margin-top: 0.75rem;
+  margin-top: 0.85rem;
   display: flex;
   gap: 0.75rem;
   justify-content: center;
   align-items: center;
   flex-wrap: wrap;
+}
+
+@media (max-width: 768px) {
+  .tarot-lounge-header {
+    margin-top: clamp(1.6rem, 4vh, 2.8rem);
+    margin-bottom: 0.9rem;
+  }
+  .tarot-lounge-title {
+    font-size: 1.55rem;
+    letter-spacing: 0.06em;
+  }
+  .tarot-lounge-subtitle {
+    font-size: 0.85rem;
+  }
+}
+
+@media (max-height: 520px) {
+  .tarot-lounge-header {
+    margin-top: 1rem;
+    margin-bottom: 0.5rem;
+    padding-top: 0.1rem;
+  }
+  .tarot-lounge-title {
+    font-size: 1.3rem;
+    margin-bottom: 0.2rem;
+  }
+  .tarot-lounge-subtitle {
+    font-size: 0.78rem;
+    line-height: 1.3;
+  }
 }
 
 .btn-tarot-share {
