@@ -1077,6 +1077,7 @@ function handleEvent(type, data) {
         }
       });
       break;
+    }
     case 'stop-screen-share':
       restoreAfterSelfShare().catch((err) => console.warn('[viewer] restoreAfterSelfShare', err));
       break;
