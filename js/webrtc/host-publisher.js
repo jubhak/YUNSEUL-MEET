@@ -774,7 +774,9 @@ export class HostPublisher {
   }
 
   _emitStatus() {
-    this.signaling.setStreamStatus({ active: this.active, kinds: this.kinds });
+    if (this.active) {
+      this.signaling.setStreamStatus({ active: true, kinds: this.kinds });
+    }
     this._emitLocalStatus();
   }
 
@@ -846,7 +848,7 @@ export class HostPublisher {
     this._relayStream = null;
     if (!this._ownStream) {
       this.onRelayChange?.({ peerId: null, active: false, stream: null });
-      this._emitStatus();
+      this._emitLocalStatus();
       return;
     }
     this.localStream = this._buildOutboundStream();
@@ -1068,8 +1070,12 @@ export class HostPublisher {
   }
 
   stop() {
+    const wasActive = this.active;
     this.stopCaptureOnly();
-    this._emitStatus();
+    if (wasActive) {
+      this.signaling.setStreamStatus({ active: false, kinds: [] });
+    }
+    this._emitLocalStatus();
   }
 
   dispose() {

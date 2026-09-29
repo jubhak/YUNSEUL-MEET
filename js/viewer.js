@@ -1273,6 +1273,11 @@ sync.start()
         }
         if (s.streamEnded || s.streamActive === false) {
           if (subscriber?.sharingScreen) return;
+          // 호스트가 실제로 송출 중지(active: false)를 보냈을 때만 송출 대기로 전환
+          // (라이브 영상이 재생 중이면 일시적인 오디오/카메라 토글로 인한 대기 전환 차단)
+          if (cachedStreamActive && (subscriber?.hasLiveVideo?.() || (liveVideo?.srcObject && !liveVideo?.paused))) {
+            return;
+          }
           if (isMeetingStarted) {
             liveStage?.classList.add('hidden');
             waitingPanel?.classList.remove('hidden');
@@ -1298,6 +1303,10 @@ sync.start()
             showTarotLounge();
           }
         } else if (s.connectError) {
+          if (subscriber?.hasLiveVideo?.() || (liveVideo?.srcObject && !liveVideo?.paused)) {
+            // 이미 실시간 영상이 정상 재생 중이면 연결 중 팝업으로 화면을 가리지 않음
+            return;
+          }
           if (isMeetingStarted) {
             waitingPanel?.classList.remove('hidden');
             setWaiting('호스트 화면 연결 중…', '호스트의 발표 화면을 연결하고 있습니다. 잠시만 기다려 주세요.');
@@ -1306,6 +1315,9 @@ sync.start()
             showTarotLounge();
           }
         } else if (s.streamActive && !liveVideo?.srcObject) {
+          if (subscriber?.hasLiveVideo?.()) {
+            return;
+          }
           if (isMeetingStarted) {
             waitingPanel?.classList.remove('hidden');
             setWaiting('호스트 화면 연결 중…', '잠시만 기다려 주세요.');
