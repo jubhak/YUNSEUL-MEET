@@ -287,8 +287,8 @@ def get_face_swapper() -> Any:
                     model_path,
                     providers=providers_config,
                 )
-                # Set up CUDA graph session for faster inference
-                if _HAS_TORCH_CUDA and any(
+                # Set up CUDA graph session only if explicitly requested (causes CUDA failure 900 crash on concurrent streams)
+                if os.environ.get("ENABLE_CUDA_GRAPH", "0") == "1" and _HAS_TORCH_CUDA and any(
                     p == "CUDAExecutionProvider" or
                     (isinstance(p, tuple) and p[0] == "CUDAExecutionProvider")
                     for p in providers_config

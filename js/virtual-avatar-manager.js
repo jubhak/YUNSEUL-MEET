@@ -398,10 +398,10 @@ export class VirtualAvatarManager {
 
     // ── 10인 동시 딥페이크 대응 상태 ─────────────────────────────
     // clientId: 서버 워커가 참가자별로 프레임 캐시/얼굴 추적을 분리하는 키
-    this.clientId = null;
-    // 동시에 파이프라인에 띄우는 스왑 요청 수. 1이면 워커 응답이 늦을 때마다
-    // 프레임이 통째로 버려져 "정지 → 몰아서 재생"이 반복된다. 2로 올려 지연을 숨긴다.
-    this._maxInFlight = 2;
+    // 동시에 파이프라인에 띄우는 스왑 요청 수.
+    // 서버(handle_websocket)는 연결당 latest_pending 슬롯 1개로 프레임을 직렬 처리하므로
+    // in-flight를 1로 맞춰 낭비 전송과 카운터 불일치(화면 정지 현상)를 방지한다.
+    this._maxInFlight = 1;
     this._inFlight = 0;
     this._serverFpsCap = 0;
     this.swapStats = { sent: 0, recv: 0, dropped: 0 };
@@ -621,8 +621,12 @@ export class VirtualAvatarManager {
    * 그 값을 넘지 않도록 클램프한다. 참가자가 많아질수록 서버가 캡을 낮춰 보내므로,
    * 클라이언트가 자체 판단으로 계속 26fps를 밀어넣어 서버 GPU 락을 독점하는 상황을 막는다. */
   _swapRequestFps() {
-    const base = this.faceMode === 'crowd' ? 18 : (this.faceMode === 'multi' ? 22 : 26);
-    if (this._serverFpsCap) return Math.min(base, this._serverFpsCap);
+    const base = this.faceMode === 'crowd' ? 18 : (this.faceMode === 'multi' ? 22 : 28);
+    if (this._serverFpsCap) {
+      // 1인/호스트 상황에서는 최소 24 FPS 보장 (뚝뚝 끊김 완전 방지)
+      const cap = Math.max(16, this._serverFpsCap);
+      return Math.min(base, cap);
+    }
     return base;
   }
 
@@ -632,7 +636,7 @@ export class VirtualAvatarManager {
       if (this.mode !== 'swap') return;
       this._requestFaceSwapFrame();
     };
-    const ms = Math.round(1000 / Math.max(2, this._swapRequestFps()));
+    const ms = Math.round(1000 / Math.max(4, this._swapRequestFps()));
     this._swapPumpTimer = setInterval(tick, ms);
     // 즉시 1장
     tick();
@@ -1542,10 +1546,18 @@ export class VirtualAvatarManager {
         }
       };
       ws.onmessage = async (event) => {
+        let arrayBuffer = null;
         if (event.data instanceof ArrayBuffer) {
+          arrayBuffer = event.data;
+        } else if (event.data instanceof Blob) {
+          try { arrayBuffer = await event.data.arrayBuffer(); } catch { /* ignore */ }
+        }
+
+        if (arrayBuffer) {
           this.swapStats.recv += 1;
           this.onSwapStats?.(this.swapStats);
-          const blob = new Blob([event.data], { type: 'image/jpeg' });
+          if (arrayBuffer.byteLength < 100) { this._settleSwap(); return; }
+          const blob = new Blob([arrayBuffer], { type: 'image/jpeg' });
           if (typeof createImageBitmap === 'function') {
             try {
               const bitmap = await createImageBitmap(blob);
@@ -1571,6 +1583,7 @@ export class VirtualAvatarManager {
             this._lastSwapSuccessTime = Date.now();
             this._settleSwap();
           };
+          img.onerror = () => { this._settleSwap(); };
           img.src = URL.createObjectURL(blob);
         } else if (typeof event.data === 'string') {
           // 서버 제어 메시지 (동시 참가자 수 기반 fps 조절 등)
@@ -1578,9 +1591,11 @@ export class VirtualAvatarManager {
             const msg = JSON.parse(event.data);
             if (msg.type === 'throttle' && msg.fps) {
               this._applyServerThrottle(msg.fps);
+            } else if (msg.type === 'skip') {
+              // 서버가 과부하로 이 프레임을 건너뜀 → 응답 대기 해제
+              this._settleSwap();
             }
           } catch { /* ignore non-JSON text frames */ }
-          this._settleSwap();
         } else {
           this._settleSwap();
         }
@@ -1604,18 +1619,13 @@ export class VirtualAvatarManager {
       return;
     }
     const now = Date.now();
-    // [10인 확장 수정] 예전 로직은 _swapBusy 단일 비행 + 2.5초 가드였다.
-    // 워커가 바빠 응답이 늦으면 그 사이 프레임이 전부 버려지고, 마지막
-    // 비트맵만 계속 그려져 화면이 "멈춘 것처럼" 보였다(드랍 폭주 → 정지 →
-    // 몰아서 재생). 이제 상한(_maxInFlight)까지 요청을 파이프라인에 띄워
-    // 지연을 겹쳐 숨기고(pipelining), 상한 초과 시에만 최신 프레임을 버린다.
     if (this._inFlight >= this._maxInFlight) {
       this.swapStats.dropped += 1;
       this.onSwapStats?.(this.swapStats);
       return;
     }
-    if (now - this._lastSwapReqTime > 4000) {
-      // 워커 재시작 등으로 응답이 장시간 없으면 카운터를 강제 복구
+    if (now - this._lastSwapReqTime > 600) {
+      // 응답이 0.6초 이상 지연되면 즉시 카운터를 자동 복구하여 멈춤 원천 차단
       this._inFlight = 0;
       this._swapBusy = false;
     }

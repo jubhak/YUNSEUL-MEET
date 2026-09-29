@@ -352,13 +352,14 @@ _LATENCY_SAMPLES = collections.deque(maxlen=60)
 
 
 def record_latency(ms: float):
-    if ms and ms > 0:
+    # 모델 웜업 및 첫 임베딩 추출 스파이크(> 500ms)는 백프레셔 통계를 오염시키므로 제외
+    if ms and 5.0 <= ms <= 500.0:
         _LATENCY_SAMPLES.append(float(ms))
 
 
 def _latency_percentile(p: float = 0.5) -> float:
     if not _LATENCY_SAMPLES:
-        return 0.0
+        return 40.0  # 기본 정상 추론 시간 가정 (약 25 FPS)
     vals = sorted(_LATENCY_SAMPLES)
     idx = min(len(vals) - 1, max(0, int(round((len(vals) - 1) * p))))
     return vals[idx]
@@ -372,33 +373,35 @@ def get_adaptive_profile(n_clients: int) -> dict:
     p50 = _latency_percentile(0.5)
     p90 = _latency_percentile(0.9)
 
-    per_worker_fps = (1000.0 / p50) if p50 > 0 else 16.0
+    per_worker_fps = (1000.0 / max(25.0, p50)) if p50 > 0 else 25.0
     capacity_fps = per_worker_fps * workers
-    per_client = max(4.0, (capacity_fps * 0.8) / n)
+    per_client = max(10.0, (capacity_fps * 0.85) / n)
 
+    # 참가자 수별 하한(floor) 및 상한(cap) 설정 - 1인 호스트는 절대 뚝뚝 끊기지 않음!
     if n <= 1:
-        fps_cap = 26.0
+        fps_floor = 24.0
+        fps_cap = 28.0
+        max_w = 640
     elif n == 2:
-        fps_cap = 22.0
-    elif n <= 4:
-        fps_cap = 18.0
-    elif n <= 7:
-        fps_cap = 16.0
-    else:
-        fps_cap = 14.0
-
-    fps = float(max(4, min(fps_cap, per_client)))
-    if p90 > 0 and p50 > 0 and p90 > p50 * 2.5:
-        fps = max(4.0, fps * 0.7)  # 꼬리 지연이 크면 더 보수적으로
-
-    if n <= 1:
+        fps_floor = 20.0
+        fps_cap = 24.0
         max_w = 640
     elif n <= 4:
+        fps_floor = 16.0
+        fps_cap = 20.0
         max_w = 480
-    elif n <= 8:
+    elif n <= 7:
+        fps_floor = 14.0
+        fps_cap = 18.0
         max_w = 384
     else:
+        fps_floor = 10.0
+        fps_cap = 15.0
         max_w = 320
+
+    fps = float(max(fps_floor, min(fps_cap, per_client)))
+    if p90 > 0 and p50 > 0 and p90 > p50 * 2.5:
+        fps = max(fps_floor, fps * 0.85)  # 꼬리 지연 완화
 
     return {
         "max_w": max_w,
@@ -412,11 +415,17 @@ def get_adaptive_profile(n_clients: int) -> dict:
     }
 
 
+_LAST_BROADCAST_N = -1
+
+
 async def broadcast_throttle():
     """현재 접속자 수에 맞는 fps 캡을 모든 클라이언트에게 알려준다."""
+    global _LAST_BROADCAST_N
     n = len(CONNECTED_WS)
     profile = get_adaptive_profile(n)
-    logger.info(f"Active swap clients: {n} -> profile {profile}")
+    if n != _LAST_BROADCAST_N:
+        _LAST_BROADCAST_N = n
+        logger.info(f"Active swap clients: {n} -> profile {profile}")
     payload = json.dumps({"type": "throttle", "fps": profile["fps"], "clients": n,
                           "max_w": profile["max_w"], "p50_ms": profile["p50_ms"]})
     dead = []
@@ -478,7 +487,8 @@ def process_frame(source_name: str, frame_bytes: bytes, n_clients: int = 0,
         if source_key in ("none", "beauty", "real"):
             frame_s, restore_size = _downscale_for_load(frame, n_clients)
             enhanced = precision_beauty_skin(frame_s)
-            return _finalize_and_encode(enhanced, 92, restore_size, optimize=True)
+            # 다운스케일한 프레임을 원본 크기로 다시 업스케일하지 않는다.
+            return _finalize_and_encode(enhanced, 92, None, optimize=True)
 
         # [사생활 절대 보호] 소스 얼굴 로드 실패 시 원본 얼굴 유출 방지
         source_face = load_source_face(source_name)
@@ -527,7 +537,8 @@ def process_frame(source_name: str, frame_bytes: bytes, n_clients: int = 0,
                     or _cache_get(client_key, "_latest")
                     or _finalize_and_encode(_blur_faces(frame_s, target_faces), 80, restore_size))
 
-        result_bytes = _finalize_and_encode(swapped, 74, restore_size)
+        # 스왑 결과를 원본 해상도로 되돌리지 않는다(순수 낭비 제거).
+        result_bytes = _finalize_and_encode(swapped, 74, None)
         _cache_put(client_key, source_key, result_bytes)
         _cache_put(client_key, "_latest", result_bytes)
         return result_bytes
@@ -573,28 +584,48 @@ def process_frame(source_name: str, frame_bytes: bytes, n_clients: int = 0,
 #   이 프로세스 안에서 직접 처리한다(GPU가 없는 개발 환경 등에서 유용).
 # ----------------------------------------------------
 
+def _detect_vram_gb() -> float:
+    """사용 가능한 GPU VRAM(GB). 감지 실패 시 0.
+    FACE_SWAP_VRAM_GB 환경변수로 직접 지정할 수도 있다."""
+    env = os.environ.get("FACE_SWAP_VRAM_GB")
+    if env:
+        try:
+            return float(env)
+        except ValueError:
+            pass
+    try:
+        import torch  # type: ignore
+        if torch.cuda.is_available():
+            props = torch.cuda.get_device_properties(0)
+            return float(getattr(props, "total_memory", 0)) / (1024 ** 3)
+    except Exception:
+        pass
+    return 0.0
+
+
 def _resolve_worker_count() -> int:
     """GPU 추론 워커(=독립 프로세스) 수.
 
-    - 10명이 동시에 딥페이크를 돌리려면 (10명 × 12fps = 120fps 요구)
-      워커가 최소 3~4개는 있어야 한다. 워커 1개 ≈ 초당 15~20프레임.
-    - 워커 1개당 VRAM 1~2GB를 쓰므로 12GB 카드에서 4개가 현실적 상한.
-    - 저VRAM/CPU 환경이면 FACE_SWAP_WORKERS=1 로 낮추면 된다.
+    - 기본값 0: 인프로세스 비동기 CUDA 모드.
+      프로세스 간 Pickle 직렬화 및 OS 파이프 IPC 오버헤드가 '0'이며, 단일 CUDA 세션으로
+      GPU 컨텍스트 스위칭 경합이 없어 1~5인 환경에서 가장 빠르고 프레임 지연이 최소화됩니다.
+    - 다중 GPU 프로세스 분할이 명시적으로 필요한 경우에만 FACE_SWAP_WORKERS 환경변수로 양수를 지정합니다.
     """
-    raw = str(os.environ.get("FACE_SWAP_WORKERS", "auto")).strip().lower()
-    if raw in ("auto", ""):
-        cpu = os.cpu_count() or 2
-        return int(max(2, min(4, cpu // 2 if cpu >= 4 else 2)))
+    raw = str(os.environ.get("FACE_SWAP_WORKERS", "0")).strip().lower()
+    if raw in ("0", "auto", "single", ""):
+        return 0
     try:
         n = int(raw)
     except ValueError:
-        n = 2
+        n = 0
     return int(max(0, min(n, 8)))
 
 
 WORKER_COUNT = _resolve_worker_count()
-POOL_TASK_QUEUE: "mp.Queue | None" = None
+POOL_TASK_QUEUES: list = []          # 워커별 전용 큐 (클라이언트 고정 라우팅용)
+POOL_TASK_QUEUE = None               # (호환) 풀 활성 여부 플래그로만 사용
 POOL_RESULT_QUEUE: "mp.Queue | None" = None
+CLIENT_WORKER: dict = {}             # client_key -> worker_id (sticky)
 POOL_PROCESSES: list = []
 PENDING_FUTURES: dict = {}
 MAIN_LOOP = None
@@ -611,7 +642,6 @@ def _gpu_worker_main(worker_id: int, task_queue: "mp.Queue", result_queue: "mp.Q
         worker_logger.info(f"GPU worker #{worker_id} starting (providers={modules.globals.execution_providers})...")
         get_face_analyser()
         get_face_swapper()
-        preload_all_photos()
         worker_logger.info(f"GPU worker #{worker_id} ready.")
     except Exception as e:
         worker_logger.error(f"GPU worker #{worker_id} failed to initialize: {e}")
@@ -667,14 +697,31 @@ def start_worker_pool():
         logger.info("FACE_SWAP_WORKERS=0 — 워커 풀을 쓰지 않고 이 프로세스에서 직접 처리합니다.")
         return
     MAIN_LOOP = asyncio.get_event_loop()
-    POOL_TASK_QUEUE = mp.Queue(maxsize=max(8, WORKER_COUNT * 6))
-    POOL_RESULT_QUEUE = mp.Queue()
+    # 결과 큐도 유한 크기로 두어, 드레인 스레드가 밀리면 워커가 자연스럽게
+    # 블로킹되도록 한다(무한 적체 방지).
+    POOL_RESULT_QUEUE = mp.Queue(maxsize=max(16, WORKER_COUNT * 8))
+    # 워커마다 전용 큐(깊이 2). 같은 참가자의 프레임은 항상 같은 워커로 가야
+    # 프로세스별 전역인 _TRACK_CACHE/LAST_SWAPPED_FRAMES 가 유효하다.
     for i in range(WORKER_COUNT):
-        p = mp.Process(target=_gpu_worker_main, args=(i, POOL_TASK_QUEUE, POOL_RESULT_QUEUE), daemon=True)
+        q = mp.Queue(maxsize=2)
+        POOL_TASK_QUEUES.append(q)
+        p = mp.Process(target=_gpu_worker_main, args=(i, q, POOL_RESULT_QUEUE), daemon=True)
         p.start()
         POOL_PROCESSES.append(p)
+    POOL_TASK_QUEUE = POOL_TASK_QUEUES[0]
     threading.Thread(target=_drain_pool_results, daemon=True).start()
     logger.info(f"✅ GPU worker pool started with {WORKER_COUNT} process(es).")
+
+
+def _assign_worker(client_key: str) -> int:
+    """참가자를 담당 워커에 고정 배정한다(현재 담당 인원이 가장 적은 워커)."""
+    wid = CLIENT_WORKER.get(client_key)
+    if wid is not None and wid < len(POOL_TASK_QUEUES):
+        return wid
+    load = collections.Counter(CLIENT_WORKER.values())
+    wid = min(range(len(POOL_TASK_QUEUES)), key=lambda i: load.get(i, 0))
+    CLIENT_WORKER[client_key] = wid
+    return wid
 
 
 async def submit_frame(source_name: str, frame_bytes: bytes, n_clients: int,
@@ -684,28 +731,35 @@ async def submit_frame(source_name: str, frame_bytes: bytes, n_clients: int,
     동일하게 await 가능한 인터페이스다."""
     if timeout is None:
         prof = get_adaptive_profile(len(CONNECTED_WS))
-        timeout = max(1.5, min(6.0, (1000.0 / max(4, prof["fps"])) * 3 / 1000.0))
+        # 첫 프레임 및 고부하 상황에서 타임아웃으로 인한 스킵을 원천 방지 (최소 4.5초)
+        timeout = max(4.5, min(12.0, (1000.0 / max(4, prof["fps"])) * 4 / 1000.0))
 
-    if not POOL_ENABLED or POOL_TASK_QUEUE is None:
+    if not POOL_ENABLED or POOL_TASK_QUEUE is None or len(POOL_TASK_QUEUES) == 0:
         async with INFERENCE_SEMAPHORE:
             return await asyncio.to_thread(process_frame, source_name, frame_bytes, n_clients, client_key)
 
+    wid = _assign_worker(client_key)
     req_id = uuid.uuid4().hex
     future = MAIN_LOOP.create_future()
     PENDING_FUTURES[req_id] = future
     try:
-        POOL_TASK_QUEUE.put_nowait((req_id, source_name, frame_bytes, n_clients, client_key))
+        POOL_TASK_QUEUES[wid].put_nowait((req_id, source_name, frame_bytes, n_clients, client_key))
     except queue_mod.Full:
         PENDING_FUTURES.pop(req_id, None)
-        logger.warning("GPU worker pool queue full — dropping frame")
-        return _cache_get(client_key, "_latest") or b""
+        # 큐 가득 찼을 때도 직전 캐시나 직접 추론으로 폴백
+        async with INFERENCE_SEMAPHORE:
+            return await asyncio.to_thread(process_frame, source_name, frame_bytes, n_clients, client_key)
 
+    _t_submit = time.perf_counter()
     try:
-        return await asyncio.wait_for(future, timeout=timeout)
+        data = await asyncio.wait_for(future, timeout=timeout)
+        record_latency((time.perf_counter() - _t_submit) * 1000.0)
+        return data
     except asyncio.TimeoutError:
         PENDING_FUTURES.pop(req_id, None)
-        logger.warning("GPU worker pool timed out on a frame — dropping")
-        return _cache_get(client_key, "_latest") or b""
+        logger.warning(f"Worker pool timed out ({timeout:.1f}s) for {client_key}, falling back to direct process_frame")
+        async with INFERENCE_SEMAPHORE:
+            return await asyncio.to_thread(process_frame, source_name, frame_bytes, n_clients, client_key)
 
 
 # ----------------------------------------------------
@@ -815,6 +869,7 @@ async def handle_websocket(request):
     # 참가자별로 프레임 캐시·얼굴 추적을 분리해 서로의 결과가 섞이지 않게 한다.
     client_key = (request.headers.get("X-Client-Id")
                   or request.query.get("client")
+                  or request.query.get("client_id")
                   or f"ws{client_id}")
     logger.info(f"WebSocket client connected: {client_id} key={client_key}")
     current_source = get_default_photo_source()
@@ -839,7 +894,10 @@ async def handle_websocket(request):
                 try:
                     swapped = await submit_frame(src_name, frame_bytes, len(CONNECTED_WS), client_key)
                     if not ws.closed:
-                        await ws.send_bytes(swapped)
+                        if swapped:
+                            await ws.send_bytes(swapped)
+                        else:
+                            await ws.send_str('{"type":"skip"}')
                 except Exception as ex:
                     logger.warning(f"Error sending swapped frame: {ex}")
 
@@ -914,6 +972,7 @@ async def handle_websocket(request):
         worker_task.cancel()
         CONNECTED_WS.discard(ws)
         _TRACK_CACHE.pop(client_key, None)
+        CLIENT_WORKER.pop(client_key, None)
         await broadcast_throttle()
         logger.info(f"WebSocket client disconnected: {client_id} key={client_key}")
 
@@ -973,6 +1032,19 @@ async def start_server():
     logger.info(f"🚀 Face swap worker running on http://{HOST}:{PORT} and ws://{HOST}:{PORT}/ws")
     logger.info(f"   workers={WORKER_COUNT_EFFECTIVE} detectEvery={_DETECT_EVERY} "
                 f"threads={os.environ.get('OMP_NUM_THREADS')}")
+
+    # 부하 변화(참가자 수/지연/큐 적체)를 반영해 1초마다 fps 캡을 다시 알린다.
+    # 접속/해제 시에만 브로드캐스트하면, 이미 포화된 상태에서는 새 접속이
+    # 없을 때 캡이 갱신되지 않아 클라이언트가 계속 높은 fps로 밀어넣는다.
+    async def _throttle_loop():
+        while True:
+            await asyncio.sleep(2.0)
+            try:
+                if len(CONNECTED_WS) > 0:
+                    await broadcast_throttle()
+            except Exception:
+                pass
+    asyncio.create_task(_throttle_loop())
 
     while True:
         await asyncio.sleep(3600)

@@ -1,4 +1,4 @@
-import { SfuClient } from './sfu-client.js?v=20260927tenuser1';
+import { SfuClient } from './sfu-client.js?v=20260929watchdog1';
 import { VirtualAvatarManager, openWebcamFlexible, faceModeForRoomCount } from '../virtual-avatar-manager.js?v=20260927tenuser1';
 
 /**
@@ -67,7 +67,9 @@ export class ViewerSubscriber {
     /** @type {((data: { pingMs: number, lossRate: number, quality: string }) => void)|null} */
     this.onNetworkQuality = null;
 
+    this._streamActive = false;
     this._unsubStatus = signaling.onStreamStatus((msg) => {
+      this._streamActive = !!msg.active;
       if (!msg.active) {
         if (this._streamOffTimer) clearTimeout(this._streamOffTimer);
         this._streamOffTimer = setTimeout(() => {
@@ -92,6 +94,13 @@ export class ViewerSubscriber {
         console.warn('[ViewerSubscriber] sfu watch', err);
       });
     });
+  }
+
+  setStreamActive(active) {
+    this._streamActive = !!active;
+    if (active) {
+      this.watch().catch(() => {});
+    }
   }
 
   get hasCamera() {
@@ -199,11 +208,14 @@ export class ViewerSubscriber {
     sfu.recvTransport = null;
   }
 
-  async _waitLiveVideo(ms = 6000) {
+  async _waitLiveVideo(ms = 4000) {
     const start = Date.now();
     while (Date.now() - start < ms) {
-      if (this.hasLiveVideo()) return true;
-      await new Promise((r) => setTimeout(r, 100));
+      if (this.hasLiveVideo()) {
+        try { this.videoEl?.play?.().catch(() => {}); } catch {}
+        return true;
+      }
+      await new Promise((r) => setTimeout(r, 80));
     }
     return this.hasLiveVideo();
   }
@@ -225,8 +237,51 @@ export class ViewerSubscriber {
     if (sfu.remoteStream?.getTracks?.().length) {
       this._attachRemote(sfu.remoteStream);
     }
-    if (await this._waitLiveVideo(6000)) return;
+    // 연결 후 즉시 전체 키프레임 요청하여 첫 프레임 수신 가속
+    sfu.resumeAllConsumers().catch(() => {});
+    for (const consumer of sfu.consumers.values()) {
+      if (consumer && !consumer.closed && consumer.kind === 'video') {
+        sfu.requestKeyFrame(consumer.id).catch(() => {});
+      }
+    }
+    if (await this._waitLiveVideo(4000)) return;
     throw new Error('호스트 화면 준비 중…');
+  }
+
+  /**
+   * 연결 및 재생 상태 자가 복구 워치독:
+   * 화면이 연결될 때까지 2.5초마다 백그라운드 재시도를 지속하여 '호스트 화면 연결 중' 무한 정체 방지
+   */
+  _startConnectionWatchdog() {
+    if (this._connWatchdogTimer) return;
+    this._connWatchdogTimer = setInterval(async () => {
+      // 화면 공유 중이거나 스트림이 없으면 패스
+      if (this.sharingScreen || !this._streamActive) return;
+
+      const v = this.videoEl;
+      const isLive = this.hasLiveVideo();
+
+      if (!isLive || (v && v.paused)) {
+        // 아직 비디오가 제대로 연결되지 않았거나 멈춰있는 경우 자동 복구 시도
+        try {
+          if (this.sfu && !this.sfu._closed) {
+            await this.sfu.consumeExistingProducers();
+            await this.sfu.resumeAllConsumers();
+            for (const consumer of this.sfu.consumers.values()) {
+              if (consumer && !consumer.closed && consumer.kind === 'video') {
+                this.sfu.requestKeyFrame(consumer.id).catch(() => {});
+              }
+            }
+          }
+          if (v && v.srcObject) {
+            v.play().catch(() => {});
+          }
+          if (!this._watchChain) {
+            this.watch().catch(() => {});
+          }
+        } catch { /* ignore watchdog transient errors */ }
+      }
+    }, 2500);
   }
 
   _startFreezeWatchdog() {
@@ -242,11 +297,11 @@ export class ViewerSubscriber {
       }
 
       // 발표 슬라이드는 정지 화면이 정상이므로 currentTime을 멈춤으로 오판하지 않음.
-      // 실제 네트워크 패킷 중단(WebRTC track.muted === true) 시에만 최소 4초 간격 키프레임 요청
+      // 실제 네트워크 패킷 중단(WebRTC track.muted === true) 시에만 최소 3초 간격 키프레임 요청
       const track = v.srcObject?.getVideoTracks?.()[0];
       const now = Date.now();
       if (track && track.readyState === 'live' && track.muted) {
-        if (now - lastPliTime > 4000) {
+        if (now - lastPliTime > 3000) {
           lastPliTime = now;
           this.sfu?.requestKeyFrame?.();
           this.sfu?.resumeAllConsumers?.();
@@ -258,6 +313,7 @@ export class ViewerSubscriber {
 
   async watch() {
     this._startFreezeWatchdog();
+    this._startConnectionWatchdog();
     if (this._watchChain) return this._watchChain;
     this._watchChain = this._watchLoop().finally(() => {
       this._watchChain = null;
@@ -284,7 +340,7 @@ export class ViewerSubscriber {
           if (this.interactionMode !== 'bidirectional') {
             this._resetRecvOnly();
           }
-          await new Promise((r) => setTimeout(r, 800));
+          await new Promise((r) => setTimeout(r, 600));
         }
       }
     }
@@ -293,7 +349,8 @@ export class ViewerSubscriber {
       playing: false,
       connectError: lastErr?.message || '호스트 화면 준비 중…',
     });
-    throw lastErr || new Error('호스트 화면 준비 중…');
+    // 실패하더라도 throw하지 않고 워치독이 백그라운드에서 복구를 이어가도록 boolean 반환
+    return false;
   }
 
   _ensureGlobalAudioUnlock() {
@@ -762,8 +819,13 @@ export class ViewerSubscriber {
       try {
         stream = await this._obtainCameraStream();
       } catch (camErr) {
-        console.warn('[ViewerSubscriber] 실물 웹캠 시작 불가(장치 없음/점유 중 등) → 가상 얼굴(아바타)로 자동 대체:', camErr);
-        return await this.startVirtualCamera();
+        console.warn('[ViewerSubscriber] 실물 웹캠 시작 불가(장치 없음/권한 거부/점유 중 등):', camErr);
+        this._lastCameraError = camErr;
+        this.cameraWanted = false;
+        this.cameraStream = null;
+        this.rawCameraStream = null;
+        this.onCameraChange?.({ active: false, stream: null });
+        return false;
       }
       this.rawCameraStream = stream;
 
@@ -798,17 +860,12 @@ export class ViewerSubscriber {
       return true;
     } catch (err) {
       console.warn('[ViewerSubscriber] camera error:', err);
-      // 최종 실패 시에도 가상 얼굴 대체 시도
-      try {
-        return await this.startVirtualCamera();
-      } catch (virtErr) {
-        this._lastCameraError = virtErr || err;
-        this.cameraWanted = false;
-        this.cameraStream = null;
-        this.rawCameraStream = null;
-        this.onCameraChange?.({ active: false, stream: null });
-        return false;
-      }
+      this._lastCameraError = err;
+      this.cameraWanted = false;
+      this.cameraStream = null;
+      this.rawCameraStream = null;
+      this.onCameraChange?.({ active: false, stream: null });
+      return false;
     }
   }
 

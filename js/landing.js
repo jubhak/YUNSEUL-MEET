@@ -56,11 +56,13 @@ document.getElementById('btn-create-room').addEventListener('click', async () =>
     const interactionMode = document.querySelector('input[name="interaction-mode"]:checked')?.value
       || 'bidirectional';
     const requireMic = interactionMode === 'bidirectional' && !!document.getElementById('require-mic')?.checked;
+    const allowClientCamera = interactionMode === 'bidirectional' && (document.getElementById('allow-client-cam')?.checked !== false);
+    const allowClientDeepfake = allowClientCamera && (document.getElementById('allow-client-deepfake')?.checked !== false);
 
     const res = await fetch(api('create-room'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ code, interactionMode, requireMic }),
+      body: JSON.stringify({ code, interactionMode, requireMic, allowClientCamera, allowClientDeepfake }),
     });
     const data = await res.json().catch(() => ({}));
     if (!res.ok) throw new Error(data.error || '방 생성 실패');
@@ -69,6 +71,8 @@ document.getElementById('btn-create-room').addEventListener('click', async () =>
     const room = data.code || code;
     const mode = data.interactionMode || interactionMode;
     const reqMic = !!(data.requireMic ?? requireMic);
+    const allowCam = !!(data.allowClientCamera ?? allowClientCamera);
+    const allowDfc = !!(data.allowClientDeepfake ?? allowClientDeepfake);
 
     // 일부 모바일 브라우저에서 sessionStorage만으로 다음 페이지 전달이 실패할 수 있어 URL 백업 사용
     try {
@@ -77,6 +81,8 @@ document.getElementById('btn-create-room').addEventListener('click', async () =>
       sessionStorage.setItem('hostName', hostName);
       sessionStorage.setItem('interactionMode', mode);
       sessionStorage.setItem('requireMic', reqMic ? 'true' : 'false');
+      sessionStorage.setItem('allowClientCamera', allowCam ? 'true' : 'false');
+      sessionStorage.setItem('allowClientDeepfake', allowDfc ? 'true' : 'false');
     } catch (storageErr) {
       console.warn('[create-room] sessionStorage', storageErr);
     }
@@ -87,6 +93,8 @@ document.getElementById('btn-create-room').addEventListener('click', async () =>
       hn: hostName,
       mode,
       rm: reqMic ? '1' : '0',
+      ac: allowCam ? '1' : '0',
+      ad: allowDfc ? '1' : '0',
     });
     window.location.href = `host.html?${q.toString()}`;
   } catch (err) {
@@ -370,3 +378,35 @@ joinCodeInput?.addEventListener('blur', () => {
   // 항목 클릭(mousedown)이 끝나도록 살짝 지연
   setTimeout(() => hideJoinSuggest(), 140);
 });
+
+// 참가자 카메라 및 딥페이크 옵션 상호작용
+const allowCamEl = document.getElementById('allow-client-cam');
+const allowDfcEl = document.getElementById('allow-client-deepfake');
+const dfcSubwrap = document.getElementById('deepfake-allowed-subwrap');
+
+function syncCameraDeepfakeOptions() {
+  if (!allowCamEl || !allowDfcEl) return;
+  const camEnabled = allowCamEl.checked;
+  allowDfcEl.disabled = !camEnabled;
+  if (!camEnabled) {
+    allowDfcEl.checked = false;
+  }
+  if (dfcSubwrap) {
+    dfcSubwrap.style.opacity = camEnabled ? '1.0' : '0.4';
+    dfcSubwrap.style.pointerEvents = camEnabled ? 'auto' : 'none';
+  }
+}
+
+allowCamEl?.addEventListener('change', syncCameraDeepfakeOptions);
+
+// 미팅 방식(양방향/단방향)에 따라 참가자 미디어 옵션 표시/숨김
+document.querySelectorAll('input[name="interaction-mode"]').forEach((radio) => {
+  radio.addEventListener('change', () => {
+    const isBidir = radio.value === 'bidirectional';
+    const micWrap = document.getElementById('mic-required-wrap');
+    const camWrap = document.getElementById('camera-allowed-wrap');
+    if (micWrap) micWrap.style.display = isBidir ? 'block' : 'none';
+    if (camWrap) camWrap.style.display = isBidir ? 'block' : 'none';
+  });
+});
+

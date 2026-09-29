@@ -1145,7 +1145,7 @@ class MeetWidget(QWidget):
             self.server_process = None
 
         kill_cmd = (
-            f"$p = Get-NetTCPConnection -LocalPort {self.port} -ErrorAction SilentlyContinue | Select-Object -ExpandProperty OwningProcess; "
+            f"$p = Get-NetTCPConnection -LocalPort {self.port}, 8765 -ErrorAction SilentlyContinue | Select-Object -ExpandProperty OwningProcess; "
             "if ($p) { Stop-Process -Id $p -Force -ErrorAction SilentlyContinue }"
         )
         try:

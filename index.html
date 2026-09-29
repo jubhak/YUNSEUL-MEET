@@ -68,6 +68,24 @@
             </span>
           </label>
         </div>
+        <div id="camera-allowed-wrap" class="form-group camera-allowed-group">
+          <label class="checkbox-option">
+            <input type="checkbox" id="allow-client-cam" name="allow-client-cam" checked>
+            <span class="checkbox-text">
+              <span class="checkbox-title">참가자 카메라 허용</span>
+              <span class="checkbox-desc">체크 해제 시 참가자는 카메라를 켤 수 없으며 목소리(마이크)만 송출 가능</span>
+            </span>
+          </label>
+          <div id="deepfake-allowed-subwrap" style="margin-left: 1.5rem; margin-top: 0.5rem;">
+            <label class="checkbox-option">
+              <input type="checkbox" id="allow-client-deepfake" name="allow-client-deepfake" checked>
+              <span class="checkbox-text">
+                <span class="checkbox-title">참가자 딥페이크(AI 얼굴) 허용</span>
+                <span class="checkbox-desc">체크 해제 시 참가자는 딥페이크 기능을 사용할 수 없고 호스트만 사용 가능</span>
+              </span>
+            </label>
+          </div>
+        </div>
         <div class="form-group host-code-group">
           <label for="host-room-code">참여 코드</label>
           <div class="host-code-row">

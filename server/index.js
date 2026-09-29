@@ -86,8 +86,10 @@ function normalizeInteractionMode(mode) {
   return mode === 'unidirectional' ? 'unidirectional' : 'bidirectional';
 }
 
-function defaultRoom(code, hostToken, interactionMode = 'bidirectional', requireMic = false) {
+function defaultRoom(code, hostToken, interactionMode = 'bidirectional', requireMic = false, allowClientCamera = true, allowClientDeepfake = true) {
   const normMode = normalizeInteractionMode(interactionMode);
+  const allowCam = normMode === 'bidirectional' && allowClientCamera !== false;
+  const allowDfc = allowCam && allowClientDeepfake !== false;
   return {
     code,
     hostToken,
@@ -100,6 +102,8 @@ function defaultRoom(code, hostToken, interactionMode = 'bidirectional', require
     // bidirectional: 기존 화상 미팅 / unidirectional: 대규모 시청(참가자 produce 없음)
     interactionMode: normMode,
     requireMic: normMode === 'bidirectional' && !!requireMic,
+    allowClientCamera: allowCam,
+    allowClientDeepfake: allowDfc,
     presentation: null,
     currentSlide: 0,
     drawings: {},
@@ -229,6 +233,8 @@ function persistRoom(room) {
     activeBroadcasterId: room.activeBroadcasterId || null,
     interactionMode: normMode,
     requireMic: normMode === 'bidirectional' && !!room.requireMic,
+    allowClientCamera: room.allowClientCamera !== false,
+    allowClientDeepfake: room.allowClientCamera !== false && room.allowClientDeepfake !== false,
     ended: room.ended,
     endedAt: room.endedAt,
     meetingStarted: !!room.meetingStarted,
@@ -247,7 +253,14 @@ function loadRoomFromDisk(code) {
   try {
     const raw = JSON.parse(fs.readFileSync(p, 'utf8'));
     const normMode = normalizeInteractionMode(raw.interactionMode);
-    const room = defaultRoom(raw.code, raw.hostToken, normMode, !!raw.requireMic);
+    const room = defaultRoom(
+      raw.code,
+      raw.hostToken,
+      normMode,
+      !!raw.requireMic,
+      raw.allowClientCamera !== false,
+      raw.allowClientDeepfake !== false
+    );
     Object.assign(room, {
       // 디스크의 hostConnected는 신뢰하지 않음 — 실제 소켓이 있을 때만 true
       hostConnected: false,
@@ -263,6 +276,8 @@ function loadRoomFromDisk(code) {
       activeBroadcasterId: raw.activeBroadcasterId || null,
       interactionMode: normMode,
       requireMic: normMode === 'bidirectional' && !!raw.requireMic,
+      allowClientCamera: raw.allowClientCamera !== false,
+      allowClientDeepfake: raw.allowClientCamera !== false && raw.allowClientDeepfake !== false,
       ended: !!raw.ended,
       endedAt: raw.endedAt || 0,
       // 미팅 시작 여부는 재접속·서버 재기동 후에도 유지 (송출 중인데 카드 대기실로 떨어지는 사고 방지)
@@ -346,6 +361,8 @@ function publicState(room) {
     popup: room.popup || null,
     interactionMode: normMode,
     requireMic: normMode === 'bidirectional' && !!room.requireMic,
+    allowClientCamera: room.allowClientCamera !== false,
+    allowClientDeepfake: room.allowClientCamera !== false && room.allowClientDeepfake !== false,
   };
 }
 
@@ -463,16 +480,16 @@ function scheduleViewerLeave(io, room, clientId) {
   schedulePeerDisconnectGrace(io, room, clientId, 'viewer');
 }
 
-/** 호스트·참가자 모두 0명인 빈 방 — 새로고침 유예 후 폐기 */
-const EMPTY_ROOM_GRACE_MS = Number(process.env.EMPTY_ROOM_GRACE_MS || 60_000);
-/** 하트비트 없는 호스트는 이탈로 간주 */
-const STALE_HOST_MS = Number(process.env.STALE_HOST_MS || 90_000);
-/** 하트비트 없는 참가자 제거 */
-const STALE_VIEWER_MS = Number(process.env.STALE_VIEWER_MS || 90_000);
-/** 메모리에 없는 디스크 방 파일 삭제 기준 */
-const ORPHAN_DISK_ROOM_MS = Number(process.env.ORPHAN_DISK_ROOM_MS || 120_000);
+/** 호스트·참가자 모두 0명인 빈 방 — 새로고침 유예 후 폐기 (기본 1시간으로 대폭 상향하여 테스트 중 방 소멸 방지) */
+const EMPTY_ROOM_GRACE_MS = Number(process.env.EMPTY_ROOM_GRACE_MS || 3600_000);
+/** 하트비트 없는 호스트는 이탈로 간주 (10분) */
+const STALE_HOST_MS = Number(process.env.STALE_HOST_MS || 600_000);
+/** 하트비트 없는 참가자 제거 (10분) */
+const STALE_VIEWER_MS = Number(process.env.STALE_VIEWER_MS || 600_000);
+/** 메모리에 없는 디스크 방 파일 삭제 기준 (2시간) */
+const ORPHAN_DISK_ROOM_MS = Number(process.env.ORPHAN_DISK_ROOM_MS || 7200_000);
 /** 빈 방·유령 참가자 스윕 주기 */
-const ROOM_SWEEP_MS = Number(process.env.ROOM_SWEEP_MS || 30_000);
+const ROOM_SWEEP_MS = Number(process.env.ROOM_SWEEP_MS || 60_000);
 
 function cancelEmptyRoomDispose(room) {
   if (room?._emptyDisposeTimer) {
@@ -482,11 +499,15 @@ function cancelEmptyRoomDispose(room) {
 }
 
 function isRoomEmpty(room) {
+  if (!room) return true;
+  // 기본 방 1324는 항상 유지
+  if (room.code === '1324') return false;
   return !room.hostConnected && room.viewers.size === 0;
 }
 
 function maybeScheduleEmptyRoomDispose(room) {
   if (!room || room.ended) return;
+  if (room.code === '1324') return;
   if (!isRoomEmpty(room)) {
     cancelEmptyRoomDispose(room);
     return;
@@ -501,7 +522,12 @@ function maybeScheduleEmptyRoomDispose(room) {
 }
 
 function disposeEmptyRoom(room) {
+  if (!room) return;
   const code = room.code;
+  if (code === '1324') {
+    cancelEmptyRoomDispose(room);
+    return;
+  }
   cancelEmptyRoomDispose(room);
   if (room._viewerLeaveTimers) {
     for (const t of room._viewerLeaveTimers.values()) clearTimeout(t);
@@ -531,6 +557,7 @@ function disposeEmptyRoom(room) {
 function sweepRooms() {
   const now = Date.now();
   for (const room of [...rooms.values()]) {
+    if (room.code === '1324') continue;
     if (room.ended) {
       disposeEmptyRoom(room);
       continue;
@@ -569,7 +596,7 @@ function sweepRooms() {
     for (const name of fs.readdirSync(ROOMS_DIR)) {
       if (!name.endsWith('.json')) continue;
       const code = name.slice(0, -'.json'.length);
-      if (!code || rooms.has(code)) continue;
+      if (!code || code === '1324' || rooms.has(code)) continue;
       const p = path.join(ROOMS_DIR, name);
       let age = ORPHAN_DISK_ROOM_MS + 1;
       try { age = now - fs.statSync(p).mtimeMs; } catch { /* ignore */ }
@@ -588,10 +615,26 @@ const app = express();
 app.use(express.json({ limit: '2mb' }));
 
 // 정적 파일 (프론트)
+app.use((req, res, next) => {
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', '*');
+  next();
+});
+
+app.use('/photo', express.static(PHOTO_DIR, {
+  etag: true,
+  maxAge: '1h',
+  setHeaders(res) {
+    res.setHeader('Access-Control-Allow-Origin', '*');
+  }
+}));
+
 app.use(express.static(ROOT, {
   index: ['index.html'],
   etag: true,
   setHeaders(res, filePath) {
+    res.setHeader('Access-Control-Allow-Origin', '*');
     const lower = String(filePath || '').toLowerCase();
     if (lower.endsWith('.html')) {
       res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
@@ -906,7 +949,9 @@ app.post('/api/create-room', (req, res) => {
   const hostToken = crypto.randomBytes(16).toString('hex');
   const interactionMode = normalizeInteractionMode(req.body?.interactionMode);
   const requireMic = interactionMode === 'bidirectional' && !!req.body?.requireMic;
-  const room = defaultRoom(code, hostToken, interactionMode, requireMic);
+  const allowClientCamera = req.body?.allowClientCamera !== false;
+  const allowClientDeepfake = allowClientCamera && req.body?.allowClientDeepfake !== false;
+  const room = defaultRoom(code, hostToken, interactionMode, requireMic, allowClientCamera, allowClientDeepfake);
   try {
     ensureRoomLogDir(room);
   } catch (err) {
@@ -916,7 +961,15 @@ app.post('/api/create-room', (req, res) => {
   persistRoom(room);
   // 호스트가 들어오지 않으면 유예 후 폐기
   maybeScheduleEmptyRoomDispose(room);
-  res.json({ ok: true, code, hostToken, interactionMode: room.interactionMode, requireMic: !!room.requireMic });
+  res.json({
+    ok: true,
+    code,
+    hostToken,
+    interactionMode: room.interactionMode,
+    requireMic: !!room.requireMic,
+    allowClientCamera: !!room.allowClientCamera,
+    allowClientDeepfake: !!room.allowClientDeepfake,
+  });
 });
 
 app.get('/api/get-room', (req, res) => {
@@ -1087,7 +1140,9 @@ app.post('/api/create-room.php', (req, res) => {
   const hostToken = crypto.randomBytes(16).toString('hex');
   const interactionMode = normalizeInteractionMode(req.body?.interactionMode);
   const requireMic = interactionMode === 'bidirectional' && !!req.body?.requireMic;
-  const room = defaultRoom(code, hostToken, interactionMode, requireMic);
+  const allowClientCamera = req.body?.allowClientCamera !== false;
+  const allowClientDeepfake = allowClientCamera && req.body?.allowClientDeepfake !== false;
+  const room = defaultRoom(code, hostToken, interactionMode, requireMic, allowClientCamera, allowClientDeepfake);
   try {
     ensureRoomLogDir(room);
   } catch (err) {
@@ -1096,7 +1151,15 @@ app.post('/api/create-room.php', (req, res) => {
   rooms.set(code, room);
   persistRoom(room);
   maybeScheduleEmptyRoomDispose(room);
-  res.json({ ok: true, code, hostToken, interactionMode: room.interactionMode, requireMic: !!room.requireMic });
+  res.json({
+    ok: true,
+    code,
+    hostToken,
+    interactionMode: room.interactionMode,
+    requireMic: !!room.requireMic,
+    allowClientCamera: !!room.allowClientCamera,
+    allowClientDeepfake: !!room.allowClientDeepfake,
+  });
 });
 app.get('/api/get-room.php', (req, res) => {
   const room = getRoom(req.query.code);
@@ -1697,6 +1760,13 @@ server.listen(PORT, HOST, () => {
   // Deep-Live-Cam 실시간 페이스 스왑 백그라운드 워커 기동
   startFaceSwapWorker();
 
+  // 기본 방 1324 상시 활성화 보장 (영구 유지)
+  if (!rooms.has('1324')) {
+    const r1324 = loadRoomFromDisk('1324') || defaultRoom('1324', 'host-secret-1324', 'bidirectional', false, true, true);
+    rooms.set('1324', r1324);
+    persistRoom(r1324);
+  }
+
   try { sweepRooms(); } catch (err) { console.warn('[room] initial sweep', err); }
   setInterval(() => {
     try { sweepRooms(); } catch (err) { console.warn('[room] sweep', err); }
@@ -1784,7 +1854,7 @@ function _spawnFaceSwapWorkerProcess() {
   if (!fs.existsSync(workerScript)) return;
 
   const pythonCmd = getPythonCmd();
-  const workersEnv = process.env.FACE_SWAP_WORKERS || 'auto';
+  const workersEnv = process.env.FACE_SWAP_WORKERS || '0';
   console.log(`[FaceSwap] starting worker with ${pythonCmd} (FACE_SWAP_WORKERS=${workersEnv})...`);
 
   try {
@@ -1835,6 +1905,12 @@ function stopFaceSwapWorker() {
   }
 }
 
+process.on('uncaughtException', (err) => {
+  console.error('[Node] uncaughtException:', err);
+});
+process.on('unhandledRejection', (reason, promise) => {
+  console.warn('[Node] unhandledRejection:', reason);
+});
 process.on('exit', stopFaceSwapWorker);
 process.on('SIGINT', () => { stopFaceSwapWorker(); process.exit(0); });
 process.on('SIGTERM', () => { stopFaceSwapWorker(); process.exit(0); });

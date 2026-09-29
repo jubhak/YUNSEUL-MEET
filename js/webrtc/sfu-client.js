@@ -450,10 +450,8 @@ export class SfuClient {
       } catch { /* ignore */ }
       this.remoteStream.addTrack(consumer.track);
       await this.request('sfu-resume-consumer', { consumerId: consumer.id });
-      try { await consumer.resume(); } catch { /* ignore */ }
-      // 얼굴 수신 직후 키프레임 1회 — 첫 프레임/멈춤 공백 축소
-      const src = info?.appData?.source || res?.appData?.source || '';
-      if (res.kind === 'video' && (src === 'camera' || src === 'viewer-camera')) {
+      // 모든 비디오 수신 직후 키프레임 요청 — 화면(display) 및 카메라 첫 프레임 공백/무한 대기 방지
+      if (res.kind === 'video') {
         try { await this.requestKeyFrame(consumer.id); } catch { /* ignore */ }
       }
       try {
@@ -461,6 +459,15 @@ export class SfuClient {
       } catch (err) {
         console.warn('[sfu] recv ICE', err);
         throw err;
+      }
+      // 수신 트랜스포트 연결 확립 후 즉시 핵심 키프레임 보장 (호스트 화면 정지/지연 시 즉시 첫 프레임 수신)
+      if (res.kind === 'video') {
+        try { await this.requestKeyFrame(consumer.id); } catch { /* ignore */ }
+        setTimeout(() => {
+          if (!consumer.closed) {
+            this.requestKeyFrame(consumer.id).catch(() => {});
+          }
+        }, 600);
       }
       if (consumer.paused) {
         try {

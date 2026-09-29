@@ -1,5 +1,5 @@
 import { TRACK_KIND } from './config.js';
-import { SfuClient } from './sfu-client.js?v=20260927tenuser1';
+import { SfuClient } from './sfu-client.js?v=20260929watchdog1';
 import { VirtualAvatarManager, openWebcamFlexible, faceModeForRoomCount } from '../virtual-avatar-manager.js?v=20260927tenuser1';
 
 /**
@@ -442,16 +442,22 @@ export class HostPublisher {
       return true;
     }
     if (!navigator.mediaDevices?.getUserMedia) {
-      console.warn('[HostPublisher] getUserMedia 미지원 환경, 가상 얼굴(아바타)로 전환');
-      return await this.startVirtualCamera();
+      console.warn('[HostPublisher] getUserMedia 미지원 브라우저 환경입니다.');
+      this.cameraWanted = false;
+      this.cameraStream = null;
+      this.onCameraChange?.({ active: false, stream: null });
+      return false;
     }
     try {
       let stream = null;
       try {
         stream = await openWebcamFlexible();
       } catch (camErr) {
-        console.warn('[HostPublisher] 실물 웹캠 시작 불가(장치 없음/점유 중 등) → 가상 얼굴(아바타)로 자동 대체:', camErr);
-        return await this.startVirtualCamera();
+        console.warn('[HostPublisher] 실물 웹캠 시작 불가(장치 없음/권한 거부/점유 중 등):', camErr);
+        this.cameraWanted = false;
+        this.cameraStream = null;
+        this.onCameraChange?.({ active: false, stream: null });
+        return false;
       }
 
       this.rawCameraStream = stream;
@@ -490,15 +496,11 @@ export class HostPublisher {
       this.onCameraChange?.({ active: true, stream: outgoingStream });
       return true;
     } catch (err) {
-      console.warn('[HostPublisher] ensureCamera failed, falling back to virtual avatar:', err);
-      try {
-        return await this.startVirtualCamera();
-      } catch (virtErr) {
-        this.cameraWanted = false;
-        this.cameraStream = null;
-        this.onCameraChange?.({ active: false, stream: null });
-        return false;
-      }
+      console.warn('[HostPublisher] ensureCamera failed:', err);
+      this.cameraWanted = false;
+      this.cameraStream = null;
+      this.onCameraChange?.({ active: false, stream: null });
+      return false;
     }
   }
 

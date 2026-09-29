@@ -1,0 +1,1309 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>YUNSEUL MEET - 딥페이크 5~10인 다중 접속 실시간 카메라 모션 검증기</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🎭</text></svg>">
+  <style>
+    :root {
+      --bg-dark: #070a12;
+      --card-bg: rgba(15, 23, 42, 0.90);
+      --card-border: rgba(56, 189, 248, 0.22);
+      --card-border-hover: rgba(56, 189, 248, 0.55);
+      --primary: #38bdf8;
+      --primary-gradient: linear-gradient(135deg, #0284c7 0%, #38bdf8 100%);
+      --accent-gradient: linear-gradient(135deg, #6366f1 0%, #a855f7 100%);
+      --success: #10b981;
+      --warning: #f59e0b;
+      --danger: #ef4444;
+      --text-main: #f8fafc;
+      --text-sub: #94a3b8;
+    }
+
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+      -webkit-font-smoothing: antialiased;
+    }
+
+    body {
+      background: radial-gradient(circle at 50% 0%, #1e1b4b 0%, #070a12 60%, #030408 100%);
+      color: var(--text-main);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Noto Sans KR", sans-serif;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      padding: 1.2rem;
+      gap: 1.1rem;
+    }
+
+    /* 1. 상단 글로벌 헤더 & 외부 접속 주소 안내 */
+    header {
+      background: var(--card-bg);
+      backdrop-filter: blur(16px);
+      border: 1px solid var(--card-border);
+      border-radius: 16px;
+      padding: 1rem 1.5rem;
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      justify-content: space-between;
+      gap: 1rem;
+      box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
+    }
+
+    .brand-section {
+      display: flex;
+      align-items: center;
+      gap: 0.85rem;
+    }
+
+    .brand-icon {
+      width: 44px;
+      height: 44px;
+      background: var(--accent-gradient);
+      border-radius: 12px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 22px;
+      box-shadow: 0 4px 16px rgba(99, 102, 241, 0.4);
+    }
+
+    .brand-text h1 {
+      font-size: 1.25rem;
+      font-weight: 800;
+      letter-spacing: -0.02em;
+      background: linear-gradient(135deg, #ffffff 40%, #93c5fd 100%);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+    }
+
+    .brand-text p {
+      font-size: 0.82rem;
+      color: var(--text-sub);
+      margin-top: 2px;
+    }
+
+    /* 외부 접속 안내 바 */
+    .url-banner {
+      display: flex;
+      align-items: center;
+      gap: 0.6rem;
+      background: rgba(30, 41, 59, 0.7);
+      border: 1px solid rgba(56, 189, 248, 0.3);
+      padding: 0.45rem 0.9rem;
+      border-radius: 10px;
+      font-size: 0.8rem;
+    }
+
+    .url-tag {
+      color: #38bdf8;
+      font-weight: 700;
+    }
+
+    .url-link {
+      color: #f1f5f9;
+      text-decoration: none;
+      font-weight: 600;
+      font-family: monospace;
+      font-size: 0.85rem;
+    }
+
+    .btn-copy {
+      background: #0284c7;
+      color: #ffffff;
+      border: none;
+      padding: 3px 8px;
+      border-radius: 6px;
+      font-size: 0.72rem;
+      font-weight: 700;
+      cursor: pointer;
+    }
+
+    .btn-copy:hover {
+      background: #38bdf8;
+    }
+
+    /* 메트릭스 바 */
+    .metrics-bar {
+      display: flex;
+      align-items: center;
+      gap: 1rem;
+      flex-wrap: wrap;
+    }
+
+    .metric-chip {
+      background: rgba(15, 23, 42, 0.9);
+      border: 1px solid rgba(255, 255, 255, 0.1);
+      border-radius: 10px;
+      padding: 0.45rem 0.85rem;
+      display: flex;
+      flex-direction: column;
+      min-width: 95px;
+    }
+
+    .metric-label {
+      font-size: 0.7rem;
+      color: var(--text-sub);
+      text-transform: uppercase;
+      font-weight: 600;
+    }
+
+    .metric-val {
+      font-size: 1.15rem;
+      font-weight: 800;
+      color: #38bdf8;
+      font-feature-settings: "tnum";
+    }
+
+    .badge-test-status {
+      display: flex;
+      align-items: center;
+      gap: 0.4rem;
+      background: rgba(16, 185, 129, 0.15);
+      border: 1px solid rgba(16, 185, 129, 0.4);
+      padding: 0.5rem 1rem;
+      border-radius: 999px;
+      font-size: 0.84rem;
+      font-weight: 700;
+      color: #34d399;
+      box-shadow: 0 0 16px rgba(16, 185, 129, 0.2);
+    }
+
+    .badge-test-status.waiting {
+      background: rgba(99, 102, 241, 0.12);
+      border-color: rgba(99, 102, 241, 0.35);
+      color: #a5b4fc;
+      box-shadow: none;
+    }
+
+    /* 2. 컨트롤 툴바 & 내 웹캠 프리뷰 */
+    .control-deck {
+      display: grid;
+      grid-template-columns: auto 1fr;
+      gap: 1.1rem;
+      align-items: stretch;
+    }
+
+    @media (max-width: 900px) {
+      .control-deck {
+        grid-template-columns: 1fr;
+      }
+    }
+
+    /* 내 실제 웹캠 카드 */
+    .webcam-card {
+      background: var(--card-bg);
+      backdrop-filter: blur(16px);
+      border: 2px solid rgba(56, 189, 248, 0.4);
+      border-radius: 16px;
+      padding: 0.85rem;
+      display: flex;
+      flex-direction: column;
+      gap: 0.6rem;
+      width: 260px;
+      box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+    }
+
+    @media (max-width: 900px) {
+      .webcam-card {
+        width: 100%;
+      }
+    }
+
+    .webcam-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      font-size: 0.84rem;
+      font-weight: 700;
+      color: #38bdf8;
+    }
+
+    .webcam-view {
+      width: 100%;
+      aspect-ratio: 4 / 3;
+      background: #020617;
+      border-radius: 10px;
+      overflow: hidden;
+      position: relative;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    .webcam-view video {
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+      transform: scaleX(-1);
+      display: none;
+    }
+
+    .webcam-view canvas#source-preview-canvas {
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+      display: block;
+    }
+
+    .source-tag-overlay {
+      position: absolute;
+      top: 6px;
+      left: 6px;
+      background: rgba(0,0,0,0.7);
+      color: #38bdf8;
+      font-size: 0.68rem;
+      font-weight: 700;
+      padding: 2px 6px;
+      border-radius: 4px;
+      border: 1px solid rgba(56,189,248,0.3);
+      pointer-events: none;
+    }
+
+    .btn-cam-toggle {
+      background: var(--primary-gradient);
+      color: #ffffff;
+      border: none;
+      padding: 0.6rem;
+      border-radius: 8px;
+      font-size: 0.84rem;
+      font-weight: 700;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 0.4rem;
+      transition: all 0.2s ease;
+    }
+
+    .btn-cam-toggle.is-active {
+      background: linear-gradient(135deg, #10b981 0%, #059669 100%);
+    }
+
+    /* 컨트롤 조작 패널 */
+    .toolbar-panel {
+      background: var(--card-bg);
+      backdrop-filter: blur(16px);
+      border: 1px solid var(--card-border);
+      border-radius: 16px;
+      padding: 1.1rem 1.4rem;
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+      gap: 1rem;
+      box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+    }
+
+    .controls-row {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 1.25rem;
+    }
+
+    .control-group {
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+    }
+
+    .control-label {
+      font-size: 0.88rem;
+      font-weight: 700;
+      color: #cbd5e1;
+    }
+
+    .stepper-box {
+      display: inline-flex;
+      align-items: center;
+      background: rgba(15, 23, 42, 0.9);
+      border: 1px solid rgba(56, 189, 248, 0.35);
+      border-radius: 10px;
+      overflow: hidden;
+    }
+
+    .btn-step {
+      background: transparent;
+      border: none;
+      color: #38bdf8;
+      width: 38px;
+      height: 38px;
+      font-size: 1.2rem;
+      font-weight: bold;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      transition: background 0.15s ease;
+    }
+
+    .btn-step:hover {
+      background: rgba(56, 189, 248, 0.2);
+    }
+
+    .stepper-val {
+      min-width: 50px;
+      text-align: center;
+      font-size: 1.2rem;
+      font-weight: 800;
+      color: #ffffff;
+      font-feature-settings: "tnum";
+    }
+
+    .slider-users {
+      -webkit-appearance: none;
+      appearance: none;
+      width: 150px;
+      height: 6px;
+      background: #334155;
+      border-radius: 3px;
+      outline: none;
+      cursor: pointer;
+    }
+
+    .slider-users::-webkit-slider-thumb {
+      -webkit-appearance: none;
+      width: 18px;
+      height: 18px;
+      border-radius: 50%;
+      background: #38bdf8;
+      box-shadow: 0 0 10px rgba(56, 189, 248, 0.7);
+      cursor: pointer;
+      border: 2px solid #ffffff;
+    }
+
+    .quick-chips {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+    }
+
+    .btn-chip {
+      background: rgba(15, 23, 42, 0.85);
+      border: 1px solid rgba(56, 189, 248, 0.3);
+      color: #94a3b8;
+      padding: 0.4rem 0.85rem;
+      border-radius: 8px;
+      font-size: 0.84rem;
+      font-weight: 700;
+      cursor: pointer;
+      transition: all 0.15s ease;
+    }
+
+    .btn-chip:hover {
+      border-color: #38bdf8;
+      color: #ffffff;
+    }
+
+    .btn-chip.is-active {
+      background: #0284c7;
+      border-color: #38bdf8;
+      color: #ffffff;
+      box-shadow: 0 0 10px rgba(56, 189, 248, 0.4);
+    }
+
+    .info-guide {
+      background: rgba(15, 23, 42, 0.6);
+      border-left: 3px solid #38bdf8;
+      padding: 0.55rem 0.95rem;
+      border-radius: 0 8px 8px 0;
+      font-size: 0.84rem;
+      color: #cbd5e1;
+      line-height: 1.5;
+    }
+
+    .info-guide strong {
+      color: #38bdf8;
+    }
+
+    /* 3. 딥페이크 비디오 그리드 */
+    #grid-container {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+      gap: 1.1rem;
+      flex: 1;
+    }
+
+    .user-card {
+      background: var(--card-bg);
+      backdrop-filter: blur(12px);
+      border: 1px solid var(--card-border);
+      border-radius: 14px;
+      overflow: hidden;
+      display: flex;
+      flex-direction: column;
+      box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+      transition: transform 0.2s ease, border-color 0.2s ease;
+      position: relative;
+    }
+
+    .user-card:hover {
+      border-color: var(--card-border-hover);
+      transform: translateY(-2px);
+    }
+
+    .user-card-header {
+      padding: 0.55rem 0.85rem;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      background: rgba(15, 23, 42, 0.8);
+      border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+    }
+
+    .user-name-box {
+      display: flex;
+      align-items: center;
+      gap: 0.45rem;
+      font-size: 0.82rem;
+      font-weight: 700;
+      color: #e2e8f0;
+    }
+
+    .user-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: #10b981;
+      box-shadow: 0 0 8px #10b981;
+    }
+
+    .character-tag {
+      font-size: 0.72rem;
+      color: #38bdf8;
+      background: rgba(2, 132, 199, 0.2);
+      border: 1px solid rgba(56, 189, 248, 0.35);
+      padding: 2px 8px;
+      border-radius: 6px;
+      font-weight: 700;
+      max-width: 150px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .video-viewport {
+      position: relative;
+      width: 100%;
+      aspect-ratio: 4 / 3;
+      background: #030611;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      overflow: hidden;
+    }
+
+    .video-viewport canvas {
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+      display: block;
+    }
+
+    .stat-overlay {
+      position: absolute;
+      bottom: 6px;
+      left: 6px;
+      right: 6px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      background: rgba(9, 13, 22, 0.85);
+      backdrop-filter: blur(8px);
+      padding: 4px 8px;
+      border-radius: 8px;
+      font-size: 0.72rem;
+      font-weight: 600;
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      pointer-events: none;
+    }
+
+    .stat-overlay .stat-fps {
+      color: #38bdf8;
+      font-feature-settings: "tnum";
+      font-weight: 700;
+    }
+
+    .stat-overlay .stat-latency {
+      color: #a7f3d0;
+      font-feature-settings: "tnum";
+    }
+
+    .stat-overlay .stat-status {
+      font-size: 0.68rem;
+      color: #cbd5e1;
+    }
+
+    /* 알림 메시지 */
+    #toast {
+      position: fixed;
+      bottom: 2rem;
+      right: 2rem;
+      background: #0f172a;
+      border: 1px solid #38bdf8;
+      color: #ffffff;
+      padding: 0.8rem 1.4rem;
+      border-radius: 12px;
+      font-size: 0.9rem;
+      box-shadow: 0 10px 30px rgba(0,0,0,0.5);
+      z-index: 1000;
+      opacity: 0;
+      pointer-events: none;
+      transform: translateY(10px);
+      transition: all 0.25s ease;
+    }
+
+    #toast.show {
+      opacity: 1;
+      transform: translateY(0);
+    }
+  </style>
+</head>
+<body>
+
+  <!-- 1. 상단 글로벌 헤더 -->
+  <header>
+    <div class="brand-section">
+      <div class="brand-icon">🎭</div>
+      <div class="brand-text">
+        <h1>YUNSEUL MEET - 딥페이크 5~10인 실시간 카메라 모션 검증기</h1>
+        <p>내 웹캠 카메라 모션을 인식하여 랜덤 캐릭터들로 실시간 병렬 딥페이크</p>
+      </div>
+    </div>
+
+    <!-- 외부 접속 URL 안내 -->
+    <div class="url-banner">
+      <span class="url-tag">🌐 외부/모바일 주소:</span>
+      <span class="url-link" id="ext-url-display">http://192.168.0.77:3000/stress_test.html</span>
+      <button class="btn-copy" id="btn-copy-url">복사</button>
+    </div>
+
+    <div class="metrics-bar">
+      <div class="metric-chip">
+        <span class="metric-label">동시 딥페이크</span>
+        <span class="metric-val" id="metric-clients">12 명</span>
+      </div>
+      <div class="metric-chip">
+        <span class="metric-label">전체 합산 FPS</span>
+        <span class="metric-val" id="metric-total-fps">0.0</span>
+      </div>
+      <div class="metric-chip">
+        <span class="metric-label">평균 레이턴시</span>
+        <span class="metric-val" id="metric-avg-latency">-- ms</span>
+      </div>
+      <div class="badge-test-status" id="badge-status">
+        <span>🏆 12인 풀로드 딥페이크 검증 모드</span>
+      </div>
+    </div>
+  </header>
+
+  <!-- 2. 컨트롤 데크 (내 카메라 + 조작 패널) -->
+  <section class="control-deck">
+    <!-- 내 실제 웹캠 프리뷰 카드 -->
+    <div class="webcam-card">
+      <div class="webcam-header">
+        <span>📷 모션 입력 소스</span>
+        <span id="cam-status" style="font-size:0.75rem; color:#38bdf8;">샘플 모션 가동중</span>
+      </div>
+      <div class="webcam-view">
+        <video id="my-webcam" autoplay playsinline muted></video>
+        <canvas id="source-preview-canvas" width="480" height="360"></canvas>
+        <div class="source-tag-overlay" id="source-tag">샘플 모션 (자동 움직임)</div>
+      </div>
+      <button class="btn-cam-toggle" id="btn-toggle-cam">
+        <span>📹 내 웹캠 카메라 켜기</span>
+      </button>
+    </div>
+
+    <!-- 조작 및 설명 패널 -->
+    <div class="toolbar-panel">
+      <div class="controls-row">
+        <div class="control-group">
+          <span class="control-label">동시 딥페이크 캐릭터 수:</span>
+          <div class="stepper-box">
+            <button class="btn-step" id="btn-dec" title="1명 감소">−</button>
+            <span class="stepper-val" id="stepper-count">12</span>
+            <button class="btn-step" id="btn-inc" title="1명 추가">+</button>
+          </div>
+          <input type="range" class="slider-users" id="user-slider" min="1" max="12" value="12" step="1">
+        </div>
+
+        <div class="quick-chips">
+          <button class="btn-chip" id="chip-5">5명 검증</button>
+          <button class="btn-chip" id="chip-10">🚀 10명 검증</button>
+          <button class="btn-chip is-active" id="chip-12">🏆 최대 12명 (기본)</button>
+          <button class="btn-chip" id="btn-shuffle" title="캐릭터 랜덤 재배정">🎲 캐릭터 섞기</button>
+        </div>
+      </div>
+
+      <div class="info-guide">
+        💡 <strong>실시간 검증 방법:</strong> 접속 즉시 12명의 캐릭터가 샘플 모션으로 딥페이크되어 움직입니다. <strong>[📹 내 웹캠 카메라 켜기]</strong>를 누르면 <strong>내 실제 얼굴 모션으로 전환</strong>되어, 내가 고개를 돌리고 표정을 지을 때마다 <strong>화면 속 12개 캐릭터들이 일제히 내 움직임을 따라 딥페이크</strong>됩니다!
+      </div>
+    </div>
+  </section>
+
+  <!-- 3. 실시간 딥페이크 그리드 (5~10명) -->
+  <main id="grid-container"></main>
+
+  <div id="toast"></div>
+
+  <script>
+    // ── 상태 관리 ─────────────────────────────────────────────
+    let targetCount = 12;
+    let isWebcamActive = false;
+    let webcamStream = null;
+    let availablePhotos = [];
+    const clients = new Map(); // id -> SwapClient
+
+    // 공용 모션 생성 캔버스 (480x360)
+    const motionCanvas = document.createElement('canvas');
+    motionCanvas.width = 480;
+    motionCanvas.height = 360;
+    const motionCtx = motionCanvas.getContext('2d', { alpha: false });
+
+    // 중앙 집중형 마스터 프레임 인코더 (초당 16~20회 인코딩하여 모든 클라이언트가 공유)
+    let masterFrameBytes = null;
+    let masterFrameSeq = 0;
+    let isEncodingMaster = false;
+
+    // 샘플 모션용 베이스 인물 이미지
+    const sampleFaceImg = new Image();
+    sampleFaceImg.crossOrigin = 'anonymous';
+    let sampleFaceLoaded = false;
+
+    function showToast(msg) {
+      const t = document.getElementById('toast');
+      t.textContent = msg;
+      t.classList.add('show');
+      setTimeout(() => t.classList.remove('show'), 2500);
+    }
+
+    // ── 외부 접속 URL 설정 ──────────────────────────────────────
+    function setupExternalUrl() {
+      const proto = window.location.protocol;
+      const port = window.location.port ? `:${window.location.port}` : '';
+      let urlText = window.location.href;
+
+      if (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1') {
+        urlText = `${proto}//192.168.0.77${port}/stress_test.html`;
+      }
+      document.getElementById('ext-url-display').textContent = urlText;
+      document.getElementById('btn-copy-url').addEventListener('click', () => {
+        navigator.clipboard.writeText(urlText).then(() => {
+          showToast('외부 접속 주소가 클립보드에 복사되었습니다!');
+        }).catch(() => {
+          showToast(`주소: ${urlText}`);
+        });
+      });
+    }
+
+    // ── 카메라(웹캠) 제어 ─────────────────────────────────────────
+    async function startWebcam() {
+      const video = document.getElementById('my-webcam');
+      const camBtn = document.getElementById('btn-toggle-cam');
+      const camStatus = document.getElementById('cam-status');
+      const sourceTag = document.getElementById('source-tag');
+
+      try {
+        camStatus.textContent = '카메라 연결 중...';
+        const stream = await navigator.mediaDevices.getUserMedia({
+          video: {
+            width: { ideal: 640 },
+            height: { ideal: 480 },
+            facingMode: 'user',
+            frameRate: { ideal: 30 }
+          },
+          audio: false
+        });
+
+        webcamStream = stream;
+        video.srcObject = stream;
+        await video.play();
+
+        isWebcamActive = true;
+        video.style.display = 'block';
+        document.getElementById('source-preview-canvas').style.display = 'none';
+
+        camStatus.textContent = '🟢 내 웹캠 실시간 작동';
+        camStatus.style.color = '#10b981';
+        sourceTag.textContent = '내 웹캠 (실시간 표정/모션)';
+        sourceTag.style.color = '#10b981';
+        camBtn.classList.add('is-active');
+        camBtn.innerHTML = '<span>⏹ 내 웹캠 끄기</span>';
+
+        showToast('내 웹캠이 연결되었습니다! 고개를 움직이면 캐릭터들이 내 움직임을 따라 딥페이크됩니다.');
+      } catch (err) {
+        console.error('Webcam error:', err);
+        camStatus.textContent = '카메라 권한 필요';
+        camStatus.style.color = '#f59e0b';
+        showToast('카메라 권한을 허용해 주시거나 샘플 모션으로 계속 진행됩니다.');
+      }
+    }
+
+    function stopWebcam() {
+      if (webcamStream) {
+        webcamStream.getTracks().forEach(t => t.stop());
+        webcamStream = null;
+      }
+      isWebcamActive = false;
+      const video = document.getElementById('my-webcam');
+      video.srcObject = null;
+      video.style.display = 'none';
+      document.getElementById('source-preview-canvas').style.display = 'block';
+
+      const camStatus = document.getElementById('cam-status');
+      camStatus.textContent = '샘플 모션 가동중';
+      camStatus.style.color = '#38bdf8';
+      const sourceTag = document.getElementById('source-tag');
+      sourceTag.textContent = '샘플 모션 (자동 움직임)';
+      sourceTag.style.color = '#38bdf8';
+
+      const camBtn = document.getElementById('btn-toggle-cam');
+      camBtn.classList.remove('is-active');
+      camBtn.innerHTML = '<span>📹 내 웹캠 카메라 켜기</span>';
+    }
+
+    // ── 샘플 인물 모션 베이스 (사진 로딩 전 세련된 다크 아바타 플레이스홀더) ────
+    function drawCleanPlaceholderFace(ctx) {
+      // 차분한 다크 배경
+      ctx.fillStyle = '#0f172a';
+      ctx.fillRect(-240, -180, 480, 360);
+
+      // 세련된 아바타 실루엣
+      ctx.fillStyle = '#1e293b';
+      ctx.beginPath();
+      ctx.arc(0, -20, 50, 0, Math.PI * 2);
+      ctx.fill();
+
+      ctx.beginPath();
+      ctx.ellipse(0, 90, 80, 50, 0, 0, Math.PI * 2);
+      ctx.fill();
+
+      ctx.fillStyle = '#64748b';
+      ctx.font = '600 14px Pretendard, sans-serif';
+      ctx.textAlign = 'center';
+      ctx.fillText('캐릭터 모션 준비 중...', 0, 80);
+    }
+
+    // ── 공통 모션 프레임 생성 루프 (30 FPS 렌더링 + 18 FPS 중앙 JPEG 인코딩) ────
+    function startMasterMotionLoop() {
+      const previewCanvas = document.getElementById('source-preview-canvas');
+      const previewCtx = previewCanvas.getContext('2d');
+      const video = document.getElementById('my-webcam');
+
+      const cw = motionCanvas.width;
+      const ch = motionCanvas.height;
+
+      function render() {
+        const now = performance.now();
+
+        if (isWebcamActive && video.readyState >= 2) {
+          // 1. 내 실제 웹캠 프레임 캡처 (거울 반사)
+          motionCtx.save();
+          motionCtx.translate(cw, 0);
+          motionCtx.scale(-1, 1);
+          motionCtx.drawImage(video, 0, 0, cw, ch);
+          motionCtx.restore();
+        } else {
+          // 2. 샘플 인물 모션 생성 (실제 photo 폴더 캐릭터 기반 자연스러운 3D 두부 회전 & 호흡)
+          motionCtx.fillStyle = '#0b0f19';
+          motionCtx.fillRect(0, 0, cw, ch);
+
+          motionCtx.save();
+          const angle = Math.sin(now * 0.0018) * 0.045; // 좌우 ±2.5도 기울기
+          const dx = Math.sin(now * 0.0012) * 10;        // 좌우 이동 ±10px
+          const dy = Math.cos(now * 0.0015) * 6;         // 상하 끄덕임 ±6px
+          const scale = 1.0 + Math.sin(now * 0.001) * 0.03; // 호흡 줌
+
+          motionCtx.translate(cw / 2 + dx, ch / 2 + dy);
+          motionCtx.rotate(angle);
+          motionCtx.scale(scale, scale);
+
+          if (sampleFaceLoaded && sampleFaceImg.naturalWidth > 0) {
+            const iw = sampleFaceImg.naturalWidth;
+            const ih = sampleFaceImg.naturalHeight;
+            const r = Math.max(cw / iw, ch / ih);
+            const nw = iw * r;
+            const nh = ih * r;
+            motionCtx.drawImage(sampleFaceImg, -nw / 2, -nh / 2, nw, nh);
+          } else {
+            drawCleanPlaceholderFace(motionCtx);
+          }
+          motionCtx.restore();
+        }
+
+        // 소스 프리뷰 캔버스에 복사
+        previewCtx.drawImage(motionCanvas, 0, 0, previewCanvas.width, previewCanvas.height);
+
+        // 3. 중앙 집중형 JPEG 인코딩 (초당 약 18회 인코딩하여 모든 클라이언트가 즉시 전송)
+        if (!isEncodingMaster) {
+          isEncodingMaster = true;
+          motionCanvas.toBlob(async (blob) => {
+            if (blob) {
+              try {
+                masterFrameBytes = new Uint8Array(await blob.arrayBuffer());
+                masterFrameSeq++;
+              } catch {}
+            }
+            // 약 55ms 딜레이 후 다음 인코딩 허용 (약 18 FPS)
+            setTimeout(() => { isEncodingMaster = false; }, 55);
+          }, 'image/jpeg', 0.68);
+        }
+
+        requestAnimationFrame(render);
+      }
+      requestAnimationFrame(render);
+    }
+
+    // ── 단일 딥페이크 클라이언트 클래스 ───────────────────────────
+    class SwapClient {
+      constructor(id, characterPhoto) {
+        this.id = id;
+        this.clientId = `stress_user_${id}`;
+        this.character = characterPhoto; // 스왑할 타겟 캐릭터
+        this.ws = null;
+        this.running = true;
+
+        this.fpsCount = 0;
+        this.currentFps = 0;
+        this.lastFpsTime = performance.now();
+        this.latencySamples = [];
+        this.currentLatency = 0;
+
+        this._inFlight = 0;
+        this._maxInFlight = 1;
+        this._lastSendTime = 0;
+        this._serverFpsCap = 16;
+        this._lastSentSeq = -1;
+
+        this.initDom();
+        this.initWebSocket();
+        this.startLoop();
+      }
+
+      initDom() {
+        const grid = document.getElementById('grid-container');
+        const card = document.createElement('div');
+        card.className = 'user-card';
+        card.id = `card-${this.id}`;
+
+        const charDisplayName = this.character.name || this.character.id || `캐릭터 #${this.id}`;
+
+        card.innerHTML = `
+          <div class="user-card-header">
+            <div class="user-name-box">
+              <span class="user-dot" id="dot-${this.id}"></span>
+              <span>가상 참가자 #${this.id}</span>
+            </div>
+            <span class="character-tag" title="${charDisplayName}">🎭 ${charDisplayName}</span>
+          </div>
+          <div class="video-viewport">
+            <canvas id="view-${this.id}" width="480" height="360"></canvas>
+            <div class="stat-overlay">
+              <span class="stat-fps" id="fps-${this.id}">0.0 FPS</span>
+              <span class="stat-latency" id="lat-${this.id}">-- ms</span>
+              <span class="stat-status" id="st-${this.id}">연결 중...</span>
+            </div>
+          </div>
+        `;
+        grid.appendChild(card);
+
+        this.viewCanvas = card.querySelector(`#view-${this.id}`);
+        this.viewCtx = this.viewCanvas.getContext('2d');
+        this.fpsEl = card.querySelector(`#fps-${this.id}`);
+        this.latEl = card.querySelector(`#lat-${this.id}`);
+        this.dotEl = card.querySelector(`#dot-${this.id}`);
+        this.stEl = card.querySelector(`#st-${this.id}`);
+
+        // 초기 화면에 캐릭터 사진 표시
+        if (this.character.url) {
+          const charImg = new Image();
+          charImg.crossOrigin = 'anonymous';
+          charImg.onload = () => {
+            this.viewCtx.drawImage(charImg, 0, 0, this.viewCanvas.width, this.viewCanvas.height);
+          };
+          charImg.src = this.character.url;
+        }
+      }
+
+      initWebSocket() {
+        if (this.ws) {
+          try { this.ws.close(); } catch {}
+          this.ws = null;
+        }
+
+        try {
+          const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+          const host = window.location.host;
+          let wsUrl;
+          if (window.location.port === '8765') {
+            wsUrl = `${proto}//${host}/ws?client_id=${encodeURIComponent(this.clientId)}`;
+          } else {
+            wsUrl = `${proto}//${host}/face-swap-ws?client=${encodeURIComponent(this.clientId)}`;
+          }
+
+          this.ws = new WebSocket(wsUrl);
+          this.ws.binaryType = 'arraybuffer';
+
+          this.ws.onopen = () => {
+            this.dotEl.style.background = '#10b981';
+            this.dotEl.style.boxShadow = '0 0 8px #10b981';
+            this.stEl.textContent = '🟢 실시간 준비됨';
+            try {
+              this.ws.send(JSON.stringify({ type: 'hello', clientId: this.clientId }));
+              if (this.character && this.character.id) {
+                this.ws.send(JSON.stringify({ type: 'set_source', source: this.character.id }));
+              }
+            } catch {}
+          };
+
+          this.ws.onmessage = async (evt) => {
+            // Blob 및 ArrayBuffer 둘 다 지원
+            let arrayBuffer = null;
+            if (evt.data instanceof ArrayBuffer) {
+              arrayBuffer = evt.data;
+            } else if (evt.data instanceof Blob) {
+              try {
+                arrayBuffer = await evt.data.arrayBuffer();
+              } catch {}
+            }
+
+            if (arrayBuffer && arrayBuffer.byteLength >= 100) {
+              const now = performance.now();
+              if (this._t_send) {
+                const rtt = Math.round(now - this._t_send);
+                this.latencySamples.push(rtt);
+                if (this.latencySamples.length > 15) this.latencySamples.shift();
+                this.currentLatency = Math.round(this.latencySamples.reduce((a, b) => a + b, 0) / this.latencySamples.length);
+              }
+
+              this.fpsCount++;
+              const blob = new Blob([arrayBuffer], { type: 'image/jpeg' });
+              
+              // 고속 렌더링: createImageBitmap 우선, 실패 시 Image ObjectURL 폴백
+              let rendered = false;
+              if (typeof createImageBitmap === 'function') {
+                try {
+                  const bmp = await createImageBitmap(blob);
+                  this.viewCtx.drawImage(bmp, 0, 0, this.viewCanvas.width, this.viewCanvas.height);
+                  bmp.close();
+                  rendered = true;
+                } catch {}
+              }
+              if (!rendered) {
+                const url = URL.createObjectURL(blob);
+                const img = new Image();
+                img.onload = () => {
+                  this.viewCtx.drawImage(img, 0, 0, this.viewCanvas.width, this.viewCanvas.height);
+                  URL.revokeObjectURL(url);
+                };
+                img.src = url;
+              }
+              this.stEl.textContent = '🟢 딥페이크 중';
+              this._settleSwap();
+            } else if (typeof evt.data === 'string') {
+              try {
+                const msg = JSON.parse(evt.data);
+                if (msg.type === 'throttle' && msg.fps) {
+                  this._serverFpsCap = msg.fps;
+                } else if (msg.type === 'skip') {
+                  this._settleSwap();
+                }
+              } catch {}
+            }
+          };
+
+          this.ws.onerror = () => {
+            this.dotEl.style.background = '#f59e0b';
+            this._settleSwap();
+          };
+
+          this.ws.onclose = () => {
+            this.dotEl.style.background = '#ef4444';
+            this.dotEl.style.boxShadow = 'none';
+            this.stEl.textContent = '재연결 대기';
+            this._settleSwap();
+          };
+        } catch {
+          this._settleSwap();
+        }
+      }
+
+      _settleSwap() {
+        this._inFlight = Math.max(0, this._inFlight - 1);
+      }
+
+      startLoop() {
+        const tick = () => {
+          if (!this.running) return;
+          const now = performance.now();
+
+          // 400ms 이상 응답 없으면 강제 복구 (지연 누적 완벽 방지)
+          if (now - this._lastSendTime > 400) {
+            this._inFlight = 0;
+          }
+
+          // FPS 및 레이턴시 갱신 (1초마다)
+          if (now - this.lastFpsTime >= 1000) {
+            this.currentFps = this.fpsCount;
+            this.fpsCount = 0;
+            this.lastFpsTime = now;
+            this.fpsEl.textContent = `${this.currentFps.toFixed(1)} FPS`;
+            if (this.currentLatency > 0) {
+              this.latEl.textContent = `${this.currentLatency} ms`;
+            }
+          }
+
+          // 프레임 전송 (FPS 스로틀링 반영)
+          const minInterval = 1000.0 / Math.max(4, this._serverFpsCap);
+          if (now - this._lastSendTime >= minInterval) {
+            if (this._inFlight < this._maxInFlight) {
+              this.sendMotionFrame();
+            }
+          }
+
+          requestAnimationFrame(tick);
+        };
+        requestAnimationFrame(tick);
+      }
+
+      sendMotionFrame() {
+        if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
+          if (!this.ws || this.ws.readyState === WebSocket.CLOSED) {
+            this.initWebSocket();
+          }
+          return;
+        }
+
+        if (!masterFrameBytes || masterFrameBytes.length === 0) {
+          return;
+        }
+
+        // 이미 보낸 마스터 프레임 시퀀스면 다음 인코딩 대기
+        if (masterFrameSeq === this._lastSentSeq) {
+          return;
+        }
+
+        this._inFlight++;
+        this._lastSendTime = performance.now();
+        this._t_send = performance.now();
+        this._lastSentSeq = masterFrameSeq;
+
+        try {
+          const targetFace = this.character.id || 'superman';
+          const nameBytes = new TextEncoder().encode(targetFace);
+          const header = new Uint8Array(4);
+          new DataView(header.buffer).setUint32(0, nameBytes.length);
+          const packet = new Uint8Array(4 + nameBytes.length + masterFrameBytes.length);
+          packet.set(header, 0);
+          packet.set(nameBytes, 4);
+          packet.set(masterFrameBytes, 4 + nameBytes.length);
+          this.ws.send(packet);
+        } catch {
+          this._settleSwap();
+        }
+      }
+
+      setCharacter(newChar) {
+        this.character = newChar;
+        const card = document.getElementById(`card-${this.id}`);
+        if (card) {
+          const tag = card.querySelector('.character-tag');
+          if (tag) tag.textContent = `🎭 ${newChar.name || newChar.id}`;
+        }
+        if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+          try {
+            this.ws.send(JSON.stringify({ type: 'set_source', source: newChar.id }));
+          } catch {}
+        }
+      }
+
+      destroy() {
+        this.running = false;
+        if (this.ws) {
+          try { this.ws.close(); } catch {}
+          this.ws = null;
+        }
+        const card = document.getElementById(`card-${this.id}`);
+        if (card) card.remove();
+      }
+    }
+
+    // ── 참가자 수 동적 동기화 ─────────────────────────────────────
+    function syncClientCount(target) {
+      target = Math.max(1, Math.min(12, target));
+      targetCount = target;
+
+      document.getElementById('stepper-count').textContent = target;
+      document.getElementById('user-slider').value = target;
+      document.getElementById('metric-clients').textContent = `${target} 명`;
+
+      // 칩 활성화 상태 동기화
+      document.getElementById('chip-5').classList.toggle('is-active', target === 5);
+      document.getElementById('chip-10').classList.toggle('is-active', target === 10);
+      document.getElementById('chip-12').classList.toggle('is-active', target === 12);
+
+      // 초과 참가자 제거
+      for (const [id, client] of Array.from(clients.entries())) {
+        if (id > target) {
+          client.destroy();
+          clients.delete(id);
+        }
+      }
+
+      // 부족한 참가자 추가 (랜덤 캐릭터 배정)
+      for (let i = 1; i <= target; i++) {
+        if (!clients.has(i)) {
+          const char = getCharacterForSlot(i);
+          const client = new SwapClient(i, char);
+          clients.set(i, client);
+        }
+      }
+
+      updateStatusBadge();
+    }
+
+    function getCharacterForSlot(slotId) {
+      if (availablePhotos.length === 0) {
+        return { id: 'superman', name: '슈퍼맨', url: '' };
+      }
+      const idx = (slotId - 1) % availablePhotos.length;
+      return availablePhotos[idx];
+    }
+
+    function shuffleCharacters() {
+      availablePhotos.sort(() => Math.random() - 0.5);
+      for (const [id, client] of clients.entries()) {
+        const char = getCharacterForSlot(id);
+        client.setCharacter(char);
+      }
+      showToast('모든 캐릭터가 랜덤으로 재배정되었습니다!');
+    }
+
+    function updateStatusBadge() {
+      const badge = document.getElementById('badge-status');
+      if (targetCount >= 12) {
+        badge.className = 'badge-test-status';
+        badge.innerHTML = '<span>🏆 12인 풀로드 딥페이크 검증 모드</span>';
+      } else if (targetCount >= 10) {
+        badge.className = 'badge-test-status';
+        badge.innerHTML = '<span>🚀 10인 동시 딥페이크 검증 모드</span>';
+      } else {
+        badge.className = 'badge-test-status waiting';
+        badge.innerHTML = `<span>⚡ ${targetCount}인 실시간 딥페이크 검증 모드</span>`;
+      }
+    }
+
+    // ── 글로벌 모니터링 루프 ──────────────────────────────────────
+    function startMetricsLoop() {
+      setInterval(() => {
+        let totalFps = 0;
+        let latSum = 0;
+        let latCount = 0;
+
+        for (const client of clients.values()) {
+          totalFps += client.currentFps;
+          if (client.currentLatency > 0) {
+            latSum += client.currentLatency;
+            latCount++;
+          }
+        }
+
+        document.getElementById('metric-total-fps').textContent = totalFps.toFixed(1);
+        if (latCount > 0) {
+          const avgLat = Math.round(latSum / latCount);
+          document.getElementById('metric-avg-latency').textContent = `${avgLat} ms`;
+        } else {
+          document.getElementById('metric-avg-latency').textContent = '-- ms';
+        }
+      }, 500);
+    }
+
+    // ── 초기화 및 이벤트 등록 ───────────────────────────────────
+    async function init() {
+      setupExternalUrl();
+
+      // 사진 목록 로드
+      try {
+        const res = await fetch('/api/photos');
+        if (res.ok) {
+          const data = await res.json();
+          if (data.ok && Array.isArray(data.photos) && data.photos.length > 0) {
+            availablePhotos = data.photos;
+          }
+        }
+      } catch (err) {
+        console.warn('Photos load fallback:', err);
+      }
+
+      if (availablePhotos.length === 0) {
+        availablePhotos = [
+          { id: 'superman', name: '슈퍼맨', url: '' },
+          { id: 'batman', name: '배트맨', url: '' }
+        ];
+      }
+
+      // 샘플 모션용 베이스 인물 사진 로드 (photo 폴더의 실제 캐릭터 사진을 확실하게 로드 후 시작)
+      if (availablePhotos.length > 0) {
+        const basePhoto = availablePhotos[Math.floor(Math.random() * availablePhotos.length)];
+        if (basePhoto && basePhoto.url) {
+          await new Promise((resolve) => {
+            sampleFaceImg.onload = () => {
+              sampleFaceLoaded = true;
+              resolve();
+            };
+            sampleFaceImg.onerror = () => {
+              console.warn('Sample face image load failed:', basePhoto.url);
+              resolve();
+            };
+            sampleFaceImg.src = basePhoto.url;
+            if (sampleFaceImg.complete && sampleFaceImg.naturalWidth > 0) {
+              sampleFaceLoaded = true;
+              resolve();
+            }
+          });
+        }
+      }
+
+      // 카메라 토글 버튼 바인딩
+      document.getElementById('btn-toggle-cam').addEventListener('click', () => {
+        if (isWebcamActive) {
+          stopWebcam();
+        } else {
+          startWebcam();
+        }
+      });
+
+      // 스텝 버튼 & 슬라이더
+      document.getElementById('btn-dec').addEventListener('click', () => {
+        if (targetCount > 1) syncClientCount(targetCount - 1);
+      });
+      document.getElementById('btn-inc').addEventListener('click', () => {
+        if (targetCount < 12) syncClientCount(targetCount + 1);
+      });
+      document.getElementById('user-slider').addEventListener('input', (e) => {
+        syncClientCount(parseInt(e.target.value, 10));
+      });
+
+      // 퀵 칩 버튼들
+      document.getElementById('chip-5').addEventListener('click', () => syncClientCount(5));
+      document.getElementById('chip-10').addEventListener('click', () => syncClientCount(10));
+      document.getElementById('chip-12').addEventListener('click', () => syncClientCount(12));
+      document.getElementById('btn-shuffle').addEventListener('click', shuffleCharacters);
+
+      // 1. 공통 모션 생성 및 마스터 인코더 루프 시작
+      startMasterMotionLoop();
+
+      // 2. 초기 12명 가상 클라이언트 기동
+      syncClientCount(12);
+      startMetricsLoop();
+    }
+
+    window.addEventListener('DOMContentLoaded', init);
+  </script>
+</body>
+</html>

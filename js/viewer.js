@@ -9,7 +9,7 @@ import {
   setSelectedBroadcaster,
 } from './viewers-panel.js?v=20260826mic1';
 import { WebrtcSignaling } from './webrtc/signaling.js?v=20260715j';
-import { ViewerSubscriber } from './webrtc/viewer-subscriber.js?v=20260926camfix2';
+import { ViewerSubscriber } from './webrtc/viewer-subscriber.js?v=20260929watchdog1';
 import { setupViewerZoom } from './viewer-zoom.js?v=20260819b';
 import { setupChatPanel } from './chat-panel.js?v=20260918fix2';
 import { CamFocusManager, VoiceActivityMonitor } from './cam-focus-manager.js?v=20260918focus1';
@@ -65,10 +65,45 @@ let subscriber = null;
 let chatPanel = null;
 let interactionMode = 'bidirectional';
 let requireMic = sessionStorage.getItem('requireMic') === 'true';
+let allowClientCamera = true;
+let allowClientDeepfake = true;
+
 /** 호스트가 아직 링크를 열어 둔 동안 유지 */
 let activeHostLink = null; // { url, title }
 let isMeetingStarted = false;
 let currentViewers = [];
+
+function applyRoomPermissions(state) {
+  if (!state) return;
+  allowClientCamera = state.allowClientCamera !== false;
+  allowClientDeepfake = allowClientCamera && (state.allowClientDeepfake !== false);
+
+  const btnAvCam = document.getElementById('btn-av-cam');
+  if (btnAvCam) {
+    if (!allowClientCamera) {
+      btnAvCam.classList.remove('is-active');
+      btnAvCam.title = '호스트가 카메라를 허용하지 않은 방입니다 (마이크만 가능)';
+      btnAvCam.style.opacity = '0.4';
+      // 이미 켜져 있다면 강제 끄기
+      if (subscriber?.cameraWanted) {
+        subscriber.setCameraEnabled(false).catch(() => {});
+      }
+    } else {
+      btnAvCam.style.opacity = '1.0';
+      btnAvCam.title = subscriber?.cameraWanted ? '카메라 켜짐 — 클릭하여 끄기' : '카메라 꺼짐 — 클릭하여 켜기';
+    }
+  }
+
+  const btnFaceEffect = document.getElementById('btn-face-effect');
+  if (btnFaceEffect) {
+    if (!allowClientDeepfake || !allowClientCamera) {
+      btnFaceEffect.classList.add('hidden');
+      btnFaceEffect.style.setProperty('display', 'none', 'important');
+    }
+  }
+  if (typeof updateAvatarUi === 'function') updateAvatarUi();
+  if (typeof syncAvButtons === 'function') syncAvButtons();
+}
 
 function applyInteractionMode(mode, isRequireMic = requireMic) {
   interactionMode = mode === 'unidirectional' ? 'unidirectional' : 'bidirectional';
@@ -565,6 +600,14 @@ async function applyFaceAndStartCamera(faceApplyFn) {
     alert('단방향(대규모 시청) 모드에서는 카메라를 사용할 수 없습니다.');
     return;
   }
+  if (!allowClientCamera) {
+    alert('이 방에서는 호스트가 참가자 카메라를 허용하지 않았습니다. 목소리(마이크)만 사용하실 수 있습니다.');
+    return;
+  }
+  if (!allowClientDeepfake) {
+    alert('이 방에서는 참가자의 딥페이크(AI 얼굴) 사용이 제한되어 있습니다. 호스트만 사용 가능합니다.');
+    return;
+  }
 
   const camAlreadyActive = !!(subscriber?.cameraWanted && subscriber?.hasCamera && subscriber?.cameraEnabled);
 
@@ -649,6 +692,14 @@ async function loadModalPhotos() {
 }
 
 function openDeepLiveCamModal() {
+  if (!allowClientCamera) {
+    alert('이 방에서는 호스트가 참가자 카메라를 허용하지 않았습니다. 목소리(마이크)만 사용하실 수 있습니다.');
+    return;
+  }
+  if (!allowClientDeepfake) {
+    alert('이 방에서는 참가자의 딥페이크(AI 얼굴) 사용이 제한되어 있습니다. 호스트만 사용 가능합니다.');
+    return;
+  }
   loadModalPhotos();
   deepLiveCamModal?.classList.remove('hidden');
 }
@@ -661,10 +712,10 @@ function updateAvatarUi() {
   const avMgr = subscriber?.avatarManager;
   const camOn = !!(subscriber?.cameraWanted && subscriber?.hasCamera && subscriber?.cameraEnabled);
 
-  // 카메라 활성화 시 상단 툴바에 얼굴 효과 버튼 표시
+  // 카메라 활성화 시 상단 툴바에 얼굴 효과 버튼 표시 (딥페이크 허용 방에서만)
   const btnFaceEffect = document.getElementById('btn-face-effect');
   if (btnFaceEffect) {
-    if (camOn) {
+    if (camOn && allowClientCamera && allowClientDeepfake) {
       btnFaceEffect.classList.remove('hidden');
       btnFaceEffect.style.setProperty('display', 'inline-flex', 'important');
     } else {
@@ -771,6 +822,10 @@ btnAvCam?.addEventListener('click', async () => {
     alert('단방향(대규모 시청) 모드에서는 카메라를 사용할 수 없습니다.');
     return;
   }
+  if (!allowClientCamera) {
+    alert('이 방에서는 호스트가 참가자 카메라를 허용하지 않았습니다. 목소리(마이크)만 사용하실 수 있습니다.');
+    return;
+  }
   const camAlreadyActive = !!(subscriber.cameraWanted && subscriber.hasCamera && subscriber.cameraEnabled);
   if (camAlreadyActive) {
     btnAvCam.disabled = true;
@@ -783,7 +838,31 @@ btnAvCam?.addEventListener('click', async () => {
     }
     return;
   }
-  // 카메라 비활성 상태일 때: 바로 영상 송출하지 않고 얼굴 선택 모달 오픈
+
+  // 딥페이크가 허용되지 않은 방이면 모달 없이 실물 카메라로 즉시 송출 시작
+  if (!allowClientDeepfake) {
+    btnAvCam.disabled = true;
+    try {
+      const avMgr = subscriber.avatarManager;
+      if (avMgr) {
+        avMgr.activeSwapFace = null;
+        avMgr.setRealMode?.();
+      }
+      const ok = await subscriber.setCameraEnabled(true);
+      if (!ok) {
+        const err = subscriber._lastCameraError;
+        alert(`카메라를 켤 수 없습니다: ${err?.message || '장치 권한 및 상태를 확인해 주세요.'}`);
+      } else {
+        showAvToast('카메라 켜기');
+      }
+    } finally {
+      btnAvCam.disabled = false;
+      syncAvButtons();
+    }
+    return;
+  }
+
+  // 딥페이크 허용 방: 얼굴 선택 모달 오픈
   openDeepLiveCamModal();
 });
 
@@ -1050,6 +1129,7 @@ function handleEvent(type, data) {
       // 내가 화면 공유 중이면 호스트 송출 FLAG로 UI를 덮어쓰지 않음
       if (isSelfSharingUi()) break;
       if (data.active) {
+        subscriber?.setStreamActive?.(true);
         if (streamOfflineTimer) {
           clearTimeout(streamOfflineTimer);
           streamOfflineTimer = null;
@@ -1076,6 +1156,7 @@ function handleEvent(type, data) {
         if (streamOfflineTimer) clearTimeout(streamOfflineTimer);
         streamOfflineTimer = setTimeout(() => {
           streamOfflineTimer = null;
+          subscriber?.setStreamActive?.(false);
           subscriber?.clearRemote();
           if (isMeetingStarted) {
             liveStage?.classList.add('hidden');
@@ -1101,6 +1182,7 @@ sync = new RoomSync({
   onRejoined: (data) => {
     console.log('[viewer] 1차 안전망: 소켓 재체결 성공, 상태 동기화 진행', data);
     if (data?.state) {
+      applyRoomPermissions(data.state);
       if (data.state.viewers) currentViewers = data.state.viewers;
       if (data.state.meetingStarted) {
         isMeetingStarted = true;
@@ -1109,12 +1191,15 @@ sync = new RoomSync({
         if (!tarotLounge._isCountingDown) tarotLounge.hide();
         showLive();
         syncStatus.textContent = '호스트 화면 연결 중…';
+        subscriber?.setStreamActive?.(true);
         subscriber?.watch?.().catch((err) => console.warn('[viewer] rejoin watch', err));
       } else if (data.state.streamActive) {
         // 송출은 있으나 미팅 시작 플래그가 아직 없으면 대기실 유지 + 수신만 준비
+        subscriber?.setStreamActive?.(true);
         subscriber?.watch?.().catch((err) => console.warn('[viewer] rejoin watch', err));
         if (!isMeetingStarted && !tarotLounge._isCountingDown) showTarotLounge();
       } else if (!isMeetingStarted && !tarotLounge._isCountingDown) {
+        subscriber?.setStreamActive?.(false);
         showTarotLounge();
       }
     }
@@ -1129,6 +1214,10 @@ sync.start()
       return;
     }
 
+    if (data.state) {
+      applyRoomPermissions(data.state);
+    }
+
     if (data.state?.interactionMode || data.state?.requireMic !== undefined) {
       applyInteractionMode(data.state?.interactionMode || interactionMode, !!data.state?.requireMic);
     }
@@ -1139,13 +1228,18 @@ sync.start()
       tarotLounge.hide();
       if (data.state?.streamActive) {
         showLive();
+        subscriber?.setStreamActive?.(true);
       } else {
+        subscriber?.setStreamActive?.(false);
         liveStage?.classList.add('hidden');
         waitingPanel?.classList.remove('hidden');
         setWaiting('호스트 화면 송출 대기', '호스트가 「송출」을 누르면 실시간으로 발표 화면이 보입니다.');
         syncStatus.textContent = '송출 대기';
       }
     } else {
+      if (data.state?.streamActive) {
+        subscriber?.setStreamActive?.(true);
+      }
       showTarotLounge();
     }
 
