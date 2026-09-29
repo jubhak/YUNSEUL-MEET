@@ -561,7 +561,8 @@ function showAvToast(text, { off = false } = {}) {
 
 function syncAvButtons() {
   const speakerOn = subscriber ? subscriber.speakerOn : false;
-  const micOn = subscriber ? subscriber.micOn : false;
+  const isReqMic = interactionMode === 'bidirectional' && requireMic;
+  const micOn = isReqMic ? true : (subscriber ? subscriber.micOn : false);
   const camOn = !!(subscriber?.cameraWanted && subscriber?.hasCamera && subscriber?.cameraEnabled);
   if (btnAvSpeaker) {
     btnAvSpeaker.classList.toggle('is-active', speakerOn);
@@ -571,7 +572,9 @@ function syncAvButtons() {
   if (btnAvMic) {
     btnAvMic.classList.toggle('is-active', micOn);
     btnAvMic.setAttribute('aria-pressed', micOn ? 'true' : 'false');
-    btnAvMic.title = micOn ? '마이크 켜짐 — 클릭하여 끄기' : '마이크 꺼짐 — 클릭하여 켜기';
+    btnAvMic.title = micOn
+      ? (isReqMic ? '마이크 켜짐 (마이크 필수 모임)' : '마이크 켜짐 — 클릭하여 끄기')
+      : '마이크 꺼짐 — 클릭하여 켜기';
   }
   if (btnAvCam) {
     btnAvCam.classList.toggle('is-active', camOn);
@@ -884,8 +887,9 @@ btnAvMic?.addEventListener('click', async () => {
     alert('단방향(대규모 시청) 모드에서는 마이크를 사용할 수 없습니다.');
     return;
   }
-  if (requireMic && subscriber.micOn) {
-    alert('이 미팅은 마이크 사용이 필수이므로 마이크를 끌 수 없습니다.');
+  if (interactionMode === 'bidirectional' && requireMic) {
+    showAvToast('마이크 필수 모임');
+    alert('마이크 필수 모임입니다. 마이크를 끌 수 없습니다.');
     return;
   }
   const next = !subscriber.micOn;

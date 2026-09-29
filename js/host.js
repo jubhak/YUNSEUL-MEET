@@ -65,6 +65,8 @@ let knownViewerIds = new Set();
 let activeBroadcasterId = null;
 let interactionMode = urlMode || sessionStorage.getItem('interactionMode') || 'bidirectional';
 let requireMic = params.get('rm') === '1' || sessionStorage.getItem('requireMic') === 'true';
+const MIC_PREF_KEY = 'yunseulStreamMic';
+let preferMic = requireMic || sessionStorage.getItem(MIC_PREF_KEY) === '1';
 let chatPanel = null;
 let isMeetingStarted = false;
 let hostParticipantsGrid = null;
@@ -72,6 +74,10 @@ let hostParticipantsGrid = null;
 function applyInteractionMode(mode, isRequireMic = requireMic) {
   interactionMode = mode === 'unidirectional' ? 'unidirectional' : 'bidirectional';
   requireMic = interactionMode === 'bidirectional' && !!isRequireMic;
+  if (requireMic) {
+    preferMic = true;
+    try { sessionStorage.setItem(MIC_PREF_KEY, '1'); } catch {}
+  }
   try {
     sessionStorage.setItem('interactionMode', interactionMode);
     sessionStorage.setItem('requireMic', requireMic ? 'true' : 'false');
@@ -761,11 +767,9 @@ const optStreamMic = document.getElementById('opt-stream-mic');
 const btnStreamStart = document.getElementById('btn-stream-start');
 const btnStreamCancel = document.getElementById('btn-stream-cancel');
 
-const MIC_PREF_KEY = 'yunseulStreamMic';
 const TAB_AUDIO_PREF_KEY = 'yunseulStreamTabAudio';
 
 let preferTabAudio = sessionStorage.getItem(TAB_AUDIO_PREF_KEY) !== '0';
-let preferMic = sessionStorage.getItem(MIC_PREF_KEY) === '1'; // 기본: 꺼짐 (미팅 대기중 소리 송출 방지)
 
 function setStatus(msg) {
   if (uploadStatus && msg) uploadStatus.textContent = msg;
@@ -790,9 +794,12 @@ function syncAvButtons() {
   const tabOn = webrtcPublisher?.isActive
     ? (webrtcPublisher.hasTabAudio ? webrtcPublisher.tabAudioEnabled : preferTabAudio)
     : preferTabAudio;
-  const micOn = webrtcPublisher
-    ? (webrtcPublisher.hasMic && webrtcPublisher.micEnabled)
-    : false;
+  const isReqMic = interactionMode === 'bidirectional' && requireMic;
+  const micOn = isReqMic
+    ? true
+    : (webrtcPublisher
+      ? (webrtcPublisher.hasMic && webrtcPublisher.micEnabled)
+      : preferMic);
   const camOn = !!(webrtcPublisher?.cameraWanted && webrtcPublisher?.hasCamera && webrtcPublisher?.cameraEnabled);
 
   if (btnAvSpeaker) {
@@ -805,7 +812,9 @@ function syncAvButtons() {
   if (btnAvMic) {
     btnAvMic.classList.toggle('is-active', !!micOn);
     btnAvMic.setAttribute('aria-pressed', micOn ? 'true' : 'false');
-    btnAvMic.title = micOn ? '마이크 켜짐' : '마이크 꺼짐';
+    btnAvMic.title = micOn
+      ? (isReqMic ? '마이크 켜짐 (마이크 필수 모임)' : '마이크 켜짐 — 클릭하여 끄기')
+      : '마이크 꺼짐 — 클릭하여 켜기';
   }
   if (btnAvCam) {
     btnAvCam.classList.toggle('is-active', !!camOn);
@@ -1258,6 +1267,10 @@ async function toggleTabAudio() {
 }
 
 async function toggleMic() {
+  if (interactionMode === 'bidirectional' && requireMic) {
+    alert('마이크 필수 모임입니다. 마이크를 끌 수 없습니다.');
+    return;
+  }
   if (!webrtcPublisher) return;
   preferMic = !preferMic;
   sessionStorage.setItem(MIC_PREF_KEY, preferMic ? '1' : '0');
@@ -1311,6 +1324,11 @@ document.getElementById('btn-share-now')?.addEventListener('click', () => startS
 document.getElementById('btn-camera-share')?.addEventListener('click', () => startCameraShare());
 
 optStreamMic?.addEventListener('change', () => {
+  if (interactionMode === 'bidirectional' && requireMic) {
+    optStreamMic.checked = true;
+    alert('마이크 필수 모임입니다. 마이크를 끌 수 없습니다.');
+    return;
+  }
   preferMic = !!optStreamMic.checked;
   sessionStorage.setItem(MIC_PREF_KEY, preferMic ? '1' : '0');
   syncAvButtons();

@@ -94,7 +94,7 @@ function defaultRoom(code, hostToken, interactionMode = 'bidirectional', require
     hostSocketId: null,
     hostClientId: null,
     hostName: '호스트',
-    hostMicState: 'off', // on | off | none
+    hostMicState: (normMode === 'bidirectional' && !!requireMic) ? 'on' : 'off', // on | off | none
     activeBroadcasterId: null,
     // bidirectional: 기존 화상 미팅 / unidirectional: 대규모 시청(참가자 produce 없음)
     interactionMode: normMode,
@@ -1270,7 +1270,9 @@ io.on('connection', (socket) => {
           socketId: socket.id,
           connected: true,
           lastSeen: Date.now(),
-          micState: prev?.micState === 'on' || prev?.micState === 'none' ? prev.micState : 'off',
+          micState: prev?.micState === 'on' || prev?.micState === 'none'
+            ? prev.micState
+            : (room.requireMic ? 'on' : 'off'),
         });
         room.lastActivity = Date.now();
       }
@@ -1673,7 +1675,10 @@ io.on('connection', (socket) => {
       const room = code ? getRoom(code) : null;
       if (!room || !socket.data.clientId) return;
       const raw = String(msg?.state || 'off');
-      const state = raw === 'on' || raw === 'none' ? raw : 'off';
+      let state = raw === 'on' || raw === 'none' ? raw : 'off';
+      if (room.requireMic && state === 'off') {
+        state = 'on';
+      }
       if (socket.data.role === 'host') {
         if (!requireHost(room, socket.data.hostToken)) return;
         if (room.hostMicState === state) return;
