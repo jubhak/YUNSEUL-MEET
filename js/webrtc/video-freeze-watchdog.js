@@ -31,8 +31,9 @@ export function attachVideoFreezeWatchdog(videoEl, {
   let recoverAttempts = 0;
   const escalate = () => {
     recoverAttempts += 1;
-    if (recoverAttempts >= 3) {
+    if (recoverAttempts >= 2) {
       recoverAttempts = 0;
+      console.warn(`[FreezeWatchdog] ${label} 정지 지속 감지 -> 자가 치유(onFullRecover) 실행`);
       try { onFullRecover?.(); } catch { /* ignore */ }
     }
   };
@@ -98,7 +99,7 @@ export function attachVideoFreezeWatchdog(videoEl, {
         console.warn(`[FreezeWatchdog] ${label} 패킷 일시 중단 -> 키프레임`);
         requestKf();
         videoEl.play?.().catch(() => {});
-        if (freezeCount >= mutedTicksBeforePli + 4) escalate();
+        if (freezeCount >= mutedTicksBeforePli + 2) escalate();
       }
       return;
     }
@@ -109,11 +110,12 @@ export function attachVideoFreezeWatchdog(videoEl, {
       if (freezeCount >= stuckTicksBeforePli) {
         requestKf();
         if (!offscreenPaused) videoEl.play?.().catch(() => {});
-        if (freezeCount >= stuckTicksBeforePli + 3) escalate();
+        if (freezeCount >= stuckTicksBeforePli + 2) escalate();
       }
     } else {
       lastTime = cur;
       freezeCount = 0;
+      recoverAttempts = 0;
     }
   }, interval);
 

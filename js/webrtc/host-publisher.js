@@ -251,8 +251,8 @@ export class HostPublisher {
 
     const vt = stream.getVideoTracks()[0];
     if (vt) {
-      // 'motion'으로 설정하여 정지 화면(슬라이드)에서도 0 fps로 떨어지지 않고 꾸준히 프레임을 송출하도록 보장
-      try { vt.contentHint = 'motion'; } catch { /* ignore */ }
+      // 화면 공유(PPT/문서)는 글씨 가독성을 위해 해상도 보존('detail')을 최우선으로 설정
+      try { vt.contentHint = 'detail'; } catch { /* ignore */ }
     }
     const surface = vt?.getSettings?.()?.displaySurface || '';
     if (surface === 'browser') {

@@ -25,9 +25,9 @@ const mediaCodecs = [
     mimeType: 'video/VP8',
     clockRate: 90000,
     parameters: {
-      'x-google-start-bitrate': 800,
-      'x-google-max-bitrate': 2500,
-      'x-google-min-bitrate': 200,
+      'x-google-start-bitrate': 1200,
+      'x-google-max-bitrate': 4500,
+      'x-google-min-bitrate': 300,
     },
   },
   {
@@ -38,9 +38,9 @@ const mediaCodecs = [
       'packetization-mode': 1,
       'profile-level-id': '42e01f',
       'level-asymmetry-allowed': 1,
-      'x-google-start-bitrate': 800,
-      'x-google-max-bitrate': 2500,
-      'x-google-min-bitrate': 200,
+      'x-google-start-bitrate': 1200,
+      'x-google-max-bitrate': 4500,
+      'x-google-min-bitrate': 300,
     },
   },
 ];
@@ -338,11 +338,11 @@ async function createWebRtcTransport(room) {
     enableTcp: true,
     // 공유기 UDP 40000–49999(44444 포함) 활용. TCP는 보조.
     preferUdp: true,
-    // 10인 다자간에서는 호스트 수신 트랜스포트가 카메라 10개 + 마이크 10개를
-    // 동시에 내려받는다. 초기 대역폭을 높여 ramp-up 동안의 화질 붕괴/멈춤을 줄인다.
-    initialAvailableOutgoingBitrate: 2_500_000,
-    minimumAvailableOutgoingBitrate: 300_000,
-    maxIncomingBitrate: 8_000_000,
+    // 10인 다자간 및 고해상도 화면 공유(1080p Detail) 지원:
+    // 초기 대역폭을 3.5Mbps로 확보하여 ramp-up 동안의 글씨 뭉개짐/화질 붕괴를 원천 차단
+    initialAvailableOutgoingBitrate: 3_500_000,
+    minimumAvailableOutgoingBitrate: 500_000,
+    maxIncomingBitrate: 10_000_000,
     enableSctp: false,
   });
   return {
@@ -853,6 +853,23 @@ function attachSfuHandlers(socket, ctx) {
           clientId,
           appData,
         }, appData);
+      }
+      cb?.({ ok: true });
+    } catch (err) {
+      cb?.({ error: err.message || 'sfu-error' });
+    }
+  });
+
+  socket.on('sfu-close-consumer', async (msg, cb) => {
+    try {
+      const code = ctx.getRoomCode();
+      const clientId = ctx.getClientId();
+      const room = sfuRooms.get(code);
+      const peer = room?.peers.get(clientId);
+      const consumer = peer?.consumers.get(msg?.consumerId);
+      if (consumer) {
+        consumer.close();
+        peer.consumers.delete(consumer.id);
       }
       cb?.({ ok: true });
     } catch (err) {

@@ -69,9 +69,6 @@ function isCodeTaken(code) {
 }
 
 function makeRoomCode() {
-  // 기본 선호 코드: 비어 있으면 1324 우선
-  if (!isCodeTaken('1324')) return '1324';
-
   let code;
   let attempts = 0;
   do {
@@ -480,8 +477,8 @@ function scheduleViewerLeave(io, room, clientId) {
   schedulePeerDisconnectGrace(io, room, clientId, 'viewer');
 }
 
-/** 호스트·참가자 모두 0명인 빈 방 — 새로고침 유예 후 폐기 (기본 1시간으로 대폭 상향하여 테스트 중 방 소멸 방지) */
-const EMPTY_ROOM_GRACE_MS = Number(process.env.EMPTY_ROOM_GRACE_MS || 3600_000);
+/** 호스트·참가자 모두 0명인 빈 방 — 새로고침 유예 후 폐기 (모든 방 3분(180초) 동안 접속 없으면 자동 삭제) */
+const EMPTY_ROOM_GRACE_MS = Number(process.env.EMPTY_ROOM_GRACE_MS || 180_000);
 /** 하트비트 없는 호스트는 이탈로 간주 (10분) */
 const STALE_HOST_MS = Number(process.env.STALE_HOST_MS || 600_000);
 /** 하트비트 없는 참가자 제거 (10분) */
@@ -500,14 +497,11 @@ function cancelEmptyRoomDispose(room) {
 
 function isRoomEmpty(room) {
   if (!room) return true;
-  // 기본 방 1324는 항상 유지
-  if (room.code === '1324') return false;
   return !room.hostConnected && room.viewers.size === 0;
 }
 
 function maybeScheduleEmptyRoomDispose(room) {
   if (!room || room.ended) return;
-  if (room.code === '1324') return;
   if (!isRoomEmpty(room)) {
     cancelEmptyRoomDispose(room);
     return;
@@ -524,10 +518,6 @@ function maybeScheduleEmptyRoomDispose(room) {
 function disposeEmptyRoom(room) {
   if (!room) return;
   const code = room.code;
-  if (code === '1324') {
-    cancelEmptyRoomDispose(room);
-    return;
-  }
   cancelEmptyRoomDispose(room);
   if (room._viewerLeaveTimers) {
     for (const t of room._viewerLeaveTimers.values()) clearTimeout(t);
@@ -557,7 +547,6 @@ function disposeEmptyRoom(room) {
 function sweepRooms() {
   const now = Date.now();
   for (const room of [...rooms.values()]) {
-    if (room.code === '1324') continue;
     if (room.ended) {
       disposeEmptyRoom(room);
       continue;
@@ -596,7 +585,7 @@ function sweepRooms() {
     for (const name of fs.readdirSync(ROOMS_DIR)) {
       if (!name.endsWith('.json')) continue;
       const code = name.slice(0, -'.json'.length);
-      if (!code || code === '1324' || rooms.has(code)) continue;
+      if (!code || rooms.has(code)) continue;
       const p = path.join(ROOMS_DIR, name);
       let age = ORPHAN_DISK_ROOM_MS + 1;
       try { age = now - fs.statSync(p).mtimeMs; } catch { /* ignore */ }
@@ -1759,13 +1748,6 @@ server.listen(PORT, HOST, () => {
 
   // Deep-Live-Cam 실시간 페이스 스왑 백그라운드 워커 기동
   startFaceSwapWorker();
-
-  // 기본 방 1324 상시 활성화 보장 (영구 유지)
-  if (!rooms.has('1324')) {
-    const r1324 = loadRoomFromDisk('1324') || defaultRoom('1324', 'host-secret-1324', 'bidirectional', false, true, true);
-    rooms.set('1324', r1324);
-    persistRoom(r1324);
-  }
 
   try { sweepRooms(); } catch (err) { console.warn('[room] initial sweep', err); }
   setInterval(() => {

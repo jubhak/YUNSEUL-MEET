@@ -9,13 +9,13 @@ import {
   setSelectedBroadcaster,
 } from './viewers-panel.js?v=20260826mic1';
 import { WebrtcSignaling } from './webrtc/signaling.js?v=20260715j';
-import { ViewerSubscriber } from './webrtc/viewer-subscriber.js?v=20260929watchdog1';
+import { ViewerSubscriber } from './webrtc/viewer-subscriber.js?v=20260929hd1';
 import { setupViewerZoom } from './viewer-zoom.js?v=20260819b';
 import { setupChatPanel } from './chat-panel.js?v=20260918fix2';
 import { CamFocusManager, VoiceActivityMonitor } from './cam-focus-manager.js?v=20260918focus1';
 import { TarotLoungeManager } from './tarot-lounge-manager.js?v=20260926meetmobile1';
 import { DrawCanvas } from './draw-canvas.js?v=20260918pen2';
-import { attachVideoFreezeWatchdog } from './webrtc/video-freeze-watchdog.js?v=20260927tenuser1';
+import { attachVideoFreezeWatchdog } from './webrtc/video-freeze-watchdog.js?v=20260929hd1';
 
 const params = new URLSearchParams(window.location.search);
 const roomCode = (params.get('code') || sessionStorage.getItem('roomCode') || '').toUpperCase();
@@ -1073,7 +1073,10 @@ function handleEvent(type, data) {
         }
       });
       break;
-    }
+    case 'slide-change':
+      // 호스트 슬라이드 전환 시 화면 즉시 갱신 (키프레임 강제 요청)
+      subscriber?.requestDisplayKeyframe?.();
+      break;
     case 'stop-screen-share':
       restoreAfterSelfShare().catch((err) => console.warn('[viewer] restoreAfterSelfShare', err));
       break;
@@ -1336,18 +1339,46 @@ sync.start()
     if (liveVideo) {
       attachVideoFreezeWatchdog(liveVideo, {
         label: 'viewer-main-screen',
+        mode: 'display',
         onRequestKeyFrame: () => {
-          const sfu = subscriber?.sfu;
-          if (!sfu?.consumers) return;
-          for (const consumer of sfu.consumers.values()) {
-            if (consumer && !consumer.closed && consumer.kind === 'video') {
-              sfu.requestKeyFrame(consumer.id);
-              break;
-            }
+          subscriber?.requestDisplayKeyframe?.();
+        },
+        onFullRecover: async () => {
+          console.warn('[viewer] 화면 정지 지속 감지 -> 비디오 컨슈머 재구독 자가치유 실행');
+          if (syncStatus) syncStatus.textContent = '화면 복구 중…';
+          try {
+            await subscriber?.reconsumeDisplayStream?.(false);
+            if (syncStatus) syncStatus.textContent = '라이브';
+          } catch (e) {
+            console.error('[viewer] reconsumeDisplayStream failed', e);
           }
         },
       });
     }
+
+    // ⚡ 화면 싱크 수동 새로고침 버튼 및 단축키(R)
+    const btnSyncRefresh = document.getElementById('btn-sync-refresh');
+    const triggerManualSync = async () => {
+      if (!subscriber) return;
+      if (syncStatus) syncStatus.textContent = '⚡ 싱크 맞추는 중…';
+      btnSyncRefresh?.classList.add('is-active');
+      try {
+        await subscriber.reconsumeDisplayStream(false);
+        if (syncStatus) syncStatus.textContent = '라이브';
+      } catch (e) {
+        console.warn('[viewer] manual sync err', e);
+      } finally {
+        setTimeout(() => btnSyncRefresh?.classList.remove('is-active'), 500);
+      }
+    };
+    btnSyncRefresh?.addEventListener('click', triggerManualSync);
+    window.addEventListener('keydown', (e) => {
+      if (e.key === 'r' || e.key === 'R') {
+        const tag = document.activeElement?.tagName?.toLowerCase();
+        if (tag === 'input' || tag === 'textarea' || document.activeElement?.isContentEditable) return;
+        triggerManualSync();
+      }
+    });
 
     // 기본: 소리 ON — 별도 <audio>로 재생 (첫 클릭 시 unlock)
     subscriber.speakerOn = true;

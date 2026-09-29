@@ -223,7 +223,7 @@
         flex: 1 1 100% !important;
         width: 100% !important;
         display: grid !important;
-        grid-template-columns: repeat(4, minmax(0, 1fr)) !important;
+        grid-template-columns: repeat(auto-fit, minmax(2.6rem, 1fr)) !important;
         gap: 0.45rem !important;
         justify-content: stretch !important;
       }
@@ -391,6 +391,10 @@
           <span class="ico chat-ico" aria-hidden="true"><span class="chat-ico-bubble">···</span></span>
         </button>
       </div>
+      <button type="button" id="btn-sync-refresh" class="btn btn-icon btn-toolbar-text" title="화면 싱크 맞추기 / 새로고침 (단축키: R)" aria-label="화면 싱크">
+        <span class="ico" aria-hidden="true">⚡</span>
+        <span class="btn-text">싱크</span>
+      </button>
       <button type="button" id="btn-fullscreen" class="btn btn-icon btn-toolbar-text" title="전체화면 (F)" aria-label="전체화면">
         <span class="ico" aria-hidden="true">⛶</span>
         <span class="btn-text">전체화면</span>
@@ -595,7 +599,7 @@
   <script src="js/progress-bar.js?v=20260715d"></script>
   <script type="module" src="js/load-progress.js?v=20260715d"></script>
   <script type="module" src="js/deps.js?v=20260715d"></script>
-  <script type="module" src="js/viewer.js?v=20260929watchdog1"></script>
+  <script type="module" src="js/viewer.js?v=20260929hd1"></script>
   <script type="module">
     import { setupDisplayMode } from './js/display-mode.js?v=20260819e';
     setupDisplayMode({ autoPromptMobile: false });

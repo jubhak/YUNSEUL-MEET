@@ -208,6 +208,67 @@ export class ViewerSubscriber {
     sfu.recvTransport = null;
   }
 
+  requestDisplayKeyframe() {
+    const sfu = this.sfu;
+    if (!sfu?.consumers) return;
+    for (const consumer of sfu.consumers.values()) {
+      if (consumer && !consumer.closed && consumer.kind === 'video') {
+        sfu.requestKeyFrame(consumer.id).catch(() => {});
+      }
+    }
+  }
+
+  /**
+   * 화면 정지(Freeze) 감지 시 특정 시청자의 디스플레이 비디오 컨슈머만 신속하게 재연결·복구
+   * @param {boolean} forceFullReset true이면 수신 트랜스포트를 완전히 재구축
+   */
+  async reconsumeDisplayStream(forceFullReset = false) {
+    const sfu = this.sfu;
+    if (!sfu || sfu._closed) {
+      return this.watch().catch(() => false);
+    }
+    console.log(`[ViewerSubscriber] reconsumeDisplayStream (forceFullReset=${forceFullReset})`);
+    try {
+      if (forceFullReset) {
+        this._resetRecvOnly();
+      } else {
+        for (const [pid, consumer] of [...sfu.consumers.entries()]) {
+          if (consumer.kind === 'video') {
+            try {
+              const track = consumer.track;
+              if (track && sfu.remoteStream) {
+                try { sfu.remoteStream.removeTrack(track); } catch {}
+              }
+              consumer.close();
+              sfu.request('sfu-close-consumer', { consumerId: consumer.id }).catch(() => {});
+            } catch (e) {
+              console.warn('[ViewerSubscriber] close display consumer err', e);
+            }
+            sfu.consumers.delete(pid);
+            sfu.consumerMeta.delete(pid);
+          }
+        }
+      }
+
+      await this.ensureReceiving();
+      await sfu.resumeAllConsumers().catch(() => {});
+      if (sfu.remoteStream?.getTracks?.().length) {
+        this._attachRemote(sfu.remoteStream);
+      }
+      this.requestDisplayKeyframe();
+      try { this.videoEl?.play?.().catch(() => {}); } catch {}
+      return true;
+    } catch (err) {
+      console.warn('[ViewerSubscriber] reconsumeDisplayStream fallback to watch()', err);
+      try {
+        this._resetRecvOnly();
+        return await this.watch();
+      } catch {
+        return false;
+      }
+    }
+  }
+
   async _waitLiveVideo(ms = 4000) {
     const start = Date.now();
     while (Date.now() - start < ms) {
