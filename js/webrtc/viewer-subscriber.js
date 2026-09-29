@@ -12,7 +12,7 @@ export class ViewerSubscriber {
    *   onStatus?: (s: object) => void,
    * }} opts
    */
-  constructor({ signaling, videoEl, onStatus }) {
+  constructor({ signaling, videoEl, onStatus, streamActive = false }) {
     this.signaling = signaling;
     this.videoEl = videoEl;
     this.onStatus = onStatus || (() => {});
@@ -67,7 +67,7 @@ export class ViewerSubscriber {
     /** @type {((data: { pingMs: number, lossRate: number, quality: string }) => void)|null} */
     this.onNetworkQuality = null;
 
-    this._streamActive = false;
+    this._streamActive = !!streamActive;
     this._unsubStatus = signaling.onStreamStatus((msg) => {
       this._streamActive = !!msg.active;
       if (!msg.active) {
@@ -356,6 +356,7 @@ export class ViewerSubscriber {
   }
 
   async watch() {
+    this._streamActive = true;
     this._startFreezeWatchdog();
     this._startConnectionWatchdog();
     if (this._watchChain) return this._watchChain;

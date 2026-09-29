@@ -9,11 +9,11 @@ import {
   setSelectedBroadcaster,
 } from './viewers-panel.js?v=20260826mic1';
 import { WebrtcSignaling } from './webrtc/signaling.js?v=20260715j';
-import { ViewerSubscriber } from './webrtc/viewer-subscriber.js?v=20260929hd2';
+import { ViewerSubscriber } from './webrtc/viewer-subscriber.js?v=20260929hd3';
 import { setupViewerZoom } from './viewer-zoom.js?v=20260819b';
 import { setupChatPanel } from './chat-panel.js?v=20260918fix2';
 import { CamFocusManager, VoiceActivityMonitor } from './cam-focus-manager.js?v=20260918focus1';
-import { TarotLoungeManager } from './tarot-lounge-manager.js?v=20260926meetmobile1';
+import { TarotLoungeManager } from './tarot-lounge-manager.js?v=20260929hd3';
 import { DrawCanvas } from './draw-canvas.js?v=20260918pen2';
 import { attachVideoFreezeWatchdog } from './webrtc/video-freeze-watchdog.js?v=20260929hd2';
 
@@ -72,6 +72,7 @@ let allowClientDeepfake = true;
 let activeHostLink = null; // { url, title }
 let isMeetingStarted = false;
 let currentViewers = [];
+let cachedStreamActive = false;
 
 function applyRoomPermissions(state) {
   if (!state) return;
@@ -474,6 +475,9 @@ function showTarotLounge() {
   syncStatus.textContent = '미팅 준비중';
   unmuteBanner?.classList.add('hidden');
 }
+
+// 초기 로드 시 대기실(타로 카드 배치) 우선 노출 (호스트 화면 송출 대기 스피너 고착 방지)
+showTarotLounge();
 
 function updateCameraPip(id, stream, { label = '카메라', isMirror = false, isHost = false } = {}) {
   if (!camOverlayContainer) return;
@@ -1130,6 +1134,7 @@ function handleEvent(type, data) {
     case 'stream-status':
       // 내가 화면 공유 중이면 호스트 송출 FLAG로 UI를 덮어쓰지 않음
       if (isSelfSharingUi()) break;
+      cachedStreamActive = !!data.active;
       if (data.active) {
         subscriber?.setStreamActive?.(true);
         if (streamOfflineTimer) {
@@ -1224,26 +1229,9 @@ sync.start()
       applyInteractionMode(data.state?.interactionMode || interactionMode, !!data.state?.requireMic);
     }
 
+    const isStreamActive = !!data.state?.streamActive || cachedStreamActive;
     isMeetingStarted = !!data.state?.meetingStarted;
     currentViewers = data.state?.viewers || [];
-    if (isMeetingStarted) {
-      tarotLounge.hide();
-      if (data.state?.streamActive) {
-        showLive();
-        subscriber?.setStreamActive?.(true);
-      } else {
-        subscriber?.setStreamActive?.(false);
-        liveStage?.classList.add('hidden');
-        waitingPanel?.classList.remove('hidden');
-        setWaiting('호스트 화면 송출 대기', '호스트가 「송출」을 누르면 실시간으로 발표 화면이 보입니다.');
-        syncStatus.textContent = '송출 대기';
-      }
-    } else {
-      if (data.state?.streamActive) {
-        subscriber?.setStreamActive?.(true);
-      }
-      showTarotLounge();
-    }
 
     // 접속 시 전체화면 시청 여부 확인 팝업
     initFullscreenPrompt();
@@ -1253,6 +1241,7 @@ sync.start()
     subscriber = new ViewerSubscriber({
       signaling,
       videoEl: liveVideo,
+      streamActive: isStreamActive,
       onStatus: (s) => {
         // needUnmute는 자동 배너로 쓰지 않음 — 스피커 토글 토스트만 사용
         if (s.sharingScreen) {
@@ -1430,31 +1419,32 @@ sync.start()
     syncAvButtons();
     probeMicAvailability();
 
-    if (data.state?.streamActive) {
-      if (isMeetingStarted) {
-        tarotLounge.hide();
+    if (isMeetingStarted) {
+      tarotLounge.hide();
+      if (isStreamActive) {
         showLive();
         syncStatus.textContent = '호스트 화면 연결 중…';
         setWaiting('호스트 화면 연결 중…', '잠시만 기다려 주세요.');
+        subscriber.watch().catch((err) => {
+          console.warn('[viewer] initial watch error:', err);
+        });
       } else {
-        showTarotLounge();
+        liveStage?.classList.add('hidden');
+        waitingPanel?.classList.remove('hidden');
+        setWaiting('호스트 화면 송출 대기', '호스트가 「송출」을 누르면 실시간으로 발표 화면이 보입니다.');
+        syncStatus.textContent = '송출 대기';
       }
-      subscriber.watch().catch((err) => {
-        console.warn('[viewer] initial watch error:', err);
-      });
-    } else if (!isMeetingStarted) {
+    } else {
       showTarotLounge();
-      if (interactionMode === 'bidirectional') {
+      if (isStreamActive) {
+        subscriber.watch().catch((err) => {
+          console.warn('[viewer] initial watch error:', err);
+        });
+      } else if (interactionMode === 'bidirectional') {
         subscriber.ensureReceiving?.().catch((err) => {
           console.warn('[viewer] ensureReceiving error:', err);
         });
       }
-    } else {
-      tarotLounge.hide();
-      liveStage?.classList.add('hidden');
-      waitingPanel?.classList.remove('hidden');
-      setWaiting('호스트 화면 송출 대기', '호스트가 「송출」을 누르면 실시간으로 발표 화면이 보입니다.');
-      syncStatus.textContent = '송출 대기';
     }
 
     sync.socket?.on('connect', () => {
@@ -1506,18 +1496,6 @@ sync.start()
     if (data.state?.popup?.url) {
       // 구버전 호스트 popup 상태 무시
       clearHostLink();
-    }
-
-    if (data.state?.streamActive) {
-      if (isMeetingStarted && !subscriber?.hasLiveVideo?.() && !subscriber?.playing) {
-        waitingPanel?.classList.remove('hidden');
-        setWaiting('호스트 화면 연결 중…', '송출이 진행 중입니다. 곧 표시됩니다.');
-        syncStatus.textContent = '호스트 화면 연결 중…';
-      }
-      // SFU: watch()로 기존 producer consume
-      subscriber.watch?.().catch((err) => { console.warn('[viewer] watch', err); });
-    } else if (!isMeetingStarted) {
-      showTarotLounge();
     }
   })
   .catch((err) => {

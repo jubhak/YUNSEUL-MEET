@@ -116,11 +116,13 @@ export class TarotLoungeManager {
   renderParticipants(participants = []) {
     if (!this.grid || this._isCountingDown) return;
 
+    const list = Array.isArray(participants) ? participants : Object.values(participants || {});
+
     // 중복 제거 및 호스트를 맨 앞으로 정렬
     const unique = [];
     const seen = new Set();
-    const hosts = participants.filter((p) => p.role === 'host');
-    const viewers = participants.filter((p) => p.role !== 'host');
+    const hosts = list.filter((p) => p && p.role === 'host');
+    const viewers = list.filter((p) => p && p.role !== 'host');
     [...hosts, ...viewers].forEach((p) => {
       const pid = p.id || p.clientId;
       if (pid && !seen.has(pid)) {
