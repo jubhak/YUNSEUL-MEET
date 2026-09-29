@@ -10,7 +10,7 @@ import {
   getLatestViewers,
 } from './viewers-panel.js?v=20260826mic1';
 import { WebrtcSignaling } from './webrtc/signaling.js?v=20260715j';
-import { HostPublisher } from './webrtc/host-publisher.js?v=20260929hd1';
+import { HostPublisher } from './webrtc/host-publisher.js?v=20260929hd2';
 import { setupChatPanel } from './chat-panel.js?v=20260918fix2';
 import { CamFocusManager, VoiceActivityMonitor } from './cam-focus-manager.js?v=20260926perf1';
 import { TarotLoungeManager } from './tarot-lounge-manager.js?v=20260926meetmobile1';
@@ -790,9 +790,9 @@ function syncAvButtons() {
   const tabOn = webrtcPublisher?.isActive
     ? (webrtcPublisher.hasTabAudio ? webrtcPublisher.tabAudioEnabled : preferTabAudio)
     : preferTabAudio;
-  const micOn = webrtcPublisher?.isActive
-    ? (webrtcPublisher.hasMic ? webrtcPublisher.micEnabled : preferMic)
-    : preferMic;
+  const micOn = webrtcPublisher
+    ? (webrtcPublisher.hasMic && webrtcPublisher.micEnabled)
+    : false;
   const camOn = !!(webrtcPublisher?.cameraWanted && webrtcPublisher?.hasCamera && webrtcPublisher?.cameraEnabled);
 
   if (btnAvSpeaker) {
@@ -1137,7 +1137,7 @@ async function startScreenShare() {
     showSharePrompt('이 기기에서는 화면 공유를 지원하지 않습니다. 「카메라로 송출」을 사용해 주세요.');
     return false;
   }
-  const withMic = !!preferMic;
+  const withMic = !!preferMic || !!(interactionMode === 'bidirectional' && requireMic);
   const withTabAudio = preferTabAudio !== false;
   closeStreamOptions();
 
@@ -1258,25 +1258,22 @@ async function toggleTabAudio() {
 }
 
 async function toggleMic() {
+  if (!webrtcPublisher) return;
   preferMic = !preferMic;
   sessionStorage.setItem(MIC_PREF_KEY, preferMic ? '1' : '0');
-  if (webrtcPublisher?.isActive) {
-    if (preferMic) {
-      const ok = await webrtcPublisher.ensureMic(true);
-      if (!ok) {
-        preferMic = false;
-        sessionStorage.setItem(MIC_PREF_KEY, '0');
-        emitMicStatus('none');
-        alert('마이크를 사용할 수 없습니다. 권한·장치 연결을 확인해 주세요.');
-      } else {
-        emitMicStatus('on');
-      }
+  if (preferMic) {
+    const ok = await webrtcPublisher.ensureMic(true);
+    if (!ok) {
+      preferMic = false;
+      sessionStorage.setItem(MIC_PREF_KEY, '0');
+      emitMicStatus('none');
+      alert('마이크를 사용할 수 없습니다. 권한·장치 연결을 확인해 주세요.');
     } else {
-      webrtcPublisher.setMicEnabled(false);
-      emitMicStatus('off');
+      emitMicStatus('on');
     }
   } else {
-    emitMicStatus(preferMic ? 'off' : 'off');
+    webrtcPublisher.setMicEnabled(false);
+    emitMicStatus('off');
   }
   syncAvButtons();
 }
@@ -1840,6 +1837,16 @@ sync.start()
       webrtcPublisher.ensureReceiving().catch((err) => {
         console.warn('[host] ensureReceiving error:', err);
       });
+      if (requireMic) {
+        preferMic = true;
+        sessionStorage.setItem(MIC_PREF_KEY, '1');
+        webrtcPublisher.ensureMic(true).then((ok) => {
+          if (ok) emitMicStatus('on');
+          syncAvButtons();
+        }).catch((err) => {
+          console.warn('[host] requireMic auto ensureMic err:', err);
+        });
+      }
     }
 
     // 입장 직후 호스트 메뉴 표시

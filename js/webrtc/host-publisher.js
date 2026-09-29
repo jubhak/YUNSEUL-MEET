@@ -641,7 +641,6 @@ export class HostPublisher {
   }
 
   async ensureMic(enabled = true) {
-    if (!this.localStream && !this.active) return false;
     if (this.hasMic) {
       this.setMicEnabled(enabled);
       return true;
@@ -668,7 +667,7 @@ export class HostPublisher {
       }
       if (!this.kinds.includes(TRACK_KIND.MIC)) this.kinds.push(TRACK_KIND.MIC);
       this.micWanted = !!enabled;
-      if (this.active) {
+      if (enabled) {
         // 마이크 송출은 실패를 조용히 삼키면 "상대에게 내 목소리가 안 들림"이
         // 되고 사용자는 아무 단서를 못 얻는다. 실패 시 1회 재시도 후 상태 보고.
         await this._publishMicWithRetry(rawTrack);
@@ -676,7 +675,7 @@ export class HostPublisher {
       this._startHostMicLevelWatch(rawTrack);
       this.onMicTrack?.(rawTrack);
       this.avatarManager?.attachMicTrack(rawTrack);
-      this._emitStatus();
+      this._emitLocalStatus();
       return true;
     } catch (err) {
       console.warn('[HostPublisher] mic failed', err);
@@ -741,7 +740,7 @@ export class HostPublisher {
   setTabAudioEnabled(on) {
     this.tabAudioWanted = !!on;
     this._syncTabAudioForFeedback();
-    this._emitStatus();
+    this._emitLocalStatus();
   }
 
   setMicEnabled(on) {
@@ -751,17 +750,16 @@ export class HostPublisher {
     });
     // 켜는 순간 producer가 유실되어 있으면(트랜스포트 재협상/서버 거부 등)
     // 여기서 즉시 재송출한다. 이 경로가 없으면 "켰는데 안 들린다" 상태로 굳는다.
-    if (on && this.active && this._micTracks[0] && !this.hasLiveMicProducer()) {
+    if (on && this._micTracks[0] && !this.hasLiveMicProducer()) {
       this._publishMicWithRetry(this._micTracks[0]).catch(() => {});
     }
     const activeMicTrack = on ? (this._micTracks[0] || null) : null;
     this.onMicTrack?.(activeMicTrack);
     this.avatarManager?.attachMicTrack(activeMicTrack);
-    this._emitStatus();
+    this._emitLocalStatus();
   }
 
-  _emitStatus() {
-    this.signaling.setStreamStatus({ active: this.active, kinds: this.kinds });
+  _emitLocalStatus() {
     this.onStatus({
       active: this.active,
       kinds: this.kinds,
@@ -773,6 +771,11 @@ export class HostPublisher {
       relaying: this.isRelaying,
       relayPeerId: this._relayPeerId,
     });
+  }
+
+  _emitStatus() {
+    this.signaling.setStreamStatus({ active: this.active, kinds: this.kinds });
+    this._emitLocalStatus();
   }
 
   /** SFU는 참가자가 직접 consume — peer 목록은 무시하되 ensure publish */
