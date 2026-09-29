@@ -1,4 +1,4 @@
-import { SfuClient } from './sfu-client.js?v=20260929watchdog1';
+import { SfuClient } from './sfu-client.js?v=20260929hd2';
 import { VirtualAvatarManager, openWebcamFlexible, faceModeForRoomCount } from '../virtual-avatar-manager.js?v=20260927tenuser1';
 
 /**
@@ -231,37 +231,20 @@ export class ViewerSubscriber {
     try {
       if (forceFullReset) {
         this._resetRecvOnly();
+        await this.ensureReceiving();
       } else {
-        for (const [pid, consumer] of [...sfu.consumers.entries()]) {
-          if (consumer.kind === 'video') {
-            try {
-              const track = consumer.track;
-              if (track && sfu.remoteStream) {
-                try { sfu.remoteStream.removeTrack(track); } catch {}
-              }
-              consumer.close();
-              sfu.request('sfu-close-consumer', { consumerId: consumer.id }).catch(() => {});
-            } catch (e) {
-              console.warn('[ViewerSubscriber] close display consumer err', e);
-            }
-            sfu.consumers.delete(pid);
-            sfu.consumerMeta.delete(pid);
-          }
-        }
+        // 비파괴적 빠른 싱크: 키프레임 강제 요청 및 컨슈머 resume
+        await sfu.resumeAllConsumers().catch(() => {});
+        this.requestDisplayKeyframe();
       }
-
-      await this.ensureReceiving();
-      await sfu.resumeAllConsumers().catch(() => {});
       if (sfu.remoteStream?.getTracks?.().length) {
         this._attachRemote(sfu.remoteStream);
       }
-      this.requestDisplayKeyframe();
       try { this.videoEl?.play?.().catch(() => {}); } catch {}
       return true;
     } catch (err) {
       console.warn('[ViewerSubscriber] reconsumeDisplayStream fallback to watch()', err);
       try {
-        this._resetRecvOnly();
         return await this.watch();
       } catch {
         return false;
@@ -616,7 +599,7 @@ export class ViewerSubscriber {
   }
 
   _notifyIfStreamDead() {
-    if (this.hasLiveVideo()) return;
+    if (this.hasLiveVideo() || this._streamActive) return;
     this.onStatus({ streamActive: false, streamEnded: true, playing: false });
   }
 

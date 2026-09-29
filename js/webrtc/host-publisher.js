@@ -1,5 +1,5 @@
 import { TRACK_KIND } from './config.js';
-import { SfuClient } from './sfu-client.js?v=20260929watchdog1';
+import { SfuClient } from './sfu-client.js?v=20260929hd2';
 import { VirtualAvatarManager, openWebcamFlexible, faceModeForRoomCount } from '../virtual-avatar-manager.js?v=20260927tenuser1';
 
 /**

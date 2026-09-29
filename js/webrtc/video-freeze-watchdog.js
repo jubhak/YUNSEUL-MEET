@@ -106,6 +106,12 @@ export function attachVideoFreezeWatchdog(videoEl, {
 
     const cur = videoEl.currentTime;
     if (cur > 0 && cur === lastTime) {
+      if (mode === 'display') {
+        // 화면 공유(PPT/슬라이드)는 정지 화면이 정상이므로 currentTime 멈춤을 freeze로 간주하지 않음
+        freezeCount = 0;
+        recoverAttempts = 0;
+        return;
+      }
       freezeCount++;
       if (freezeCount >= stuckTicksBeforePli) {
         requestKf();

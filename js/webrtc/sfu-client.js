@@ -285,16 +285,10 @@ export class SfuClient {
               videoGoogleMinBitrate: Math.max(40, Math.round(maxBitrate / 4000)),
             };
           } else {
-            // 화면 공유(Display Share / PPT / 문서): 텍스트 가독성을 위해 해상도 보존('detail') 우선!
+            // 화면 공유(Display Share / PPT / 문서): 텍스트 가독성을 위해 해상도 보존('detail') 설정
             try { track.contentHint = 'detail'; } catch { /* ignore */ }
-            produceOpts.encodings = [{
-              maxBitrate: 3_500_000,
-              scaleResolutionDownBy: 1,
-            }];
             produceOpts.codecOptions = {
-              videoGoogleStartBitrate: 2000,
-              videoGoogleMaxBitrate: 4500,
-              videoGoogleMinBitrate: 600,
+              videoGoogleStartBitrate: 1500,
             };
           }
         } else if (track.kind === 'audio') {
@@ -312,23 +306,15 @@ export class SfuClient {
             const params = producer.rtpSender.getParameters();
             if (params) {
               const isCam = source === 'camera' || source === 'viewer-camera';
-              // 화면공유는 대역폭 저하 시에도 해상도를 깎지 않고(maintain-resolution) 글씨 가독성을 100% 보존
+              // 화면공유는 maintain-resolution, 카메라는 maintain-framerate
               params.degradationPreference = isCam ? 'maintain-framerate' : 'maintain-resolution';
-              if (Array.isArray(params.encodings) && params.encodings.length) {
-                if (isCam) {
-                  const enc0 = produceOpts.encodings?.[0] || {};
-                  params.encodings = params.encodings.map((enc) => ({
-                    ...enc,
-                    maxBitrate: enc0.maxBitrate || enc.maxBitrate,
-                    maxFramerate: enc0.maxFramerate || enc.maxFramerate,
-                  }));
-                } else {
-                  params.encodings = params.encodings.map((enc) => ({
-                    ...enc,
-                    maxBitrate: 3_500_000,
-                    scaleResolutionDownBy: 1.0,
-                  }));
-                }
+              if (isCam && Array.isArray(params.encodings) && params.encodings.length) {
+                const enc0 = produceOpts.encodings?.[0] || {};
+                params.encodings = params.encodings.map((enc) => ({
+                  ...enc,
+                  maxBitrate: enc0.maxBitrate || enc.maxBitrate,
+                  maxFramerate: enc0.maxFramerate || enc.maxFramerate,
+                }));
               }
               producer.rtpSender.setParameters(params).catch(() => {});
             }
