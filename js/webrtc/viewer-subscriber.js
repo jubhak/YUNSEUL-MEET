@@ -150,7 +150,7 @@ export class ViewerSubscriber {
         }
         if (source === 'mic' || source === 'viewer-mic' || source === 'tab-audio') {
           if (consumer.track) {
-            this._syncRemoteAudio(this.sfu?.remoteStream || new MediaStream([consumer.track])).catch(() => {});
+            this._playRemoteAudioTrack(consumer.track, clientId, source);
             this.onRemoteAudioTrack?.({
               clientId,
               role: info?.role || (source === 'mic' ? 'host' : 'viewer'),
@@ -170,6 +170,13 @@ export class ViewerSubscriber {
         const kind = msg?.kind || '';
         if (clientId) {
           this.onRemoteCameraClosed?.(clientId);
+          if (this._remoteAudioEls) {
+            for (const [key] of [...this._remoteAudioEls.entries()]) {
+              if (key.startsWith(`${clientId}:`)) {
+                this._cleanupRemoteAudioTrack(key, clientId);
+              }
+            }
+          }
           this.onRemoteAudioTrackClosed?.(clientId);
         }
         // 마이크/카메라 토글 등 개별 프로듀서 종료로 인해 시청자 화면이
@@ -194,10 +201,8 @@ export class ViewerSubscriber {
 
   async ensureReceiving() {
     const sfu = await this._ensureSfu();
-    if (!sfu.recvTransport || sfu.recvTransport.closed) {
-      await sfu.ensureRecvTransport();
-      await sfu.consumeExistingProducers();
-    }
+    await sfu.ensureRecvTransport();
+    await sfu.consumeExistingProducers();
     return sfu;
   }
 
@@ -432,62 +437,81 @@ export class ViewerSubscriber {
   }
 
   /**
-   * 원격 오디오(호스트 + 다른 참가자 마이크) — 트랙마다 <audio> 1개.
-   * (한 요소에 여러 트랙을 넣으면 일부 브라우저가 첫 트랙만 재생함)
+   * 개별 원격 오디오 트랙(호스트 마이크, 참가자 마이크, 탭 오디오) 재생
+   * 트랙별 독립 <audio> 요소를 생성하여 다른 참가자의 소리를 절대 파괴하지 않음.
+   * @param {MediaStreamTrack} track
+   * @param {string} clientId
+   * @param {string} source
+   */
+  _playRemoteAudioTrack(track, clientId, source = '') {
+    if (!track || track.readyState === 'ended') return;
+    if (!this._remoteAudioEls) this._remoteAudioEls = new Map();
+    this._ensureGlobalAudioUnlock();
+
+    const key = `${clientId || 'remote'}:${track.id}`;
+    let el = this._remoteAudioEls.get(key);
+    if (!el) {
+      el = document.createElement('audio');
+      el.autoplay = true;
+      el.setAttribute('playsinline', '');
+      el.playsInline = true;
+      el.volume = 1;
+      this._visuallyHideMediaEl(el);
+      el.srcObject = new MediaStream([track]);
+      document.body.appendChild(el);
+      this._remoteAudioEls.set(key, el);
+    } else {
+      const cur = el.srcObject;
+      const curTrack = cur instanceof MediaStream ? cur.getAudioTracks()[0] : null;
+      if (curTrack !== track) {
+        el.srcObject = new MediaStream([track]);
+      }
+    }
+
+    el.muted = !this.speakerOn;
+    if (this.speakerOn) {
+      el.play().then(() => {
+        this._audioUnlocked = true;
+      }).catch((err) => {
+        console.warn('[ViewerSubscriber] remote audio autoplay blocked, waiting for gesture:', err?.message || err);
+        this.onStatus({
+          streamActive: this._streamActive,
+          playing: this.hasLiveVideo(),
+          hasRemoteAudio: true,
+          needUnmute: true,
+        });
+      });
+    }
+
+    track.addEventListener('ended', () => {
+      this._cleanupRemoteAudioTrack(key, clientId);
+    }, { once: true });
+  }
+
+  _cleanupRemoteAudioTrack(key, clientId) {
+    const el = this._remoteAudioEls?.get(key);
+    if (el) {
+      try { el.pause(); } catch { /* ignore */ }
+      el.srcObject = null;
+      try { el.remove(); } catch { /* ignore */ }
+      this._remoteAudioEls.delete(key);
+    }
+    if (clientId) {
+      this.onRemoteAudioTrackClosed?.(clientId);
+    }
+  }
+
+  /**
+   * 원격 스트림 내 오디오 트랙 재생 동기화 (기존 재생 중인 다른 참가자 요소를 파괴하지 않음)
    * @param {MediaStream} stream
    */
   async _syncRemoteAudio(stream) {
     if (!stream) return;
-    if (!this._remoteAudioEls) this._remoteAudioEls = new Map();
-
-    const live = new Set();
     const tracks = (stream.getAudioTracks() || []).filter(
       (t) => t && t.readyState !== 'ended'
     );
-
     for (const track of tracks) {
-      live.add(track.id);
-      let el = this._remoteAudioEls.get(track.id);
-      if (!el) {
-        el = document.createElement('audio');
-        el.autoplay = true;
-        el.setAttribute('playsinline', '');
-        el.playsInline = true;
-        el.volume = 1;
-        this._visuallyHideMediaEl(el);
-        el.srcObject = new MediaStream([track]);
-        document.body.appendChild(el);
-        this._remoteAudioEls.set(track.id, el);
-      }
-      el.muted = !this.speakerOn;
-      if (this.speakerOn) {
-        el.play().then(() => {
-          this._audioUnlocked = true;
-        }).catch(() => {
-          this.onStatus({
-            streamActive: true,
-            playing: this.hasLiveVideo(),
-            hasRemoteAudio: true,
-            needUnmute: true,
-          });
-        });
-      }
-    }
-
-    for (const [id, el] of [...this._remoteAudioEls.entries()]) {
-      if (live.has(id)) continue;
-      try { el.pause(); } catch { /* ignore */ }
-      el.srcObject = null;
-      try { el.remove(); } catch { /* ignore */ }
-      this._remoteAudioEls.delete(id);
-    }
-
-    // 레거시 단일 요소 정리
-    if (this._remoteAudioEl) {
-      try { this._remoteAudioEl.pause(); } catch { /* ignore */ }
-      this._remoteAudioEl.srcObject = null;
-      try { this._remoteAudioEl.remove(); } catch { /* ignore */ }
-      this._remoteAudioEl = null;
+      this._playRemoteAudioTrack(track, null, 'stream-sync');
     }
   }
 
@@ -616,7 +640,6 @@ export class ViewerSubscriber {
 
   async unlockAudio() {
     this._audioUnlocked = true;
-    if (this.remoteStream) await this._syncRemoteAudio(this.remoteStream);
     if (this._remoteAudioEls) {
       for (const el of this._remoteAudioEls.values()) {
         if (!this.speakerOn) {
@@ -627,10 +650,11 @@ export class ViewerSubscriber {
         try { await el.play(); } catch { /* ignore */ }
       }
     }
+    const hasAudio = !!(this._remoteAudioEls && this._remoteAudioEls.size > 0);
     this.onStatus({
-      streamActive: true,
+      streamActive: this._streamActive,
       playing: this.hasLiveVideo(),
-      hasRemoteAudio: !!(this.remoteStream?.getAudioTracks?.().length),
+      hasRemoteAudio: hasAudio,
       needUnmute: false,
     });
     return true;

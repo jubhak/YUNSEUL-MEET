@@ -1375,12 +1375,20 @@ sync.start()
     if (data.state?.hostClientId) {
       subscriber.hostPeerId = data.state.hostClientId;
     }
+    applyInteractionMode(data.state?.interactionMode || interactionMode, !!data.state?.requireMic);
     setupViewerMic();
     if (sync?.socket && interactionMode === 'bidirectional') {
       // 호스트의 원격 제어(마우스/키보드) 요청 승인 UI
       rcViewer = new RemoteControlViewer({ socket: sync.socket });
     }
     syncAvButtons();
+
+    // 양방향 방: 화면 송출 유무와 무관하게 음성 수신은 접속 즉시 항상 보장
+    if (interactionMode === 'bidirectional') {
+      subscriber.ensureReceiving?.().catch((err) => {
+        console.warn('[viewer] ensureReceiving error:', err);
+      });
+    }
 
     if (isMeetingStarted) {
       tarotLounge.hide();
@@ -1396,21 +1404,12 @@ sync.start()
         waitingPanel?.classList.remove('hidden');
         setWaiting('호스트 화면 송출 대기', '호스트가 「송출」을 누르면 실시간으로 발표 화면이 보입니다.');
         syncStatus.textContent = '송출 대기';
-        if (interactionMode === 'bidirectional') {
-          subscriber.ensureReceiving?.().catch((err) => {
-            console.warn('[viewer] ensureReceiving error:', err);
-          });
-        }
       }
     } else {
       showTarotLounge();
       if (isStreamActive) {
         subscriber.watch().catch((err) => {
           console.warn('[viewer] initial watch error:', err);
-        });
-      } else if (interactionMode === 'bidirectional') {
-        subscriber.ensureReceiving?.().catch((err) => {
-          console.warn('[viewer] ensureReceiving error:', err);
         });
       }
     }
