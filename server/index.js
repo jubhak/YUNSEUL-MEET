@@ -1187,28 +1187,9 @@ app.get('/api/host-url', requireLocalAdmin, (_req, res) => {
   });
 });
 
-/** 진행 중인 미팅 목록 (참여 코드 자동완성) */
+/** 진행 중인 미팅 목록 (보안 및 자동완성 비활성화로 빈 배열 반환) */
 app.get('/api/active-rooms', (req, res) => {
-  const q = String(req.query.q || '').replace(/[^0-9]/g, '');
-  if (q.length < 1) {
-    return res.json({ rooms: [] });
-  }
-  const list = [];
-  for (const room of rooms.values()) {
-    if (room.ended) continue;
-    // 호스트가 연결된 방만 (진행 중)
-    if (!room.hostConnected) continue;
-    const code = String(room.code || '');
-    if (q && !code.startsWith(q)) continue;
-    list.push({
-      code,
-      hostName: room.hostName || '호스트',
-      viewerCount: viewerCount(room),
-      streamActive: !!room.streamActive,
-    });
-  }
-  list.sort((a, b) => a.code.localeCompare(b.code));
-  res.json({ rooms: list.slice(0, 30) });
+  res.json({ rooms: [] });
 });
 
 app.get('/api/get-file', (req, res) => {

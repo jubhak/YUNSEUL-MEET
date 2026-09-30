@@ -270,152 +270,20 @@ document.querySelectorAll('input[name="interaction-mode"]').forEach((radio) => {
   });
 });
 
-/* ── 진행 중 미팅 자동완성 (입력 방해 없이 아래로 리스트) ── */
+/* ── 참여 코드 입력 처리 (숫자 4자리 제한 및 엔터 입력) ── */
 const joinCodeInput = document.getElementById('join-code');
-const joinSuggest = document.getElementById('join-suggest');
-let suggestTimer = 0;
-let suggestSeq = 0;
-let activeRoomsCache = [];
-
-function hideJoinSuggest() {
-  joinSuggest?.classList.add('hidden');
-  joinCodeInput?.setAttribute('aria-expanded', 'false');
-}
-
-function showJoinSuggest() {
-  if (!joinSuggest || joinSuggest.children.length === 0) {
-    hideJoinSuggest();
-    return;
-  }
-  joinSuggest.classList.remove('hidden');
-  joinCodeInput?.setAttribute('aria-expanded', 'true');
-}
-
-function renderJoinSuggest(rooms) {
-  if (!joinSuggest) return;
-  joinSuggest.innerHTML = '';
-  // 일치하는 방이 없거나 0개이면 리스트업 박스를 완전히 숨김 (값이 있을 때만 표시)
-  if (!rooms || rooms.length === 0) {
-    hideJoinSuggest();
-    return;
-  }
-
-  rooms.forEach((room) => {
-    const li = document.createElement('li');
-    li.setAttribute('role', 'option');
-    li.tabIndex = -1;
-    li.dataset.code = room.code;
-    li.innerHTML =
-      `<span class="join-suggest-code">${escapeHtml(room.code)}</span>`
-      + `<span class="join-suggest-meta">`
-      + `<span class="join-suggest-host">${escapeHtml(room.hostName || '호스트')}</span>`
-      + `<span class="join-suggest-count">${Number(room.viewerCount) || 0}명</span>`
-      + (room.streamActive ? '<span class="join-suggest-live">송출중</span>' : '')
-      + `</span>`;
-
-    // mousedown: blur보다 먼저 처리해 입력 포커스/입력을 방해하지 않음
-    li.addEventListener('mousedown', (e) => {
-      e.preventDefault();
-      selectSuggestedRoom(room.code);
-    });
-    joinSuggest.appendChild(li);
-  });
-  showJoinSuggest();
-}
-
-function escapeHtml(s) {
-  return String(s)
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;');
-}
-
-function selectSuggestedRoom(code) {
-  if (!joinCodeInput) return;
-  joinCodeInput.value = String(code || '').replace(/[^0-9]/g, '').slice(0, 4);
-  hideJoinSuggest();
-  document.getElementById('viewer-name')?.focus();
-}
-
-async function fetchActiveRooms(q) {
-  const seq = ++suggestSeq;
-  try {
-    const res = await fetch(api('active-rooms?q=' + encodeURIComponent(q || '')));
-    const data = await res.json().catch(() => ({}));
-    if (seq !== suggestSeq) return;
-    activeRoomsCache = Array.isArray(data.rooms) ? data.rooms : [];
-    // 1자 이상 입력된 경우 해당 값으로 시작되는 방만 필터링
-    const filtered = q
-      ? activeRoomsCache.filter((r) => String(r.code || '').startsWith(q))
-      : activeRoomsCache;
-    renderJoinSuggest(filtered);
-  } catch {
-    if (seq !== suggestSeq) return;
-    activeRoomsCache = [];
-    hideJoinSuggest();
-  }
-}
-
-function scheduleSuggestFetch(immediate = false) {
-  const q = (joinCodeInput?.value || '').replace(/[^0-9]/g, '');
-  clearTimeout(suggestTimer);
-  if (immediate) {
-    fetchActiveRooms(q);
-  } else {
-    suggestTimer = setTimeout(() => fetchActiveRooms(q), 80);
-  }
-}
-
-joinCodeInput?.addEventListener('focus', () => {
-  scheduleSuggestFetch(true);
-});
-
-joinCodeInput?.addEventListener('click', () => {
-  scheduleSuggestFetch(true);
-});
 
 joinCodeInput?.addEventListener('input', () => {
-  // 숫자만 남기고, 입력은 그대로 유지한 채 아래 목록만 필터
   const raw = joinCodeInput.value;
   const cleaned = raw.replace(/[^0-9]/g, '').slice(0, 4);
   if (raw !== cleaned) joinCodeInput.value = cleaned;
-  scheduleSuggestFetch(false);
 });
 
 joinCodeInput?.addEventListener('keydown', (e) => {
-  const open = joinSuggest && !joinSuggest.classList.contains('hidden');
-  const items = open
-    ? [...joinSuggest.querySelectorAll('li[role="option"]')]
-    : [];
-  const current = open ? joinSuggest.querySelector('li.is-active') : null;
-  let idx = current ? items.indexOf(current) : -1;
-
-  if (e.key === 'ArrowDown' && items.length) {
+  if (e.key === 'Enter') {
     e.preventDefault();
-    idx = Math.min(items.length - 1, idx + 1);
-    items.forEach((el, i) => el.classList.toggle('is-active', i === idx));
-    items[idx]?.scrollIntoView({ block: 'nearest' });
-  } else if (e.key === 'ArrowUp' && items.length) {
-    e.preventDefault();
-    idx = Math.max(0, idx - 1);
-    items.forEach((el, i) => el.classList.toggle('is-active', i === idx));
-    items[idx]?.scrollIntoView({ block: 'nearest' });
-  } else if (e.key === 'Escape') {
-    hideJoinSuggest();
-  } else if (e.key === 'Enter') {
-    if (current) {
-      e.preventDefault();
-      selectSuggestedRoom(current.dataset.code);
-    } else {
-      document.getElementById('btn-join-room').click();
-    }
+    document.getElementById('btn-join-room')?.click();
   }
-});
-
-joinCodeInput?.addEventListener('blur', () => {
-  // 항목 클릭(mousedown)이 끝나도록 살짝 지연
-  setTimeout(() => hideJoinSuggest(), 140);
 });
 
 // 참가자 카메라 및 딥페이크 옵션 상호작용
