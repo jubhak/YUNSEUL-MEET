@@ -17,7 +17,7 @@ import { MicController } from './mic-controller.js?v=20260930a';
 import { speakingIndicator } from './speaking-indicator.js?v=20260930a';
 import { showToast } from './ui-toast.js?v=20260930a';
 import { RemoteControlHost } from './remote-control.js?v=20260930a';
-import { TarotLoungeManager } from './tarot-lounge-manager.js?v=20260930a';
+import { TarotLoungeManager } from './tarot-lounge-manager.js?v=20260930h';
 import { attachVideoFreezeWatchdog } from './webrtc/video-freeze-watchdog.js?v=20260930a';
 import { FaceFeedClient } from './face-feed-client.js?v=20260930c';
 

@@ -24,6 +24,7 @@ const fs = require('fs');
 })();
 
 const http = require('http');
+const net = require('net');
 const crypto = require('crypto');
 const { spawn } = require('child_process');
 const express = require('express');
@@ -43,6 +44,84 @@ const DEEP_LIVE_CAM_DIR = path.join(ROOT, 'deep-live-cam');
 
 const PORT = Number(process.env.PORT || 3000);
 const HOST = process.env.HOST || '127.0.0.1';
+
+function clientIp(req) {
+  return String(req.socket?.remoteAddress || req.ip || '').replace(/^::ffff:/, '');
+}
+
+function forwardedClientIp(req) {
+  const cf = String(req.headers['cf-connecting-ip'] || '').trim();
+  if (cf) return cf.replace(/^::ffff:/, '');
+  return String(req.headers['x-forwarded-for'] || '').split(',')[0].trim().replace(/^::ffff:/, '');
+}
+
+function isLoopbackIp(ip) {
+  const s = String(ip || '').toLowerCase();
+  return s === '127.0.0.1' || s === '::1' || s === 'localhost';
+}
+
+/** 위젯/테스트처럼 Node에 직접 붙은 로컬 요청만 true. Apache·Cloudflare 경유 공인 접속은 false. */
+function isLocalAdmin(req) {
+  if (!isLoopbackIp(clientIp(req))) return false;
+  const fwd = forwardedClientIp(req);
+  if (fwd && !isLoopbackIp(fwd)) return false;
+  return true;
+}
+
+function requireLocalAdmin(req, res, next) {
+  if (isLocalAdmin(req)) return next();
+  return res.status(403).json({ error: '이 기능은 호스트 PC에서만 사용할 수 있습니다.' });
+}
+
+function sanitizePersonName(raw, fallback = '참가자') {
+  const s = String(raw || '')
+    .replace(/[\u0000-\u001F\u007F<>]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 32);
+  return s || fallback;
+}
+
+function isPrivateIp(ip) {
+  const s = String(ip || '').replace(/^::ffff:/, '');
+  if (net.isIP(s) === 4) {
+    const [a, b] = s.split('.').map((x) => Number(x));
+    if (a === 10 || a === 127 || a === 0) return true;
+    if (a === 169 && b === 254) return true;
+    if (a === 172 && b >= 16 && b <= 31) return true;
+    if (a === 192 && b === 168) return true;
+    if (a === 100 && b >= 64 && b <= 127) return true;
+    return false;
+  }
+  if (net.isIP(s) === 6) {
+    const h = s.toLowerCase();
+    return h === '::1' || h.startsWith('fc') || h.startsWith('fd') || h.startsWith('fe80');
+  }
+  return false;
+}
+
+function isBlockedEmbedHost(hostname) {
+  const h = String(hostname || '').toLowerCase().replace(/^\[|\]$/g, '');
+  if (!h) return true;
+  if (h === 'localhost' || h.endsWith('.localhost') || h.endsWith('.local') || h.endsWith('.internal')) return true;
+  if (h === 'metadata.google.internal') return true;
+  return isPrivateIp(h);
+}
+
+function isBlockedStaticPath(urlPath) {
+  let p = String(urlPath || '').split('?')[0];
+  try { p = decodeURIComponent(p); } catch { /* keep */ }
+  p = p.replace(/\\/g, '/').toLowerCase();
+  if (p.includes('..') || p.includes('/.')) return true;
+  const prefixes = [
+    '/data', '/logs', '/server', '/node_modules', '/packages',
+    '/deep-live-cam', '/ref', '/tools', '/build', '/tests', '/.git',
+  ];
+  if (prefixes.some((x) => p === x || p.startsWith(`${x}/`))) return true;
+  if (p === '/widget_config.json' || p === '/widget_app.py' || p === '/main.py' || p === '/installer.py' || p === '/install_meta.py') return true;
+  if (/\.(py|ps1|bat|env)$/i.test(p)) return true;
+  return false;
+}
 
 for (const dir of [DATA_DIR, ROOMS_DIR, UPLOADS_DIR, LOGS_DIR, PHOTO_DIR]) {
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
@@ -614,13 +693,19 @@ function sweepRooms() {
 }
 
 const app = express();
+app.disable('x-powered-by');
 app.use(express.json({ limit: '2mb' }));
 
-// 정적 파일 (프론트)
 app.use((req, res, next) => {
+  if (isBlockedStaticPath(req.path)) {
+    return res.status(404).end();
+  }
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('Referrer-Policy', 'same-origin');
+  res.setHeader('X-Frame-Options', 'SAMEORIGIN');
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', '*');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
   next();
 });
 
@@ -635,6 +720,7 @@ app.use('/photo', express.static(PHOTO_DIR, {
 app.use(express.static(ROOT, {
   index: ['index.html'],
   etag: true,
+  dotfiles: 'deny',
   setHeaders(res, filePath) {
     res.setHeader('Access-Control-Allow-Origin', '*');
     const lower = String(filePath || '').toLowerCase();
@@ -773,7 +859,7 @@ app.get('/api/faceswap-status', (_req, res) => {
   proxyReq.end();
 });
 
-app.post('/api/launch-deep-live-cam', (_req, res) => {
+app.post('/api/launch-deep-live-cam', requireLocalAdmin, (_req, res) => {
   const batPath = path.join(ROOT, 'run_deep_live_cam.bat');
   if (!fs.existsSync(batPath)) {
     return res.status(404).json({ ok: false, error: 'run_deep_live_cam.bat 파일을 찾을 수 없습니다.' });
@@ -797,7 +883,7 @@ app.post('/api/launch-deep-live-cam', (_req, res) => {
 });
 
 /** SFU/방 접속 진단 — ICE·producer 상태 확인용 */
-app.get('/api/debug/sfu', async (req, res) => {
+app.get('/api/debug/sfu', requireLocalAdmin, async (req, res) => {
   const code = roomCode(req.query.code);
   if (!code) return res.status(400).json({ error: 'code required' });
   const room = getRoom(code);
@@ -835,6 +921,9 @@ app.get('/api/check-embed', async (req, res) => {
     if (target.protocol !== 'http:' && target.protocol !== 'https:') {
       return res.json({ embeddable: false, reason: 'bad-protocol' });
     }
+    if (isBlockedEmbedHost(target.hostname)) {
+      return res.json({ embeddable: false, reason: 'private-host' });
+    }
   } catch {
     return res.json({ embeddable: false, reason: 'bad-url' });
   }
@@ -860,8 +949,17 @@ app.get('/api/check-embed', async (req, res) => {
           Range: 'bytes=0-0',
         },
       });
-    } finally {
+    }     finally {
       clearTimeout(timer);
+    }
+
+    try {
+      const finalHost = new URL(r.url).hostname;
+      if (isBlockedEmbedHost(finalHost)) {
+        return res.json({ embeddable: false, reason: 'private-host' });
+      }
+    } catch {
+      return res.json({ embeddable: false, reason: 'bad-url' });
     }
 
     const xfo = (r.headers.get('x-frame-options') || '').toLowerCase();
@@ -977,7 +1075,7 @@ app.get('/api/check-room-code', (req, res) => {
 });
 
 /** 호스트 화면 즉시 진입용 URL 제공 (진행 중인 방 재사용 또는 신규 방 자동 생성) */
-app.get('/api/host-url', (_req, res) => {
+app.get('/api/host-url', requireLocalAdmin, (_req, res) => {
   let targetRoom = null;
   for (const r of rooms.values()) {
     if (!r.ended) {
@@ -1011,6 +1109,9 @@ app.get('/api/host-url', (_req, res) => {
 /** 진행 중인 미팅 목록 (참여 코드 자동완성) */
 app.get('/api/active-rooms', (req, res) => {
   const q = String(req.query.q || '').replace(/[^0-9]/g, '');
+  if (q.length < 1) {
+    return res.json({ rooms: [] });
+  }
   const list = [];
   for (const room of rooms.values()) {
     if (room.ended) continue;
@@ -1193,7 +1294,7 @@ const io = new Server(server, {
 // 원격 제어(호스트 → 화면 공유 중인 참가자 PC) — server/remote-control.js
 const remoteControl = createRemoteControl({ io, getRoom, requireHost });
 const faceRelay = createFaceRelay({ rooms, getRoom, requireHost });
-app.get('/api/face-relay/status', (_req, res) => {
+app.get('/api/face-relay/status', requireLocalAdmin, (_req, res) => {
   res.setHeader('Cache-Control', 'no-store');
   res.json({ ok: true, ...faceRelay.getStats() });
 });
@@ -1232,8 +1333,9 @@ io.on('connection', (socket) => {
       const code = roomCode(msg?.code);
       const role = msg?.role === 'host' ? 'host' : 'viewer';
       const hostToken = msg?.hostToken || null;
-      const name = String(msg?.name || '참가자').trim() || '참가자';
-      const clientId = String(msg?.clientId || crypto.randomBytes(8).toString('hex'));
+      const name = sanitizePersonName(msg?.name, role === 'host' ? '호스트' : '참가자');
+      const clientId = String(msg?.clientId || crypto.randomBytes(8).toString('hex')).replace(/[^\w-]/g, '').slice(0, 64)
+        || crypto.randomBytes(8).toString('hex');
 
       const room = getRoom(code);
       if (!room) {

@@ -340,7 +340,14 @@ function createRemoteControl({ io, getRoom, requireHost, log = console.log }) {
     });
 
     // 진단용: 현재 세션 요약 (토큰 미포함)
-    app.get('/api/remote-agent/status', (_req, res) => {
+    app.get('/api/remote-agent/status', (req, res) => {
+      const ip = String(req.socket?.remoteAddress || '').replace(/^::ffff:/, '');
+      const fwd = String(req.headers['cf-connecting-ip'] || req.headers['x-forwarded-for'] || '').split(',')[0].trim().replace(/^::ffff:/, '');
+      const local = ip === '127.0.0.1' || ip === '::1';
+      const fwdOk = !fwd || fwd === '127.0.0.1' || fwd === '::1';
+      if (!local || !fwdOk) {
+        return res.status(403).json({ error: '이 기능은 호스트 PC에서만 사용할 수 있습니다.' });
+      }
       res.json({
         ok: true,
         sessions: [...sessions.values()].map((s) => ({

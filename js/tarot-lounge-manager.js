@@ -22,6 +22,16 @@ function hashString(str) {
   return Math.abs(h);
 }
 
+function escapeHtml(s) {
+  return String(s || '').replace(/[&<>"']/g, (m) => ({
+    '&': '&amp;',
+    '<': '&lt;',
+    '>': '&gt;',
+    '"': '&quot;',
+    "'": '&#39;',
+  }[m]));
+}
+
 /**
  * 방 안의 접속자들에게 타로카드 이미지 배정:
  * - 카드 수(180장) 이내의 인원은 100% 중복 없이 서로 다른 고유 카드 배정
@@ -149,6 +159,7 @@ export class TarotLoungeManager {
       const imageFile = cardMap.get(p.id) || TAROT_IMAGES[0];
       const isUserHost = p.role === 'host';
       const displayName = (p.name || (isUserHost ? '호스트' : '참가자')).trim();
+      const safeName = escapeHtml(displayName);
       const cardUrl = `img/${encodeURIComponent(imageFile)}`;
 
       const el = document.createElement('div');
@@ -162,8 +173,8 @@ export class TarotLoungeManager {
         </div>
 
         <!-- 카드 바로 아래 정확히 7px 간격의 사용자 아이디 배지 -->
-        <div class="tarot-card-user-badge" title="${displayName}">
-          ${isUserHost ? '<span class="tarot-user-crown">👑</span>' : ''}${displayName}
+        <div class="tarot-card-user-badge" title="${safeName}">
+          ${isUserHost ? '<span class="tarot-user-crown">👑</span>' : ''}${safeName}
         </div>
       `;
 
