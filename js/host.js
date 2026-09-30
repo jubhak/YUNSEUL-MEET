@@ -1,4 +1,4 @@
-import { OverlayManager } from './overlay-manager.js?v=20260826link1';
+import { OverlayManager } from './overlay-manager.js?v=20260930i';
 import { DrawCanvas } from './draw-canvas.js?v=20260918pen2';
 import { RoomSync } from './sync.js?v=20260930a';
 import { goToSlide, getPptEngine } from './host-ppt-loader.js?v=20260715ah';
@@ -943,7 +943,7 @@ async function loadModalPhotos() {
       if (isCur) card.classList.add('is-active');
 
       card.innerHTML = `
-        <img src="${photo.url}" alt="${photo.name}" class="dlc-hero-thumb">
+        <img src="${escapeHtml(photo.url)}" alt="${escapeHtml(photo.name)}" class="dlc-hero-thumb">
         <button type="button" class="dlc-hero-apply-btn">${isCur ? '✓ 적용 중' : '선택하기'}</button>
       `;
       card.addEventListener('click', () => {

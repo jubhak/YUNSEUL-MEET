@@ -25,6 +25,7 @@ const fs = require('fs');
 
 const http = require('http');
 const net = require('net');
+const dns = require('dns').promises;
 const crypto = require('crypto');
 const { spawn } = require('child_process');
 const express = require('express');
@@ -73,6 +74,67 @@ function requireLocalAdmin(req, res, next) {
   return res.status(403).json({ error: '이 기능은 호스트 PC에서만 사용할 수 있습니다.' });
 }
 
+const rateBuckets = new Map();
+function allowRate(key, max, windowMs) {
+  const now = Date.now();
+  let b = rateBuckets.get(key);
+  if (!b || now - b.t0 > windowMs) {
+    b = { t0: now, n: 0 };
+    rateBuckets.set(key, b);
+  }
+  b.n += 1;
+  if (rateBuckets.size > 4000) {
+    for (const [k, v] of rateBuckets) {
+      if (now - v.t0 > windowMs) rateBuckets.delete(k);
+    }
+  }
+  return b.n <= max;
+}
+
+function publicClientKey(req) {
+  return forwardedClientIp(req) || clientIp(req) || 'unknown';
+}
+
+function tokensEqual(a, b) {
+  const x = Buffer.from(String(a || ''), 'utf8');
+  const y = Buffer.from(String(b || ''), 'utf8');
+  if (!x.length || x.length !== y.length) return false;
+  return crypto.timingSafeEqual(x, y);
+}
+
+function isSwapClientInRoom(cid) {
+  const id = String(cid || '');
+  if (!id || id.length > 128) return false;
+  for (const room of rooms.values()) {
+    if (!room || room.ended) continue;
+    if (room.hostClientId === id) return true;
+    if (room.viewers?.has(id)) return true;
+  }
+  return false;
+}
+
+function sanitizeHttpUrl(raw) {
+  try {
+    const u = new URL(String(raw || '').trim());
+    if (u.protocol !== 'http:' && u.protocol !== 'https:') return null;
+    return u.href;
+  } catch {
+    return null;
+  }
+}
+
+async function hostnameResolvesPublic(hostname) {
+  const h = String(hostname || '').toLowerCase().replace(/^\[|\]$/g, '').replace(/\.$/, '');
+  if (isBlockedEmbedHost(h)) return false;
+  try {
+    const list = await dns.lookup(h, { all: true, verbatim: true });
+    if (!list.length) return false;
+    return list.every((x) => x && !isPrivateIp(x.address));
+  } catch {
+    return false;
+  }
+}
+
 function sanitizePersonName(raw, fallback = '참가자') {
   const s = String(raw || '')
     .replace(/[\u0000-\u001F\u007F<>]/g, '')
@@ -108,18 +170,25 @@ function isBlockedEmbedHost(hostname) {
   return isPrivateIp(h);
 }
 
+function isSafePhotoName(name) {
+  const f = String(name || '');
+  if (!f || f.includes('..') || /[\\/\x00<>"'`]/.test(f)) return false;
+  return /\.(jpe?g|png|webp)$/i.test(f);
+}
+
 function isBlockedStaticPath(urlPath) {
   let p = String(urlPath || '').split('?')[0];
   try { p = decodeURIComponent(p); } catch { /* keep */ }
   p = p.replace(/\\/g, '/').toLowerCase();
   if (p.includes('..') || p.includes('/.')) return true;
   const prefixes = [
-    '/data', '/logs', '/server', '/node_modules', '/packages',
-    '/deep-live-cam', '/ref', '/tools', '/build', '/tests', '/.git',
+    '/data', '/logs', '/server', '/node_modules', '/packages', '/uploads',
+    '/deep-live-cam', '/ref', '/tools', '/build', '/tests', '/.git', '/docs',
   ];
   if (prefixes.some((x) => p === x || p.startsWith(`${x}/`))) return true;
   if (p === '/widget_config.json' || p === '/widget_app.py' || p === '/main.py' || p === '/installer.py' || p === '/install_meta.py') return true;
-  if (/\.(py|ps1|bat|env)$/i.test(p)) return true;
+  if (p === '/package.json' || p === '/package-lock.json' || p.endsWith('/package.json')) return true;
+  if (/\.(py|ps1|bat|env|md|yml|yaml|toml|spec)$/i.test(p)) return true;
   return false;
 }
 
@@ -469,7 +538,7 @@ function broadcastBroadcaster(io, room) {
 }
 
 function requireHost(room, token) {
-  return room && token && room.hostToken === token;
+  return !!(room && token && tokensEqual(room.hostToken, token));
 }
 
 function broadcastViewerCount(io, room) {
@@ -694,7 +763,7 @@ function sweepRooms() {
 
 const app = express();
 app.disable('x-powered-by');
-app.use(express.json({ limit: '2mb' }));
+app.use(express.json({ limit: '256kb' }));
 
 app.use((req, res, next) => {
   if (isBlockedStaticPath(req.path)) {
@@ -703,6 +772,7 @@ app.use((req, res, next) => {
   res.setHeader('X-Content-Type-Options', 'nosniff');
   res.setHeader('Referrer-Policy', 'same-origin');
   res.setHeader('X-Frame-Options', 'SAMEORIGIN');
+  res.setHeader('Permissions-Policy', 'geolocation=(), payment=(), camera=(self), microphone=(self), display-capture=(self)');
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
@@ -750,31 +820,34 @@ const upload = multer({
   },
 });
 
-app.get('/api/health', (_req, res) => {
-  res.json({
+app.get('/api/health', (req, res) => {
+  const body = {
     ok: true,
     engine: 'node-socket.io+sfu',
     media: 'sfu',
-    rtcPort: getRtcPort(),
-    rtcPrefer: 'udp',
-    iceIps: getListenIps().map((x) => x.announcedAddress || x.announcedIp).filter(Boolean),
     port: PORT,
-    rooms: rooms.size,
-  });
+  };
+  if (isLocalAdmin(req)) {
+    body.rtcPort = getRtcPort();
+    body.rtcPrefer = 'udp';
+    body.iceIps = getListenIps().map((x) => x.announcedAddress || x.announcedIp).filter(Boolean);
+    body.rooms = rooms.size;
+  }
+  res.json(body);
 });
 
-app.get('/api/deep-live-cam/status', (_req, res) => {
+app.get('/api/deep-live-cam/status', requireLocalAdmin, (_req, res) => {
   const hasRepo = fs.existsSync(path.join(DEEP_LIVE_CAM_DIR, 'run.py'));
   const hasBat = fs.existsSync(path.join(ROOT, 'run_deep_live_cam.bat'));
   let photos = [];
   if (fs.existsSync(PHOTO_DIR)) {
     try {
       photos = fs.readdirSync(PHOTO_DIR)
-        .filter((f) => /\.(jpe?g|png|webp)$/i.test(f))
+        .filter((f) => isSafePhotoName(f))
         .map((f) => ({
           filename: f,
           url: `/photo/${encodeURIComponent(f)}`,
-          name: path.parse(f).name,
+          name: path.parse(f).name.replace(/[_<>"']/g, ' ').trim(),
         }));
     } catch { /* ignore */ }
   }
@@ -790,10 +863,10 @@ app.get('/api/photos', (_req, res) => {
   try {
     const photos = [];
     if (fs.existsSync(PHOTO_DIR)) {
-      const files = fs.readdirSync(PHOTO_DIR).filter((f) => /\.(jpe?g|png|webp)$/i.test(f));
+      const files = fs.readdirSync(PHOTO_DIR).filter((f) => isSafePhotoName(f));
       for (const f of files) {
         const s = path.parse(f).name.toLowerCase();
-        const name = path.parse(f).name.replace(/_/g, ' ');
+        const name = path.parse(f).name.replace(/[_<>"']/g, ' ').trim();
         photos.push({
           id: s,
           filename: f,
@@ -810,7 +883,7 @@ app.get('/api/photos', (_req, res) => {
 
 // 사진 업로드(/api/upload-face)는 제거됨 — 서버에 준비된 프리셋 얼굴(photo/)만 사용
 
-app.post('/api/swap-frame', (req, res) => {
+app.post('/api/swap-frame', requireLocalAdmin, (req, res) => {
   const sourceFace = req.headers['x-source-face'] || '';
   const proxyReq = http.request({
     hostname: '127.0.0.1',
@@ -841,7 +914,7 @@ app.post('/api/swap-frame', (req, res) => {
 });
 
 /** 페이스스왑 워커 상태/부하/지연 실측 조회 (진단용) */
-app.get('/api/faceswap-status', (_req, res) => {
+app.get('/api/faceswap-status', requireLocalAdmin, (_req, res) => {
   const proxyReq = http.request({
     hostname: '127.0.0.1',
     port: Number(process.env.FACE_SWAP_PORT || 8765),
@@ -869,7 +942,7 @@ app.post('/api/launch-deep-live-cam', requireLocalAdmin, (_req, res) => {
       cwd: ROOT,
       detached: true,
       stdio: 'ignore',
-      shell: true,
+      windowsHide: true,
     });
     child.unref();
     res.json({
@@ -914,14 +987,17 @@ app.get('/api/debug/sfu', requireLocalAdmin, async (req, res) => {
 });
 
 app.get('/api/check-embed', async (req, res) => {
-  const raw = String(req.query.url || '').trim();
+  if (!isLocalAdmin(req) && !allowRate(`embed:${publicClientKey(req)}`, 20, 60_000)) {
+    return res.json({ embeddable: false, reason: 'rate-limit' });
+  }
+  const raw = String(req.query.url || '').trim().slice(0, 2048);
   let target;
   try {
     target = new URL(raw);
     if (target.protocol !== 'http:' && target.protocol !== 'https:') {
       return res.json({ embeddable: false, reason: 'bad-protocol' });
     }
-    if (isBlockedEmbedHost(target.hostname)) {
+    if (!(await hostnameResolvesPublic(target.hostname))) {
       return res.json({ embeddable: false, reason: 'private-host' });
     }
   } catch {
@@ -931,35 +1007,37 @@ app.get('/api/check-embed', async (req, res) => {
   try {
     const ctrl = new AbortController();
     const timer = setTimeout(() => ctrl.abort(), 6000);
+    const headers = { 'User-Agent': 'YUNSEUL-PPT-EmbedCheck/1.0' };
+    async function fetchNoPrivateRedirect(url, hops = 0) {
+      if (hops > 3) return null;
+      const u = new URL(url);
+      if (!(await hostnameResolvesPublic(u.hostname))) return { blocked: true };
+      let r;
+      try {
+        r = await fetch(u.href, { method: 'HEAD', redirect: 'manual', signal: ctrl.signal, headers });
+      } catch {
+        r = await fetch(u.href, {
+          method: 'GET',
+          redirect: 'manual',
+          signal: ctrl.signal,
+          headers: { ...headers, Range: 'bytes=0-0' },
+        });
+      }
+      if (r.status >= 300 && r.status < 400) {
+        const loc = r.headers.get('location');
+        if (!loc) return r;
+        return fetchNoPrivateRedirect(new URL(loc, u.href).href, hops + 1);
+      }
+      return r;
+    }
     let r;
     try {
-      r = await fetch(target.href, {
-        method: 'HEAD',
-        redirect: 'follow',
-        signal: ctrl.signal,
-        headers: { 'User-Agent': 'YUNSEUL-PPT-EmbedCheck/1.0' },
-      });
-    } catch {
-      r = await fetch(target.href, {
-        method: 'GET',
-        redirect: 'follow',
-        signal: ctrl.signal,
-        headers: {
-          'User-Agent': 'YUNSEUL-PPT-EmbedCheck/1.0',
-          Range: 'bytes=0-0',
-        },
-      });
-    }     finally {
+      r = await fetchNoPrivateRedirect(target.href);
+    } finally {
       clearTimeout(timer);
     }
-
-    try {
-      const finalHost = new URL(r.url).hostname;
-      if (isBlockedEmbedHost(finalHost)) {
-        return res.json({ embeddable: false, reason: 'private-host' });
-      }
-    } catch {
-      return res.json({ embeddable: false, reason: 'bad-url' });
+    if (!r || r.blocked) {
+      return res.json({ embeddable: false, reason: 'private-host' });
     }
 
     const xfo = (r.headers.get('x-frame-options') || '').toLowerCase();
@@ -995,6 +1073,9 @@ app.get('/api/check-embed', async (req, res) => {
 });
 
 app.post('/api/create-room', (req, res) => {
+  if (!isLocalAdmin(req) && !allowRate(`create:${publicClientKey(req)}`, 8, 10 * 60 * 1000)) {
+    return res.status(429).json({ error: '방 생성이 너무 잦습니다. 잠시 후 다시 시도해 주세요.' });
+  }
   const rawCode = String(req.body?.code ?? '').trim();
   let code = '';
   if (rawCode) {
@@ -1162,7 +1243,9 @@ app.post('/api/upload', (req, res) => {
       const slideCount = Math.max(1, parseInt(req.body.slideCount || '1', 10) || 1);
       const presentation = {
         filename: req.file.filename,
-        originalName: req.file.originalname || req.file.filename,
+        originalName: String(req.file.originalname || req.file.filename)
+              .replace(/[\u0000-\u001F\u007F<>]/g, '')
+              .slice(0, 180),
         url: `api/get-file?f=${encodeURIComponent(req.file.filename)}`,
         slideCount,
       };
@@ -1191,6 +1274,9 @@ app.post('/api/upload', (req, res) => {
 
 // PHP 호환 별칭 (구 URL)
 app.post('/api/create-room.php', (req, res) => {
+  if (!isLocalAdmin(req) && !allowRate(`create:${publicClientKey(req)}`, 8, 10 * 60 * 1000)) {
+    return res.status(429).json({ error: '방 생성이 너무 잦습니다. 잠시 후 다시 시도해 주세요.' });
+  }
   const rawCode = String(req.body?.code ?? '').trim();
   let code = '';
   if (rawCode) {
@@ -1266,7 +1352,9 @@ app.post('/api/upload.php', (req, res) => {
       if (!req.file) return res.status(400).json({ error: '파일이 없습니다.' });
       const presentation = {
         filename: req.file.filename,
-        originalName: req.file.originalname || req.file.filename,
+        originalName: String(req.file.originalname || req.file.filename)
+              .replace(/[\u0000-\u001F\u007F<>]/g, '')
+              .slice(0, 180),
         url: `api/get-file?f=${encodeURIComponent(req.file.filename)}`,
         slideCount: Math.max(1, parseInt(req.body.slideCount || '1', 10) || 1),
       };
@@ -1613,7 +1701,12 @@ io.on('connection', (socket) => {
         case 'draw-end': {
           const key = String(payload.slideIndex ?? 0);
           if (!Array.isArray(room.drawings[key])) room.drawings[key] = [];
-          if (payload.stroke) room.drawings[key].push(payload.stroke);
+          if (payload.stroke) {
+            if (room.drawings[key].length >= 2500) {
+              room.drawings[key].splice(0, room.drawings[key].length - 2499);
+            }
+            room.drawings[key].push(payload.stroke);
+          }
           break;
         }
         case 'clear-drawings':
@@ -1622,9 +1715,12 @@ io.on('connection', (socket) => {
         case 'clear-all-drawings':
           room.drawings = {};
           break;
-        case 'open-link':
-          room.popup = payload;
+        case 'open-link': {
+          const url = sanitizeHttpUrl(payload.url || payload.href || '');
+          if (!url) return;
+          room.popup = { ...payload, url };
           break;
+        }
         case 'close-link':
           room.popup = null;
           break;
@@ -1888,6 +1984,21 @@ server.on('upgrade', (req, socket, head) => {
   // 딥페이크 릴레이(/face-swap-ws) + 호스트 직송(/face-feed). FACE_RELAY=0 이면 아래 raw 프록시가 처리한다.
   if (faceRelay.handleUpgrade(req, socket, head)) return;
   if (req.url && (req.url.startsWith('/face-swap-ws') || req.url.startsWith('/ws'))) {
+    let swapOk = isLocalAdmin(req);
+    if (!swapOk) {
+      try {
+        const u = new URL(req.url, 'http://localhost');
+        const cid = u.searchParams.get('client') || u.searchParams.get('client_id') || '';
+        swapOk = isSwapClientInRoom(cid);
+      } catch { /* ignore */ }
+    }
+    if (!swapOk) {
+      try {
+        socket.write('HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n');
+      } catch { /* ignore */ }
+      socket.destroy();
+      return;
+    }
     socket.pause();
     const net = require('net');
     const port = Number(process.env.FACE_SWAP_PORT || 8765);

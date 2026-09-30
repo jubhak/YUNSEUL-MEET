@@ -169,6 +169,16 @@ function createFaceRelay({ rooms, requireHost, getRoom, log = console.log }) {
       if (u.searchParams.get('prio') === 'host') prio = 'host';
     } catch { /* ignore */ }
 
+    if (prio === 'host') {
+      let isHost = false;
+      if (cid) {
+        for (const room of rooms.values()) {
+          if (room && !room.ended && room.hostClientId === cid) { isHost = true; break; }
+        }
+      }
+      if (!isHost) prio = '';
+    }
+
     const port = pickPort();
     stats.swapConns += 1;
     let released = false;
@@ -370,6 +380,25 @@ function createFaceRelay({ rooms, requireHost, getRoom, log = console.log }) {
     }
 
     if (relayEnabled && u.pathname === '/face-swap-ws') {
+      const ip = String(req.socket?.remoteAddress || '').replace(/^::ffff:/, '');
+      const fwd = String(req.headers['cf-connecting-ip'] || req.headers['x-forwarded-for'] || '')
+        .split(',')[0].trim().replace(/^::ffff:/, '');
+      const local = (ip === '127.0.0.1' || ip === '::1')
+        && (!fwd || fwd === '127.0.0.1' || fwd === '::1' || fwd.toLowerCase() === 'localhost');
+      const cid = String(u.searchParams.get('client') || u.searchParams.get('client_id') || '');
+      let inRoom = false;
+      if (cid) {
+        for (const room of rooms.values()) {
+          if (!room || room.ended) continue;
+          if (room.hostClientId === cid || room.viewers?.has(cid)) { inRoom = true; break; }
+        }
+      }
+      if (!local && !inRoom) {
+        log(`[face-swap-ws] 거부: client=${cid.slice(0, 8) || '-'}`);
+        socket.write('HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n');
+        socket.destroy();
+        return true;
+      }
       swapWss.handleUpgrade(req, socket, head, (ws) => onSwapConnection(ws, req));
       return true;
     }

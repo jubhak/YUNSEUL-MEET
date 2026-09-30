@@ -178,11 +178,18 @@ export class OverlayManager {
   }
 
   async showLink(url) {
-    // 구 임베드/폴백 경로 제거 — 무조건 새 창
     if (!url) return;
-    this._currentLinkUrl = url;
+    let safe = '';
     try {
-      window.open(url, '_blank', 'noopener,noreferrer');
+      const u = new URL(url, window.location.href);
+      if (u.protocol === 'http:' || u.protocol === 'https:') safe = u.href;
+    } catch {
+      return;
+    }
+    if (!safe) return;
+    this._currentLinkUrl = safe;
+    try {
+      window.open(safe, '_blank', 'noopener,noreferrer');
     } catch { /* ignore */ }
   }
 

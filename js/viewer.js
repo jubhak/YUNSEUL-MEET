@@ -25,6 +25,16 @@ const params = new URLSearchParams(window.location.search);
 const roomCode = (params.get('code') || sessionStorage.getItem('roomCode') || '').toUpperCase();
 const viewerName = sessionStorage.getItem('viewerName') || '참가자';
 
+function escapeHtml(s) {
+  return String(s || '').replace(/[&<>"']/g, (m) => ({
+    '&': '&amp;',
+    '<': '&lt;',
+    '>': '&gt;',
+    '"': '&quot;',
+    "'": '&#39;',
+  }[m]));
+}
+
 if (!roomCode) {
   window.location.href = './';
 }
@@ -166,9 +176,17 @@ function applyInteractionMode(mode, isRequireMic = requireMic) {
 
 function bindLinkTargets(url) {
   if (!url) return;
+  let safe = '';
+  try {
+    const u = new URL(url, window.location.href);
+    if (u.protocol === 'http:' || u.protocol === 'https:') safe = u.href;
+  } catch {
+    return;
+  }
+  if (!safe) return;
   [viewerLinkOpen, viewerLinkChip].forEach((el) => {
     if (!el) return;
-    el.href = url;
+    el.href = safe;
     el.target = '_blank';
     el.rel = 'noopener noreferrer';
   });
@@ -708,7 +726,7 @@ async function loadModalPhotos() {
       if (isCur) card.classList.add('is-active');
 
       card.innerHTML = `
-        <img src="${photo.url}" alt="${photo.name}" class="dlc-hero-thumb">
+        <img src="${escapeHtml(photo.url)}" alt="${escapeHtml(photo.name)}" class="dlc-hero-thumb">
         <button type="button" class="dlc-hero-apply-btn">${isCur ? '✓ 적용 중' : '선택하기'}</button>
       `;
       card.addEventListener('click', () => {
