@@ -10,7 +10,7 @@ import {
   getLatestViewers,
 } from './viewers-panel.js?v=20260930a';
 import { WebrtcSignaling } from './webrtc/signaling.js?v=20260715j';
-import { HostPublisher } from './webrtc/host-publisher.js?v=20260930k';
+import { HostPublisher } from './webrtc/host-publisher.js?v=20260930m';
 import { setupChatPanel } from './chat-panel.js?v=20260918fix2';
 import { CamFocusManager } from './cam-focus-manager.js?v=20260930a';
 import { MicController } from './mic-controller.js?v=20260930a';

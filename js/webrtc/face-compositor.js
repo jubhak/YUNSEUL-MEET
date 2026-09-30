@@ -1,4 +1,4 @@
-import { createWorkerTicker } from '../virtual-avatar-manager.js?v=20260930k';
+import { createWorkerTicker } from '../virtual-avatar-manager.js?v=20260930m';
 
 /**
  * 호스트 참가자 타일을 16:9 카드로 합성해 보낸다.

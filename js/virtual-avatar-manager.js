@@ -1123,24 +1123,136 @@ export class VirtualAvatarManager {
   }
 
   /**
-   * 원래 내 얼굴: 거울 영상 위에 잔주름만 누르고, 피부를 조금 밝고 부드럽게 올린다.
-   * 딥페이크(swap) 경로와 해상도·프레임은 그대로다.
+   * 원래 내 얼굴. 원본 픽셀을 유지한 채, 옅은 그림자만 조금 올리고 눈썹만 조금 진하게 한다.
+   * 얼굴 영역을 도형으로 자르거나 흐린 색으로 덮지 않는다.
    */
   _drawRealFace(ctx, w, h) {
     const video = this.rawWebcamVideo;
-    ctx.save();
-    ctx.translate(w, 0);
-    ctx.scale(-1, 1);
-    ctx.drawImage(video, 0, 0, w, h);
-    ctx.filter = 'blur(2.2px) brightness(1.06) saturate(1.04)';
-    ctx.globalAlpha = 0.55;
-    ctx.drawImage(video, 0, 0, w, h);
-    ctx.filter = 'none';
-    ctx.globalCompositeOperation = 'soft-light';
-    ctx.globalAlpha = 0.22;
-    ctx.fillStyle = '#fff3e4';
-    ctx.fillRect(0, 0, w, h);
-    ctx.restore();
+    if (!this._beautyCanvas || this._beautyCanvas.width !== w || this._beautyCanvas.height !== h) {
+      this._beautyCanvas = document.createElement('canvas');
+      this._beautyCanvas.width = w;
+      this._beautyCanvas.height = h;
+      this._beautyCtx = this._beautyCanvas.getContext('2d', { willReadFrequently: true });
+    }
+    const bctx = this._beautyCtx;
+    bctx.setTransform(1, 0, 0, 1, 0, 0);
+    bctx.clearRect(0, 0, w, h);
+    bctx.save();
+    bctx.translate(w, 0);
+    bctx.scale(-1, 1);
+    bctx.drawImage(video, 0, 0, w, h);
+    bctx.restore();
+    const frame = bctx.getImageData(0, 0, w, h);
+    this._retouchRealSkin(frame.data, w, h);
+    bctx.putImageData(frame, 0, 0);
+    ctx.drawImage(this._beautyCanvas, 0, 0);
+  }
+
+  _boxBlurRgb(rSrc, gSrc, bSrc, w, h, radius, rDst, gDst, bDst) {
+    const r = Math.max(1, radius | 0);
+    const span = Math.max(w, h) + 1;
+    if (!this._beautyPrefixR || this._beautyPrefixR.length < span) {
+      this._beautyPrefixR = new Float64Array(span);
+      this._beautyPrefixG = new Float64Array(span);
+      this._beautyPrefixB = new Float64Array(span);
+    }
+    const n = w * h;
+    if (!this._beautyTmpR || this._beautyTmpR.length !== n) {
+      this._beautyTmpR = new Float32Array(n);
+      this._beautyTmpG = new Float32Array(n);
+      this._beautyTmpB = new Float32Array(n);
+    }
+    const pr = this._beautyPrefixR;
+    const pg = this._beautyPrefixG;
+    const pb = this._beautyPrefixB;
+    const tr = this._beautyTmpR;
+    const tg = this._beautyTmpG;
+    const tb = this._beautyTmpB;
+    for (let y = 0; y < h; y += 1) {
+      pr[0] = 0;
+      pg[0] = 0;
+      pb[0] = 0;
+      const row = y * w;
+      for (let x = 0; x < w; x += 1) {
+        pr[x + 1] = pr[x] + rSrc[row + x];
+        pg[x + 1] = pg[x] + gSrc[row + x];
+        pb[x + 1] = pb[x] + bSrc[row + x];
+      }
+      for (let x = 0; x < w; x += 1) {
+        const a = Math.max(0, x - r);
+        const b = Math.min(w, x + r + 1);
+        const inv = 1 / (b - a);
+        tr[row + x] = (pr[b] - pr[a]) * inv;
+        tg[row + x] = (pg[b] - pg[a]) * inv;
+        tb[row + x] = (pb[b] - pb[a]) * inv;
+      }
+    }
+    for (let x = 0; x < w; x += 1) {
+      pr[0] = 0;
+      pg[0] = 0;
+      pb[0] = 0;
+      for (let y = 0; y < h; y += 1) {
+        pr[y + 1] = pr[y] + tr[y * w + x];
+        pg[y + 1] = pg[y] + tg[y * w + x];
+        pb[y + 1] = pb[y] + tb[y * w + x];
+      }
+      for (let y = 0; y < h; y += 1) {
+        const a = Math.max(0, y - r);
+        const b = Math.min(h, y + r + 1);
+        const inv = 1 / (b - a);
+        const i = y * w + x;
+        rDst[i] = (pr[b] - pr[a]) * inv;
+        gDst[i] = (pg[b] - pg[a]) * inv;
+        bDst[i] = (pb[b] - pb[a]) * inv;
+      }
+    }
+  }
+
+  _retouchRealSkin(px, w, h) {
+    const n = w * h;
+    if (!this._skinLuma || this._skinLuma.length !== n) {
+      this._skinLuma = new Float32Array(n);
+      this._skinRb = new Float32Array(n);
+      this._skinGb = new Float32Array(n);
+      this._skinBb = new Float32Array(n);
+    }
+    const luma = this._skinLuma;
+    for (let i = 0, p = 0; i < n; i += 1, p += 4) {
+      luma[i] = px[p] * 0.299 + px[p + 1] * 0.587 + px[p + 2] * 0.114;
+    }
+    const radius = Math.max(3, Math.round(w / 48));
+    this._boxBlurRgb(luma, luma, luma, w, h, radius, this._skinRb, this._skinGb, this._skinBb);
+    const blur = this._skinRb;
+    for (let y = 0; y < h; y += 1) {
+      for (let x = 0; x < w; x += 1) {
+        const i = y * w + x;
+        const p = i * 4;
+        const L = luma[i];
+        const Lb = blur[i];
+        const edge = Math.abs(L - Lb);
+        if (this._isBrowPixel(luma, w, h, x, y, L)) {
+          px[p] = Math.max(0, px[p] * 0.82);
+          px[p + 1] = Math.max(0, px[p + 1] * 0.82);
+          px[p + 2] = Math.max(0, px[p + 2] * 0.82);
+          continue;
+        }
+        if (edge < 16 && L + 4 < Lb) {
+          const lift = Math.min(20, (Lb - L) * 0.5);
+          px[p] = Math.min(255, px[p] + lift);
+          px[p + 1] = Math.min(255, px[p + 1] + lift);
+          px[p + 2] = Math.min(255, px[p + 2] + lift);
+        }
+      }
+    }
+  }
+
+  _isBrowPixel(luma, w, h, x, y, L) {
+    if (y < h * 0.16 || y > h * 0.46 || x < 2 || x >= w - 2 || L > 98) return false;
+    const up = luma[(y - 2) * w + x];
+    const down = luma[Math.min(h - 1, y + 2) * w + x];
+    const left = luma[y * w + (x - 2)];
+    const right = luma[y * w + (x + 2)];
+    return (left + right) * 0.5 < L + 16 && (up + down) * 0.5 > L + 14;
   }
 
   _renderFrame() {

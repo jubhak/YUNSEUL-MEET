@@ -9,7 +9,7 @@ import {
   setSelectedBroadcaster,
 } from './viewers-panel.js?v=20260930a';
 import { WebrtcSignaling } from './webrtc/signaling.js?v=20260715j';
-import { ViewerSubscriber } from './webrtc/viewer-subscriber.js?v=20260930k';
+import { ViewerSubscriber } from './webrtc/viewer-subscriber.js?v=20260930m';
 import { setupViewerZoom } from './viewer-zoom.js?v=20260930a';
 import { setupChatPanel } from './chat-panel.js?v=20260918fix2';
 import { CamFocusManager } from './cam-focus-manager.js?v=20260930a';

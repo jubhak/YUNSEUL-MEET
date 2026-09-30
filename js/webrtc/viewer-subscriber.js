@@ -1,5 +1,5 @@
 import { SfuClient } from './sfu-client.js?v=20260930d';
-import { VirtualAvatarManager, openWebcamFlexible, faceModeForRoomCount } from '../virtual-avatar-manager.js?v=20260930k';
+import { VirtualAvatarManager, openWebcamFlexible, faceModeForRoomCount } from '../virtual-avatar-manager.js?v=20260930m';
 
 /**
  * 참가자: SFU에서 호스트 display 수신 + (선택) 마이크/화면 업링크
