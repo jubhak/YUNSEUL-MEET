@@ -32,6 +32,7 @@ def build() -> None:
         subprocess.run(["taskkill", "/f", "/im", "YUNSEUL-MEET-Setup.exe"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         subprocess.run(["taskkill", "/f", "/im", "YUNSEUL-PPT.exe"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         subprocess.run(["taskkill", "/f", "/im", "YUNSEUL-PPT-Setup.exe"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        subprocess.run(["taskkill", "/f", "/im", "mediasoup-worker.exe"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         time.sleep(0.5)
 
     # 1. 아이콘 확인 및 생성

@@ -103,8 +103,14 @@ function buildListenInfos(port = RTC_PORT) {
   const lanIp = detectLanIp();
   const infos = [];
   const pushPair = (ip, announcedAddress) => {
-    infos.push({ protocol: 'udp', ip, announcedAddress, port });
-    infos.push({ protocol: 'tcp', ip, announcedAddress, port });
+    const u = { protocol: 'udp', ip, announcedAddress };
+    const t = { protocol: 'tcp', ip, announcedAddress };
+    if (port) {
+      u.port = port;
+      t.port = port;
+    }
+    infos.push(u);
+    infos.push(t);
   };
 
   if (publicIp && lanIp && publicIp !== lanIp) {
@@ -183,15 +189,24 @@ async function createPoolEntry(index) {
     setTimeout(() => { ensureWorkerPool().catch(() => {}); }, 500);
   });
 
-  try {
-    entry.webRtcServer = await w.createWebRtcServer({ listenInfos: buildListenInfos(port) });
-  } catch (err) {
-    console.error(`[sfu] worker#${index} RTC port ${port} bind failed: ${err.message}`);
-    entry.webRtcServer = null;
+  let boundPort = port;
+  for (let offset = 0; offset < 64; offset += 1) {
+    const tryPort = port + offset;
+    try {
+      entry.webRtcServer = await w.createWebRtcServer({ listenInfos: buildListenInfos(tryPort) });
+      boundPort = tryPort;
+      break;
+    } catch {
+      // try next port
+    }
   }
-  console.log(
-    `[sfu] worker#${index} ready pid=${w.pid} rtcPort=${port} ice=${getAnnouncedAddresses().join(',')}`
-  );
+  if (!entry.webRtcServer) {
+    console.warn(`[sfu] worker#${index} WebRtcServer bind skipped; will fallback to dynamic transport ports`);
+  } else {
+    console.log(
+      `[sfu] worker#${index} ready pid=${w.pid} rtcPort=${boundPort} ice=${getAnnouncedAddresses().join(',')}`
+    );
+  }
   return entry;
 }
 
@@ -227,7 +242,7 @@ async function getWorker() {
 async function getWebRtcServer() {
   await ensureWorkerPool();
   const entry = pickLeastLoaded();
-  if (!entry?.webRtcServer || entry.webRtcServer.closed) throw new Error('WebRtcServer unavailable');
+  if (!entry?.webRtcServer || entry.webRtcServer.closed) return null;
   return entry.webRtcServer;
 }
 
@@ -349,8 +364,7 @@ async function createWebRtcTransport(room) {
   const server = (room.webRtcServer && !room.webRtcServer.closed)
     ? room.webRtcServer
     : await getWebRtcServer();
-  const transport = await router.createWebRtcTransport({
-    webRtcServer: server,
+  const transportOpts = {
     enableUdp: true,
     enableTcp: true,
     // 공유기 UDP 40000–49999(44444 포함) 활용. TCP는 보조.
@@ -361,7 +375,14 @@ async function createWebRtcTransport(room) {
     minimumAvailableOutgoingBitrate: 500_000,
     maxIncomingBitrate: 10_000_000,
     enableSctp: false,
-  });
+  };
+  if (server && !server.closed) {
+    transportOpts.webRtcServer = server;
+  } else {
+    // WebRtcServer 포트 충돌이나 부재 시에도 단독 listenInfos로 즉시 폴백하여 중단 방지
+    transportOpts.listenInfos = buildListenInfos(0);
+  }
+  const transport = await router.createWebRtcTransport(transportOpts);
   return {
     transport,
     params: {

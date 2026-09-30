@@ -1146,7 +1146,8 @@ class MeetWidget(QWidget):
 
         kill_cmd = (
             f"$p = Get-NetTCPConnection -LocalPort {self.port}, 8765 -ErrorAction SilentlyContinue | Select-Object -ExpandProperty OwningProcess; "
-            "if ($p) { Stop-Process -Id $p -Force -ErrorAction SilentlyContinue }"
+            "if ($p) { Stop-Process -Id $p -Force -ErrorAction SilentlyContinue }; "
+            "Get-Process -Name 'mediasoup-worker' -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue"
         )
         try:
             subprocess.run(
