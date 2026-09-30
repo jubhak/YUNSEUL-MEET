@@ -1337,6 +1337,14 @@ sync.start()
     if (subscriber.avatarManager) {
       subscriber.avatarManager.onAvatarChange = () => updateAvatarUi();
       subscriber.avatarManager.onModeChange = () => updateAvatarUi();
+      // 서버 하드웨어 용량이 한계라 딥페이크를 더 적용할 수 없을 때: 실물 얼굴이 나가지 않도록 카메라를 끄고 안내한다.
+      subscriber.avatarManager.onSwapRejected = (info) => {
+        Promise.resolve(subscriber.setCameraEnabled(false)).catch(() => {}).finally(() => {
+          try { updateAvatarUi(); syncAvButtons(); } catch { /* ignore */ }
+        });
+        const max = Number(info?.max_clients) > 0 ? ` (동시 딥페이크 최대 약 ${info.max_clients}명)` : '';
+        showToast(`서버 하드웨어 상황에 따라 더 이상 딥페이크를 적용할 수 없습니다.${max} 잠시 후 다시 시도해 주세요.`, 'warn', 8000);
+      };
     }
 
     subscriber.onCameraChange = ({ active, stream }) => {

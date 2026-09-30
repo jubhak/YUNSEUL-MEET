@@ -445,6 +445,24 @@ export class VirtualAvatarManager {
     this._serverFpsCap = 0;
     this.swapStats = { sent: 0, recv: 0, dropped: 0 };
     this.onSwapStats = null;
+    /** 서버가 "호스트 직송 정상(live)" 여부를 알려올 때 호출 — SFU 카메라 송출 절감용 (viewer-subscriber 가 사용) */
+    this.onFeedState = null;
+
+    /** 'host' 이면 서버 입장 제어(용량 초과 거절)에서 제외 — host-publisher 가 설정 */
+    this.swapRole = 'viewer';
+    /** 서버가 용량 초과로 딥페이크 적용을 거절했을 때 호출: ({ active, capacity_fps, per_client_fps, min_fps, max_clients }) => void */
+    this.onSwapRejected = null;
+    this._swapRejected = false;
+
+    // ── 업로드 품질 자동 조절 (인터넷이 나쁜 참가자는 저화질로 올려도 된다) ──
+    // 0: 기본 / 1: ≤480px / 2: ≤384px, 15fps / 3: 320px, 10fps. 신호: 순수 네트워크 왕복(RTT − 서버 처리시간), 송신 버퍼 적체.
+    this._uploadLevel = 0;
+    this._netRttMs = 0;
+    this._upStalls = 0;             // 최근 평가 구간의 송신 버퍼 적체 횟수
+    this._upLastEvalAt = 0;
+    this._upLastChangeAt = 0;
+    this._upCalmSince = 0;
+    this.onUploadLevelChange = null; // (level) => void
 
     this._startRenderLoop();
   }
@@ -644,6 +662,7 @@ export class VirtualAvatarManager {
       this.activeSwapFace = null;
       this.mode = 'real';
       this._stopSwapPump();
+      try { this.onFeedState?.(false); } catch { /* ignore */ }   // 실물 영상 송출로 돌아가면 저fps 해제
     } else if (newMode === 'swap') {
       this.mode = 'swap';
       this._initSwapWebSocket();
@@ -651,6 +670,7 @@ export class VirtualAvatarManager {
     } else {
       this.mode = 'virtual';
       this._stopSwapPump();
+      try { this.onFeedState?.(false); } catch { /* ignore */ }
     }
     this.onModeChange?.(this.mode, this.currentAvatar, this.activeSwapFace);
   }
@@ -662,11 +682,13 @@ export class VirtualAvatarManager {
   _swapRequestFps() {
     const base = this.faceMode === 'crowd' ? 18 : (this.faceMode === 'multi' ? 22 : 28);
     if (this._serverFpsCap) {
-      // 1인/호스트 상황에서는 최소 24 FPS 보장 (뚝뚝 끊김 완전 방지)
-      const cap = Math.max(16, this._serverFpsCap);
-      return Math.min(base, cap);
+      // 서버가 내려준 fps 캡을 그대로 따른다(서버가 인원 수에 맞춰 이미 충분히 높게 준다: 1인 30, 4명 22 …).
+      // 예전에는 여기서 최소 16fps 를 강제해, 20명처럼 서버가 5~8fps 만 소화할 수 있을 때도 16fps 로 밀어 넣어
+      // 대기 초과 폐기(드롭)·지연 증가·업로드 대역폭 낭비가 생겼다. 안전 하한만 4fps.
+      const cap = Math.max(4, this._serverFpsCap);
+      return Math.min(base, cap, this._uploadLimits().fps);
     }
-    return base;
+    return Math.min(base, this._uploadLimits().fps);
   }
 
   _startSwapPump() {
@@ -683,9 +705,13 @@ export class VirtualAvatarManager {
   }
 
   /** 서버로부터 받은 동적 fps 캡을 적용하고, 펌프가 돌고 있으면 새 주기로 재시작한다. */
-  _applyServerThrottle(fps, maxW) {
+  _applyServerThrottle(fps, maxW, clients) {
     const w = Number(maxW);
     if (Number.isFinite(w) && w >= 320) this._serverMaxW = w;
+    // 동시 참가자가 많아 GPU 가 포화되면(≥8명) 참가자당 동시 요청을 1장으로 제한한다.
+    // 처리량은 GPU 가 정하므로 그대로인데, 큐에 쌓이는 프레임 수가 절반이 되어 지연(≈큐 길이/처리량)이 줄어든다.
+    const c = Number(clients);
+    if (Number.isFinite(c)) this._maxInFlight = c >= 8 ? 1 : 2;
     const n = Number(fps);
     if (!Number.isFinite(n) || n <= 0) return;
     if (this._serverFpsCap === n) return;
@@ -789,6 +815,8 @@ export class VirtualAvatarManager {
   setSwapFace(faceIdOrName, photoUrl = '') {
     const key = (faceIdOrName || '').toLowerCase().trim();
     if (!key) return null;
+    this._swapRejected = false;   // 사용자가 새로 적용을 시도 → 서버 용량을 다시 확인한다
+    this._wsRetryAt = 0;
     this.activeSwapFace = key;
     this.activeSwapFaceUrl = photoUrl || '';
 
@@ -845,6 +873,7 @@ export class VirtualAvatarManager {
    * 실물 웹캠 모드로 복귀 (AI 스왑 해제)
    */
   setRealMode() {
+    this._swapRejected = false;
     this.activeSwapFace = null;
     this.activeSwapFaceUrl = '';
     this._selectedFaceImage = null;
@@ -1625,6 +1654,7 @@ export class VirtualAvatarManager {
   }
 
   _initSwapWebSocket() {
+    if (this._swapRejected) return;   // 서버가 용량 초과로 거절 → 사용자가 다시 얼굴을 고를 때까지 재연결하지 않는다
     if (this._ws && (this._ws.readyState === WebSocket.OPEN || this._ws.readyState === WebSocket.CONNECTING)) return;
     if (typeof WebSocket === 'undefined') return;
     // 재연결 폭주 방지 (0.5s → 최대 4s 백오프)
@@ -1634,7 +1664,10 @@ export class VirtualAvatarManager {
     try {
       const host = window.location.host;
       const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-      const q = this.clientId ? `?client=${encodeURIComponent(this.clientId)}` : '';
+      const qs = [];
+      if (this.clientId) qs.push(`client=${encodeURIComponent(this.clientId)}`);
+      if (this.swapRole === 'host') qs.push('prio=host');
+      const q = qs.length ? `?${qs.join('&')}` : '';
       const wsUrl = `${proto}//${host}/face-swap-ws${q}`;
       const ws = new WebSocket(wsUrl);
       this._ws = ws;
@@ -1658,11 +1691,13 @@ export class VirtualAvatarManager {
         if (this._ws === ws) this._ws = null;
         this._wsRetryDelay = Math.min(4000, this._wsRetryDelay * 2);
         this._resetSwapPipeline();
+        try { this.onFeedState?.(false); } catch { /* ignore */ }   // 연결이 끊기면 SFU 송출 즉시 복원
       };
       ws.onclose = () => {
         if (this._ws === ws) this._ws = null;
         this._wsRetryDelay = Math.min(4000, this._wsRetryDelay * 2);
         this._resetSwapPipeline();
+        try { this.onFeedState?.(false); } catch { /* ignore */ }
       };
     } catch {
       this._ws = null;
@@ -1677,7 +1712,11 @@ export class VirtualAvatarManager {
       let msg = null;
       try { msg = JSON.parse(data); } catch { return; }
       if (msg.type === 'throttle') {
-        this._applyServerThrottle(msg.fps, msg.max_w);
+        this._applyServerThrottle(msg.fps, msg.max_w, msg.clients);
+      } else if (msg.type === 'feed') {
+        try { this.onFeedState?.(!!msg.live); } catch { /* ignore */ }
+      } else if (msg.type === 'busy') {
+        this._handleSwapRejected(msg);
       } else if (msg.type === 'drop') {
         this.swapStats.dropped += 1;
         this._settleSwap(Number.isFinite(msg.seq) ? msg.seq : null);
@@ -1700,10 +1739,12 @@ export class VirtualAvatarManager {
     const u8 = new Uint8Array(buf);
     let seq = null;
     let offset = 0;
+    let serverTotal = 0;
     if (u8.length > 12 && u8[0] === 0x46 && u8[1] === 0x53 && u8[2] === 0x32 && u8[3] === 0x00) {
       const dv = new DataView(buf);
       seq = dv.getUint32(4);
       const proc = dv.getUint16(8);
+      serverTotal = dv.getUint16(10);   // 서버가 프레임을 받은 뒤 응답을 내보내기까지 걸린 시간(큐 대기 + 처리)
       offset = 12;
       if (proc) this._procMs = this._procMs ? this._procMs * 0.8 + proc * 0.2 : proc;
     }
@@ -1713,6 +1754,12 @@ export class VirtualAvatarManager {
     if (sentAt != null) {
       const rtt = performance.now() - sentAt;
       this._rttMs = this._rttMs ? this._rttMs * 0.8 + rtt * 0.2 : rtt;
+      // 순수 네트워크 구간 = 전체 왕복 − 서버 내부 시간 (서버 큐가 밀려서 느린 것과 내 회선이 느린 것을 구분)
+      if (serverTotal > 0) {
+        const net = Math.max(0, rtt - serverTotal);
+        this._netRttMs = this._netRttMs ? this._netRttMs * 0.7 + net * 0.3 : net;
+      }
+      this._evalUploadLevel();
     }
     this.swapStats.recv += 1;
     this.onSwapStats?.(this.swapStats);
@@ -1757,6 +1804,71 @@ export class VirtualAvatarManager {
     img.src = URL.createObjectURL(blob);
   }
 
+  /**
+   * 서버 하드웨어 용량 초과로 딥페이크 적용이 거절됐을 때.
+   * 실물 얼굴이 나가지 않도록 스왑을 해제하고(선택한 사진 아바타로 대체), 재연결을 멈추고, UI 에 알린다.
+   */
+  _handleSwapRejected(info = {}) {
+    this._swapRejected = true;
+    this.activeSwapFace = null;
+    this.activeSwapFaceUrl = '';
+    this._stopSwapPump();
+    this._resetSwapPipeline();
+    const ws = this._ws;
+    this._ws = null;
+    if (ws) { try { ws.close(); } catch { /* ignore */ } }
+    // 사진 기반(isCustomPhoto) 아바타는 virtual 렌더 경로가 없어 예외가 나므로, 그릴 수 있는 기본 아바타로 되돌린다
+    if (!this.currentAvatar || this.currentAvatar.isCustomPhoto) this.currentAvatar = CELEBRITY_AVATARS[0] || null;
+    this._selectedFaceImage = null;
+    this.mode = 'virtual';
+    try { this.onFeedState?.(false); } catch { /* ignore */ }
+    this.onModeChange?.(this.mode, this.currentAvatar, null);
+    try { this.onSwapRejected?.(info || {}); } catch { /* ignore */ }
+  }
+
+  /**
+   * 업로드 품질 단계 평가 (응답을 받을 때마다 호출, 2초에 한 번만 실제 판단).
+   * 순수 네트워크 왕복이 길거나 송신 버퍼가 자주 막히면 한 단계씩 낮추고, 충분히 안정적이면 천천히 올린다.
+   */
+  _evalUploadLevel() {
+    const now = performance.now();
+    if (now - this._upLastEvalAt < 2000) return;
+    this._upLastEvalAt = now;
+    const stalls = this._upStalls;
+    this._upStalls = 0;
+    const net = this._netRttMs;
+    const bad = (net > 200) || stalls >= 3;
+    const good = (net > 0 && net < 100) && stalls === 0;
+    let next = this._uploadLevel;
+    if (bad) {
+      this._upCalmSince = 0;
+      if (now - this._upLastChangeAt >= 3000) next = Math.min(3, this._uploadLevel + 1);
+    } else if (good) {
+      if (!this._upCalmSince) this._upCalmSince = now;
+      if (now - this._upCalmSince >= 12000 && now - this._upLastChangeAt >= 12000) next = Math.max(0, this._uploadLevel - 1);
+    } else {
+      this._upCalmSince = 0;
+    }
+    if (next !== this._uploadLevel) {
+      this._uploadLevel = next;
+      this._upLastChangeAt = now;
+      this._upCalmSince = 0;
+      try { this.onUploadLevelChange?.(next); } catch { /* ignore */ }
+      // 요청 fps 상한도 단계에 따라 바뀌므로 펌프 주기를 다시 잡는다
+      if (this.mode === 'swap' && this._swapPumpTimer) this._startSwapPump();
+    }
+  }
+
+  /** 업로드 단계별 (최대 폭, JPEG 품질 상한, fps 상한) */
+  _uploadLimits() {
+    switch (this._uploadLevel) {
+      case 1: return { w: 480, q: 0.62, fps: 30 };
+      case 2: return { w: 384, q: 0.55, fps: 15 };
+      case 3: return { w: 320, q: 0.5, fps: 10 };
+      default: return { w: 640, q: 1, fps: 30 };
+    }
+  }
+
   /** 서버가 권고한 max_w 와 방 인원 프로파일을 함께 반영한 전송 해상도 */
   _swapSendSize() {
     // 호스트에는 서버 직송(face-feed)으로 이 해상도 그대로 표시되므로, 방 인원과 무관하게
@@ -1765,7 +1877,7 @@ export class VirtualAvatarManager {
     const outH = this.height || 360;
     let w = 640;
     if (this._serverMaxW) w = Math.min(w, this._serverMaxW);
-    w = Math.min(w, 640);
+    w = Math.min(w, 640, this._uploadLimits().w);
     w = Math.max(320, Math.round(w / 16) * 16);
     const h = Math.max(180, Math.round((w * outH) / outW / 2) * 2);
     return { w, h };
@@ -1773,9 +1885,8 @@ export class VirtualAvatarManager {
 
   _swapJpegQuality() {
     // RTT 가 크거나(네트워크 병목) 서버가 바쁘면 품질을 낮춰 대역/인코딩 시간을 절약
-    if (this._rttMs > 350) return 0.6;
-    if (this._rttMs > 200) return 0.66;
-    return 0.72;
+    const byRtt = this._rttMs > 350 ? 0.6 : (this._rttMs > 200 ? 0.66 : 0.72);
+    return Math.min(byRtt, this._uploadLimits().q);
   }
 
   /** JPEG 인코딩 전용 워커 (미지원/오류 시 false → 메인 스레드 폴백) */
@@ -1892,8 +2003,12 @@ export class VirtualAvatarManager {
     // 송신 버퍼가 밀려 있으면(업링크 혼잡) 새 프레임을 만들지 않음 → 지연 누적 방지
     if (this._ws.bufferedAmount > 192 * 1024) {
       this.swapStats.dropped += 1;
+      this._upStalls += 1;
+      this._evalUploadLevel();
       return;
     }
+    // 아직 못 막힌 정도의 적체(≥ 48KB, 약 1~2프레임 분량)도 회선이 느리다는 신호로 센다
+    if (this._ws.bufferedAmount > 48 * 1024) this._upStalls += 1;
 
     // 1순위: 전용 Web Worker 에서 리사이즈+JPEG 인코딩 (메인 스레드 부하 ↓, 숨겨진 탭에서도 지연 없음)
     if (this._requestViaWorker(now)) return;

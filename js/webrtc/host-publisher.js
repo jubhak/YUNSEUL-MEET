@@ -43,6 +43,7 @@ export class HostPublisher {
     /** @type {((info: { peerId: string|null, active: boolean, stream?: MediaStream|null }) => void)|null} */
     this.onRelayChange = null;
     this.avatarManager = new VirtualAvatarManager({ width: 640, height: 360, fps: 28 });
+    this.avatarManager.swapRole = 'host';   // 호스트 본인의 딥페이크는 서버 용량 초과 거절 대상에서 제외
     // 참가자 식별자를 아바타 매니저로 전달 → 워커가 참가자별로 스왑 프레임을 분리
     try { this.avatarManager.setClientId?.(signaling?.localClientId || null); } catch { /* ignore */ }
     this._faceRoomCount = 1;
@@ -567,6 +568,21 @@ export class HostPublisher {
   }
 
   /**
+   * 서버 상향 대역폭 예산에 맞춰 호스트 화면 비트레이트 상한을 정한다.
+   * 시청자 1명당 비트레이트 × 인원 = 서버 회선 상향 사용량. 회선(예: 80Mbps)에서 회의 화면이 차지할 몫을
+   * DISPLAY_EGRESS_BUDGET 로 잡고, 인원이 많을 때만 1인당 상한을 낮춘다(8명 이하는 브라우저 기본 = 상한 없음).
+   * (호스트 자신의 딥페이크 수신·참가자 오디오 등을 위한 여유를 남긴다.)
+   */
+  _applyDisplayBudget(count) {
+    const EGRESS_BUDGET = 36_000_000; // bps
+    const MIN_PER_VIEWER = 800_000;
+    const MAX_PER_VIEWER = 3_000_000;
+    let cap = 0;
+    if (count > 8) cap = Math.max(MIN_PER_VIEWER, Math.min(MAX_PER_VIEWER, Math.floor(EGRESS_BUDGET / count)));
+    this.sfu?.setDisplayMaxBitrate?.(cap)?.catch?.(() => {});
+  }
+
+  /**
    * 방 인원 수에 따라 얼굴 송출 화질 자동 전환
    * 1명: 640×360 @ ~28fps / 2~5명: 256×144 @ 15fps / 6명+: 160×90 @ 10fps
    * (얼굴은 호스트만 수신 — 클라이언트 디코드 없음)
@@ -574,6 +590,7 @@ export class HostPublisher {
   async setFaceQualityByRoomSize(totalPeople = 1) {
     const count = Math.max(1, Number(totalPeople) || 1);
     this._faceRoomCount = count;
+    this._applyDisplayBudget(count);
     if (!this.avatarManager) return;
     const mode = faceModeForRoomCount(count);
     const profile = this.avatarManager.getFaceProfile();

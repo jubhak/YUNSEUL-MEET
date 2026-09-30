@@ -84,7 +84,9 @@ async function openPage(name, url, preScript = '') {
     const viewers = [];
     for (let i = 0; i < N; i += 1) {
       const v = await openPage(`viewer${i + 1}`, `${BASE}/viewer.html?code=${cr.code}`,
-        `sessionStorage.setItem('viewerName','참가자${i + 1}');sessionStorage.setItem('roomCode','${cr.code}');sessionStorage.setItem('interactionMode','bidirectional');sessionStorage.setItem('requireMic','false');`);
+        `sessionStorage.setItem('viewerName','참가자${i + 1}');sessionStorage.setItem('roomCode','${cr.code}');sessionStorage.setItem('interactionMode','bidirectional');sessionStorage.setItem('requireMic','false');`
+        // 느린 업링크 모사: window.__slow(ms) 만큼 이진 프레임 전송을 지연 (SLOW_MS 환경변수, 1번 참가자만)
+        + `window.__slow=0;const _ws=WebSocket.prototype.send;WebSocket.prototype.send=function(d){ if(typeof d!=='string' && window.__slow>0){ const t=this; setTimeout(()=>{ try{_ws.call(t,d)}catch(e){} }, window.__slow); } else { _ws.call(this,d); } };`);
       viewers.push(v); pages.push(v);
       await sleep(700);
     }
@@ -99,7 +101,20 @@ async function openPage(name, url, preScript = '') {
     console.log(`${N}명 딥페이크 시작 — 워밍업 10초…`);
     await sleep(10000);
 
-    const snap = async (v) => JSON.parse(await v.eval(`(() => { const a = window.__ymDebug?.subscriber?.avatarManager; if (!a) return JSON.stringify(null); return JSON.stringify({ mode: a.mode, swap: a.isSwap, face: a.activeSwapFace, sent: a.swapStats.sent, recv: a.swapStats.recv, dropped: a.swapStats.dropped, rtt: Math.round(a._rttMs||0), proc: Math.round(a._procMs||0), cap: a._serverFpsCap, maxW: a._serverMaxW, q: a._playQ.length, shown: a._lastShownSeq, vis: document.visibilityState, pend: a._pending.size, enc: a._encoding, wsr: a._ws && a._ws.readyState, buf: a._ws && a._ws.bufferedAmount, hasVid: a.rawWebcamVideo && a.rawWebcamVideo.readyState, pump: !!a._swapPumpTimer, encMs: Math.round(a._encMs||0), encTot: Math.round(a._encTotalMs||0), pendKeys: [...a._pending.values()].map(t=>Math.round(performance.now()-t)) }); })()`));
+    const SLOW_MS = Number(process.env.SLOW_MS || 0);
+    const SLOW_FOR_S = Number(process.env.SLOW_FOR_S || 0);
+    if (SLOW_MS > 0) {
+      await viewers[0].eval(`window.__slow=${SLOW_MS}`);
+      const lvls = [];
+      const until = Date.now() + (SLOW_FOR_S || MEASURE_S) * 1000;
+      while (Date.now() < until) {
+        await sleep(2000);
+        lvls.push(JSON.parse(await viewers[0].eval(`(() => { const a = window.__ymDebug.subscriber.avatarManager; const s = a._swapSendSize(); return JSON.stringify({ lvl: a._uploadLevel, net: Math.round(a._netRttMs||0), w: s.w, q: a._swapJpegQuality(), fps: a._swapRequestFps() }); })()`)));
+      }
+      console.log(`[느린 업링크 ${SLOW_MS}ms] 1번 참가자 단계 추이: ${lvls.map((x) => `L${x.lvl}(net${x.net}ms ${x.w}px q${x.q.toFixed(2)} ${x.fps}fps)`).join(' → ')}`);
+      if (SLOW_FOR_S) await viewers[0].eval('window.__slow=0');
+    }
+    const snap = async (v) => JSON.parse(await v.eval(`(() => { const a = window.__ymDebug?.subscriber?.avatarManager; if (!a) return JSON.stringify(null); return JSON.stringify({ mode: a.mode, swap: a.isSwap, face: a.activeSwapFace, sent: a.swapStats.sent, recv: a.swapStats.recv, dropped: a.swapStats.dropped, rtt: Math.round(a._rttMs||0), proc: Math.round(a._procMs||0), cap: a._serverFpsCap, maxW: a._serverMaxW, q: a._playQ.length, shown: a._lastShownSeq, vis: document.visibilityState, pend: a._pending.size, rej: a._swapRejected, lvl: a._uploadLevel, net: Math.round(a._netRttMs||0), enc: a._encoding, wsr: a._ws && a._ws.readyState, buf: a._ws && a._ws.bufferedAmount, hasVid: a.rawWebcamVideo && a.rawWebcamVideo.readyState, pump: !!a._swapPumpTimer, encMs: Math.round(a._encMs||0), encTot: Math.round(a._encTotalMs||0), pendKeys: [...a._pending.values()].map(t=>Math.round(performance.now()-t)) }); })()`));
     const hostFrames = async () => JSON.parse(await host.eval(`(async () => { const per = []; for (const pc of (window.__pcs||[])) { if (pc.connectionState==='closed') continue; const st = await pc.getStats(); st.forEach(r => { if (r.type==='inbound-rtp' && r.kind==='video') per.push({ id: r.ssrc, f: r.framesDecoded||0, fr: r.framesReceived||0, freeze: r.freezeCount||0, w: r.frameWidth, h: r.frameHeight }); }); } return JSON.stringify(per); })()`));
 
     const feedSnap = async () => JSON.parse(await host.eval(`JSON.stringify({ feed: window.__ymDebug?.faceFeed || null, src: window.__ymDebug?.cameraSources || null })`));
@@ -137,7 +152,7 @@ async function openPage(name, url, preScript = '') {
       if (!a || !b) { console.log(`  viewer${i + 1}: 아바타 매니저 없음`); return; }
       const fps = (b.recv - a.recv) / dt;
       totalFps += fps; if (b.swap) swapping += 1;
-      console.log(`  viewer${i + 1}: swap=${b.swap} face=${b.face} 응답 ${fps.toFixed(1)}fps  drop ${b.dropped - a.dropped}  rtt~${b.rtt}ms proc~${b.proc}ms cap=${b.cap} maxW=${b.maxW} shown#${b.shown} | ${JSON.stringify({vis:b.vis,pend:b.pend,enc:b.enc,wsr:b.wsr,buf:b.buf,vid:b.hasVid,pump:b.pump,encMs:b.encMs,encTot:b.encTot,pk:b.pendKeys})}`);
+      console.log(`  viewer${i + 1}: swap=${b.swap} face=${b.face} 응답 ${fps.toFixed(1)}fps  drop ${b.dropped - a.dropped}  rtt~${b.rtt}ms proc~${b.proc}ms cap=${b.cap} maxW=${b.maxW} shown#${b.shown} rej=${b.rej} lvl=${b.lvl} net=${b.net}ms | ${JSON.stringify({vis:b.vis,pend:b.pend,enc:b.enc,wsr:b.wsr,buf:b.buf,vid:b.hasVid,pump:b.pump,encMs:b.encMs,encTot:b.encTot,pk:b.pendKeys})}`);
     });
     console.log(`  합계 ${totalFps.toFixed(1)} fps / 스왑 중 ${swapping}/${N}`);
 
@@ -169,10 +184,18 @@ async function openPage(name, url, preScript = '') {
       }
       console.log(`  폴백 검증: 딥페이크 끔 → ${srcOff}, 다시 켬 → ${srcOn} ${fallbackOk ? 'OK' : 'FAIL'}`);
     }
+    const aimdLog = wlog.split('\n').filter((l) => /\[AIMD\]|throttle_loop|Traceback|Error/.test(l));
+    if (aimdLog.length) console.log('AIMD/워커 로그(최근 4줄):\n' + aimdLog.slice(-4).join('\n'));
+    const provLog = wlog.split('\n').filter((l) => /Tensorrt|TensorRT|TRT|providers|CUDAExecution/i.test(l));
+    if (provLog.length) console.log('ONNX provider 로그:\n' + provLog.slice(0, 4).join('\n'));
     const relayLog = wlog.split('\n').filter((l) => /face-feed|face-relay|uncaught|unhandled/i.test(l));
     if (relayLog.length) console.log('서버 로그:', relayLog.slice(0, 5).join(' | '));
     console.log(`  직송 정상 참가자: ${feedOk}/${N}`);
-    const okAll = fallbackOk && (process.env.FACE_FEED === '0' || feedOk >= N) && swapping === N && hostFps.filter((f) => f >= 8).length >= Math.min(N, hostFps.length) && hostFps.length >= N;
+    // 호스트 직송이 정상인 동안에는 참가자 SFU 카메라 송출을 일부러 저fps(3fps)로 낮춘다(FACE_SFU_SAVE). 그 경우 SFU 영상은 2fps 이상이면 정상.
+    const sfuSaving = process.env.FACE_FEED !== '0' && process.env.FACE_SFU_SAVE !== '0' && process.env.FACE_CLIENT_RETURN !== 'always' && feedOk >= N;
+    const minSfuFps = sfuSaving ? 2 : 8;
+    console.log(`  SFU 영상 기준: ${minSfuFps}fps 이상 ${sfuSaving ? '(직송 정상 → 저fps 절감 모드)' : ''}`);
+    const okAll = fallbackOk && (process.env.FACE_FEED === '0' || feedOk >= N) && swapping === N && hostFps.filter((f) => f >= minSfuFps).length >= Math.min(N, hostFps.length) && hostFps.length >= N;
     console.log(okAll ? '\n✅ 모든 참가자 딥페이크 정상 송출/수신' : '\n❌ 일부 참가자 미달');
     for (const p of pages) if (p.errors.length) console.log(p.name, '오류:', p.errors.slice(0, 3).join(' | ').slice(0, 300));
     process.exitCode = okAll ? 0 : 1;

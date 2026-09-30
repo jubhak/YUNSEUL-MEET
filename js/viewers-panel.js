@@ -90,9 +90,12 @@ function renderList(viewers) {
       : micState === 'none'
         ? '마이크 인식 안 됨'
         : '마이크 꺼짐';
+    const MIC_SVG_ON = `<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" style="display:block;"><path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"></path><path d="M19 10v2a7 7 0 0 1-14 0v-2"></path><line x1="12" y1="19" x2="12" y2="22"></line><line x1="8" y1="22" x2="16" y2="22"></line></svg>`;
+    const MIC_SVG_OFF = `<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" style="display:block;"><path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"></path><path d="M19 10v2a7 7 0 0 1-14 0v-2"></path><line x1="12" y1="19" x2="12" y2="22"></line><line x1="8" y1="22" x2="16" y2="22"></line><line x1="2" y1="2" x2="22" y2="22" stroke="#ef4444" stroke-width="2.6" stroke-linecap="round"></line></svg>`;
+    const micIco = micState === 'on' ? MIC_SVG_ON : MIC_SVG_OFF;
     const micHtml = micState === 'none'
-      ? `<span class="viewers-mic is-none" title="${micTitle}" aria-label="${micTitle}"><span class="mic-ico" aria-hidden="true">🎙️</span><span class="mic-x" aria-hidden="true">✕</span></span>`
-      : `<span class="viewers-mic is-${micState}" title="${micTitle}" aria-label="${micTitle}"><span class="mic-ico" aria-hidden="true">🎙️</span></span>`;
+      ? `<span class="viewers-mic is-none" title="${micTitle}" aria-label="${micTitle}"><span class="mic-ico" aria-hidden="true">${micIco}</span><span class="mic-x" aria-hidden="true">✕</span></span>`
+      : `<span class="viewers-mic is-${micState}" title="${micTitle}" aria-label="${micTitle}"><span class="mic-ico" aria-hidden="true">${micIco}</span></span>`;
     const classes = [
       'viewers-item',
       role === 'host' ? 'is-host' : '',

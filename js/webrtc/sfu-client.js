@@ -334,6 +334,13 @@ export class SfuClient {
             produceOpts.codecOptions = {
               videoGoogleStartBitrate: 1500,
             };
+            // 호스트 화면은 시청자 N명에게 그대로 복제돼 나가는 유일한 대용량 스트림(서버 상향 대역폭의 대부분).
+            // 인원 수에 따른 비트레이트 상한(_displayMaxBitrate)이 있으면 처음부터 적용하고,
+            // 시간계층(L1T3)을 켜서 SFU 가 느린 시청자에게는 프레임만 솎아 보내게 한다(전체가 같이 느려지지 않도록).
+            const enc = { scaleResolutionDownBy: 1 };
+            if (this._displayMaxBitrate) enc.maxBitrate = this._displayMaxBitrate;
+            if (source === 'display' && !this._noTemporalLayers) enc.scalabilityMode = 'L1T3';
+            produceOpts.encodings = [enc];
           }
         } else if (track.kind === 'audio') {
           try { track.contentHint = (source === 'mic' || source === 'viewer-mic') ? 'speech' : 'music'; } catch { /* ignore */ }
@@ -345,7 +352,20 @@ export class SfuClient {
             opusMaxAverageBitrate: (source === 'mic' || source === 'viewer-mic') ? 64000 : 128000,
           };
         }
-        const producer = await transport.produce(produceOpts);
+        let producer;
+        try {
+          producer = await transport.produce(produceOpts);
+        } catch (err) {
+          // L1T3 를 못 받아들이는 환경(브라우저/코덱)이면 단일 계층으로 폴백 — 화면 송출이 실패하면 안 된다.
+          if (produceOpts.encodings?.[0]?.scalabilityMode) {
+            console.warn('[SFU] scalabilityMode L1T3 실패 → 단일 계층 폴백:', err?.message || err);
+            this._noTemporalLayers = true;
+            delete produceOpts.encodings[0].scalabilityMode;
+            producer = await transport.produce(produceOpts);
+          } else {
+            throw err;
+          }
+        }
         if (track.kind === 'video' && producer.rtpSender) {
           try {
             const params = producer.rtpSender.getParameters();
@@ -415,6 +435,30 @@ export class SfuClient {
     if (!producer) return false;
     await producer.replaceTrack({ track: track || null });
     return true;
+  }
+
+  /**
+   * 호스트 화면(display) 송출 비트레이트 상한 설정. bitrate 가 falsy 면 상한 해제.
+   * 이후 새로 만들어지는 display producer 에도 적용된다.
+   */
+  async setDisplayMaxBitrate(bitrate) {
+    const next = bitrate ? Math.round(bitrate) : 0;
+    if (next === (this._displayMaxBitrate || 0)) return;
+    this._displayMaxBitrate = next;
+    for (const [key, producer] of this.producers.entries()) {
+      if (!key.startsWith('display:') || producer.closed || producer.kind !== 'video') continue;
+      try {
+        const sender = producer.rtpSender;
+        const params = sender?.getParameters();
+        if (!params?.encodings?.length) continue;
+        params.encodings = params.encodings.map((enc) => {
+          const e = { ...enc };
+          if (next) e.maxBitrate = next; else delete e.maxBitrate;
+          return e;
+        });
+        await sender.setParameters(params);
+      } catch { /* ignore */ }
+    }
   }
 
   /**

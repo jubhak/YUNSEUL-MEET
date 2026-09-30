@@ -194,7 +194,7 @@
     #main-toolbar .btn-av:not(.is-active) {
       background: #2a2030 !important;
       border-color: #6b3a4a !important;
-      color: #ff8fa3 !important;
+      color: #cbd5e1 !important;
     }
     #main-toolbar .btn-av .ico-off { display: none !important; }
     #main-toolbar .btn-av:not(.is-active) .ico-on { display: none !important; }
@@ -365,26 +365,57 @@
     <div class="toolbar-right toolbar-actions">
       <div class="tb-group tb-group-av" id="viewer-av-tools">
         <button type="button" id="btn-av-speaker" class="btn btn-icon btn-av" title="소리 꺼짐 — 클릭하여 켜기" aria-pressed="false" aria-label="소리">
-          <span class="ico ico-on" aria-hidden="true">🔊</span>
-          <span class="ico ico-off" aria-hidden="true">🔇</span>
+          <span class="ico ico-on" aria-hidden="true">
+            <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"></polygon>
+              <path d="M15.54 8.46a5 5 0 0 1 0 7.07"></path>
+              <path d="M19.07 4.93a10 10 0 0 1 0 14.14"></path>
+            </svg>
+          </span>
+          <span class="ico ico-off" aria-hidden="true">
+            <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"></polygon>
+              <line x1="2" y1="2" x2="22" y2="22" stroke="#ef4444" stroke-width="2.5" stroke-linecap="round"></line>
+            </svg>
+          </span>
         </button>
         <button type="button" id="btn-av-mic" class="btn btn-icon btn-av" title="마이크 꺼짐 — 클릭하여 켜기" aria-pressed="false" aria-label="마이크">
-          <span class="ico ico-on" aria-hidden="true">🎙️</span>
-          <span class="ico ico-off" aria-hidden="true">🚫</span>
+          <span class="ico ico-on" aria-hidden="true">
+            <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"></path>
+              <path d="M19 10v2a7 7 0 0 1-14 0v-2"></path>
+              <line x1="12" y1="19" x2="12" y2="22"></line>
+              <line x1="8" y1="22" x2="16" y2="22"></line>
+            </svg>
+          </span>
+          <span class="ico ico-off" aria-hidden="true">
+            <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"></path>
+              <path d="M19 10v2a7 7 0 0 1-14 0v-2"></path>
+              <line x1="12" y1="19" x2="12" y2="22"></line>
+              <line x1="8" y1="22" x2="16" y2="22"></line>
+              <line x1="2" y1="2" x2="22" y2="22" stroke="#ef4444" stroke-width="2.5" stroke-linecap="round"></line>
+            </svg>
+          </span>
         </button>
         <button type="button" id="btn-av-mic-device" class="btn btn-icon btn-av btn-av-mic-device hidden" title="마이크 장치 선택 / 테스트 (이어폰 마이크 등)" aria-label="마이크 장치 선택">
-          <span class="ico" aria-hidden="true">⚙️</span>
+          <span class="ico" aria-hidden="true">
+            <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <circle cx="12" cy="12" r="3"></circle>
+              <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
+            </svg>
+          </span>
         </button>
         <button type="button" id="btn-av-cam" class="btn btn-icon btn-av" title="카메라 꺼짐 — 클릭하여 켜기" aria-pressed="false" aria-label="카메라">
           <span class="ico ico-on" aria-hidden="true">
-            <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="display:inline-block!important;vertical-align:middle;width:20px;height:20px;">
+            <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
               <path d="M15 10l5-3v10l-5-3v3a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v3z"></path>
             </svg>
           </span>
           <span class="ico ico-off" aria-hidden="true">
-            <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="display:inline-block!important;vertical-align:middle;width:20px;height:20px;">
-              <path d="M16 16v1a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2h2m4 0h4a2 2 0 0 1 2 2v3l5-3v10l-3.5-2.1"></path>
-              <line x1="2" y1="2" x2="22" y2="22" stroke="#ef4444" stroke-width="2.5"></line>
+            <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M15 10l5-3v10l-5-3v3a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v3z"></path>
+              <line x1="2" y1="2" x2="22" y2="22" stroke="#ef4444" stroke-width="2.5" stroke-linecap="round"></line>
             </svg>
           </span>
         </button>
@@ -539,7 +570,15 @@
 
   <div id="mic-required-gate" class="mic-required-gate hidden" aria-live="polite">
     <div class="mic-required-box">
-      <span class="mic-required-icon" aria-hidden="true">🎙️🚫</span>
+      <span class="mic-required-icon" aria-hidden="true">
+        <svg viewBox="0 0 24 24" width="48" height="48" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="display:inline-block;vertical-align:middle;color:#f87171;">
+          <path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"></path>
+          <path d="M19 10v2a7 7 0 0 1-14 0v-2"></path>
+          <line x1="12" y1="19" x2="12" y2="22"></line>
+          <line x1="8" y1="22" x2="16" y2="22"></line>
+          <line x1="2" y1="2" x2="22" y2="22" stroke="#ef4444" stroke-width="2.5" stroke-linecap="round"></line>
+        </svg>
+      </span>
       <h2>마이크 사용 필수 미팅</h2>
       <p id="mic-required-message">이 미팅은 마이크 사용이 필수입니다.<br>마이크가 연결되고 권한이 활성화된 참가자만 입장할 수 있습니다.</p>
       <div class="mic-required-actions">

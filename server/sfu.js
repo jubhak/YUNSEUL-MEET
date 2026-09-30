@@ -358,6 +358,20 @@ const DEFAULT_ICE_SERVERS = [
   { urls: 'stun:stun1.l.google.com:19302' },
   { urls: 'stun:stun2.l.google.com:19302' },
 ];
+// (C-1) 선택 기능: UDP 가 막힌 사내망/공공망 참가자를 위한 TURN(TCP/TLS 443) 서버 지정.
+//   TURN_URLS="turns:turn.example.com:443?transport=tcp,turn:turn.example.com:3478?transport=tcp"
+//   TURN_USERNAME / TURN_CREDENTIAL — 설정하지 않으면 아무것도 바뀌지 않는다(기존 STUN 만 사용).
+{
+  const turnUrls = String(process.env.TURN_URLS || '').split(',').map((s) => s.trim()).filter(Boolean);
+  if (turnUrls.length && process.env.TURN_USERNAME && process.env.TURN_CREDENTIAL) {
+    DEFAULT_ICE_SERVERS.push({
+      urls: turnUrls,
+      username: process.env.TURN_USERNAME,
+      credential: process.env.TURN_CREDENTIAL,
+    });
+    console.log(`[sfu] TURN 사용: ${turnUrls.join(', ')}`);
+  }
+}
 
 async function createWebRtcTransport(room) {
   const router = room.router;
@@ -534,6 +548,7 @@ function closeRoomIfEmpty(roomCode) {
  */
 const lastProducerPliTimes = new Map(); // producerId -> timestamp
 const consumerInitialPliDone = new Set(); // consumerId -> 최초 PLI 완료
+const producerConsumerCounts = new Map(); // producerId -> 살아있는 consumer 수 (PLI 간격 산정용)
 
 /**
  * 키프레임(PLI) 요청 스로틀.
@@ -557,8 +572,14 @@ async function requestKeyframeThrottled(consumer, { force = false } = {}) {
   const lastTime = lastProducerPliTimes.get(producerId) || 0;
   const source = consumer.appData?.source || '';
   const isFace = source === 'camera' || source === 'viewer-camera';
-  const loadFactor = Math.min(4000, lastProducerPliTimes.size * 250);
-  const minGap = (isFace ? 3000 : 2500) + loadFactor;
+  // PLI 폭풍은 "같은 producer 를 보는 consumer 가 많을 때" 문제다(호스트 화면을 보는 시청자 N명 등).
+  // 예전에는 살아있는 모든 producer 수(닫힌 것도 안 지워져 계속 증가)에 비례해 간격을 늘려,
+  // 20명 회의에서는 1:1 로 호스트만 보는 참가자 카메라도 7초 넘게 키프레임 복구가 막혔다.
+  // 지금: 그 producer 의 consumer 수에 비례. consumer 가 1명이면 짧게(복구 빠름), 많으면 길게.
+  const nCons = Math.max(1, producerConsumerCounts.get(producerId) || 1);
+  const loadFactor = Math.min(4000, (nCons - 1) * 250);
+  const baseGap = nCons <= 1 ? 1500 : (isFace ? 3000 : 2500);
+  const minGap = baseGap + loadFactor;
   if (now - lastTime < minGap) return;
   lastProducerPliTimes.set(producerId, now);
   try {
@@ -715,6 +736,11 @@ function attachSfuHandlers(socket, ctx) {
         },
       });
       peer.producers.set(producer.id, producer);
+      // producer 가 닫히면 PLI 시각 기록도 삭제 (예전에는 영원히 남아 메모리 누수 + 스로틀 간격 왜곡)
+      producer.observer.once('close', () => {
+        lastProducerPliTimes.delete(producer.id);
+        producerConsumerCounts.delete(producer.id);
+      });
       producer.on('transportclose', () => {
         peer.producers.delete(producer.id);
         emitProducerEvent(ctx.io, room, code, 'sfu-producer-closed', {
@@ -816,7 +842,14 @@ function attachSfuHandlers(socket, ctx) {
       }
       peer.consumers.set(consumer.id, consumer);
       consumer.on('transportclose', () => peer.consumers.delete(consumer.id));
-      consumer.on('close', () => consumerInitialPliDone.delete(consumer.id));
+      producerConsumerCounts.set(producerId, (producerConsumerCounts.get(producerId) || 0) + 1);
+      // mediasoup Consumer 의 종료 알림은 observer 로 온다 (예전 consumer.on('close') 는 발생하지 않아 Set 이 계속 커졌다)
+      consumer.observer.once('close', () => {
+        consumerInitialPliDone.delete(consumer.id);
+        const left = (producerConsumerCounts.get(producerId) || 1) - 1;
+        if (left > 0) producerConsumerCounts.set(producerId, left);
+        else producerConsumerCounts.delete(producerId);
+      });
       consumer.on('producerclose', () => {
         peer.consumers.delete(consumer.id);
         socket.emit('sfu-producer-closed', { producerId, consumerId: consumer.id });

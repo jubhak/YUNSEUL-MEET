@@ -1510,36 +1510,37 @@ body.has-ppt .tb-group-room + .tb-sep {
 }
 
 .viewers-mic .mic-ico {
-  display: block;
+  display: flex;
+  align-items: center;
+  justify-content: center;
   line-height: 1;
+}
+
+.viewers-mic .mic-ico svg {
+  width: 14px;
+  height: 14px;
+  display: block;
 }
 
 .viewers-mic.is-on {
   color: #2dd4a8;
   background: rgba(45, 212, 168, 0.16);
   box-shadow: 0 0 0 1px rgba(45, 212, 168, 0.45);
-  filter: none;
   opacity: 1;
 }
 
 .viewers-mic.is-off {
-  color: #8b93a7;
+  color: #94a3b8;
   background: rgba(36, 40, 54, 0.9);
   box-shadow: 0 0 0 1px rgba(58, 65, 88, 0.8);
-  opacity: 0.55;
-  filter: grayscale(1);
+  opacity: 0.85;
 }
 
 .viewers-mic.is-none {
-  color: #f87171;
+  color: #94a3b8;
   background: rgba(248, 113, 113, 0.12);
   box-shadow: 0 0 0 1px rgba(248, 113, 113, 0.4);
   opacity: 0.9;
-}
-
-.viewers-mic.is-none .mic-ico {
-  filter: grayscale(0.4);
-  opacity: 0.85;
 }
 
 .viewers-mic.is-none .mic-x {

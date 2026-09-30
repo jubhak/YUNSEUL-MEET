@@ -83,6 +83,26 @@ export class FaceFeedClient {
     }
   }
 
+  /**
+   * 서버에 "지금 직송을 화면에 그리고 있는 참가자 목록"을 알린다.
+   * 서버는 이 목록에 있는 참가자에게만 결과 JPEG 를 돌려주지 않고(ack), SFU 카메라 송출을 저fps 로 낮추게 한다.
+   * 호출이 끊기거나(1.2초) 목록에서 빠지면 서버가 자동으로 전체 JPEG 반환/송출 복원으로 돌아간다.
+   * @param {string[]} ids
+   */
+  reportLive(ids) {
+    const ws = this._ws;
+    if (!ws || ws.readyState !== 1) return;
+    const list = Array.isArray(ids) ? ids : [];
+    // 빈 목록은 "비었음" 을 한 번만 알리고, 이후 계속 비어 있으면 보내지 않는다
+    if (!list.length) {
+      if (!this._reportedNonEmpty) return;
+      this._reportedNonEmpty = false;
+    } else {
+      this._reportedNonEmpty = true;
+    }
+    try { ws.send(JSON.stringify({ t: 'live', ids: list })); } catch { /* ignore */ }
+  }
+
   _ev(s) {
     (this.events ||= []).push(s);
     if (this.events.length > 12) this.events.shift();

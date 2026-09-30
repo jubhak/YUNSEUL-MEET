@@ -1814,11 +1814,19 @@ sync.start()
           const want = faceFeed.isLive(clientId) ? 'feed' : 'sfu';
           if (shownCameraSource.get(clientId) !== want) showRemoteCamera(clientId);
         }
+        // 서버에 "직송을 실제로 화면에 그리고 있는 참가자" 보고 → 서버는 그 참가자에게 결과 JPEG 를 돌려주지 않고,
+        // 참가자의 SFU 카메라 송출(VP8)을 저fps 로 낮춘다. 보고가 끊기거나 목록에서 빠지면 자동 복원된다.
+        const liveIds = [];
+        for (const clientId of sfuCameraStreams.keys()) {
+          if (shownCameraSource.get(clientId) === 'feed' && faceFeed.isLive(clientId)) liveIds.push(clientId);
+        }
+        faceFeed.reportLive(liveIds);
       }, 400);
       window.__ymDebug = window.__ymDebug || {};
       Object.defineProperties(window.__ymDebug, {
         faceFeed: { configurable: true, get: () => faceFeed.stats() },
         cameraSources: { configurable: true, get: () => Object.fromEntries(shownCameraSource) },
+        publisher: { configurable: true, get: () => webrtcPublisher },
       });
     }
     webrtcPublisher.onMicTrack = (track) => {

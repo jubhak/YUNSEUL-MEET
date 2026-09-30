@@ -375,6 +375,61 @@ def _latency_percentile(p: float = 0.5) -> float:
     return vals[idx]
 
 
+def _limits_for_clients(n: int):
+    """참가자 수별 (fps 하한, fps 상한, 처리 해상도 상한)."""
+    if n <= 1:
+        return 24.0, 30.0, 640
+    if n == 2:
+        return 20.0, 26.0, 640
+    if n <= 4:
+        return 16.0, 22.0, 640
+    if n <= 7:
+        return 12.0, 18.0, 576
+    if n <= 12:
+        return 10.0, 15.0, 512
+    return 8.0, 12.0, 448
+
+
+# ── AIMD 요청 fps 제어 ──────────────────────────────────────────
+# 예전: 참가자 수별 "하한 fps" 고정. 20명이면 8fps × 20 = 160fps 를 요구하는데 GPU 처리량은 그보다 작아
+#       큐 대기 초과 폐기가 초당 수십 건, 지연 ≈ 230ms, 버려지는 프레임의 업로드 대역폭까지 낭비했다.
+# 지금: 과부하 신호(대기 초과 폐기)가 보이면 요청 fps 를 줄이고(곱셈 감소, 실측 처리량/인원 이하로),
+#       신호가 없으면 천천히 올린다(덧셈 증가). 인원이 줄면 기억된 최고 처리량으로 즉시 회복한다.
+#       FACE_SWAP_AIMD=0 이면 예전 방식(고정 하한).
+_AIMD_ENABLED = os.environ.get("FACE_SWAP_AIMD", "1") == "1"
+_AIMD_MIN_FPS = max(1.0, float(os.environ.get("FACE_SWAP_MIN_FPS", "4")))
+_AIMD_FPS = 30.0
+_AIMD_LAST_N = 0
+
+
+def update_aimd(n_clients: int):
+    """2초마다 호출 (throttle 루프). 요청 fps(_AIMD_FPS) 갱신."""
+    global _AIMD_FPS, _AIMD_LAST_N
+    if not _AIMD_ENABLED:
+        return
+    n = max(1, int(n_clients or 1))
+    _, fps_cap, _ = _limits_for_clients(n)
+    now_t = time.time()
+    win = 2.5
+    stale = sum(1 for t in _STALE_EVENTS if now_t - t < win)
+    superseded = sum(1 for t in _DROP_EVENTS if now_t - t < win)
+    measured = measured_throughput_fps()
+    # 과부하 판정: 대기 초과 폐기가 있거나, 덮어쓰기 드롭이 처리한 프레임 수의 15% 를 넘는다
+    # (건강한 상태에서 간헐적으로 생기는 1~2건의 덮어쓰기는 무시)
+    overloaded = stale >= 2 or (superseded >= 3 and superseded > 0.15 * measured * win)
+    if overloaded and measured > 0:
+        # 과부하: 현재 요청 fps 의 90% 이하, 그리고 실제로 소화한 "1인당 처리량" 이하로
+        _AIMD_FPS = max(_AIMD_MIN_FPS, min(_AIMD_FPS * 0.9, (measured / n) * 0.95, fps_cap))
+    else:
+        # 여유: 천천히 증가. 인원이 줄었다면 기억된 최고 처리량으로 곧바로 회복.
+        best_capacity = max(_PEAK_FPS_EMA, 0.0)
+        floor_hint = min(fps_cap, (best_capacity * 0.9) / n) if best_capacity > 0 else 0.0
+        _AIMD_FPS = min(fps_cap, max(_AIMD_FPS + 0.5, floor_hint if n < _AIMD_LAST_N else 0.0))
+    _AIMD_LAST_N = n
+    logger.info(f"[AIMD] n={n} fps={_AIMD_FPS:.1f} cap={fps_cap} overloaded={overloaded} "
+                f"stale={stale} superseded={superseded} measured={measured:.0f}fps peak={_PEAK_FPS_EMA:.0f}")
+
+
 def get_adaptive_profile(n_clients: int) -> dict:
     """활성 클라이언트 수 + 실측 지연 + 워커 수로
     처리 해상도 상한(max_w)과 클라이언트 권고 fps를 계산한다."""
@@ -398,22 +453,17 @@ def get_adaptive_profile(n_clients: int) -> dict:
 
     # 참가자 수별 하한(floor)/상한(cap) — 1인 호스트는 절대 끊기지 않게, 다수일수록 fps 를 낮추되
     # 해상도는 예전(320px)처럼 뭉개지 않는다 (스왑 GPU 비용은 프레임 해상도와 무관하게 128px 크롭 기준).
-    if n <= 1:
-        fps_floor, fps_cap, max_w = 24.0, 30.0, 640
-    elif n == 2:
-        fps_floor, fps_cap, max_w = 20.0, 26.0, 640
-    elif n <= 4:
-        fps_floor, fps_cap, max_w = 16.0, 22.0, 640
-    elif n <= 7:
-        fps_floor, fps_cap, max_w = 12.0, 18.0, 576
-    elif n <= 12:
-        fps_floor, fps_cap, max_w = 10.0, 15.0, 512
-    else:
-        fps_floor, fps_cap, max_w = 8.0, 12.0, 448
+    fps_floor, fps_cap, max_w = _limits_for_clients(n)
 
-    fps = float(max(fps_floor, min(fps_cap, per_client)))
-    if p90 > 0 and p50 > 0 and p90 > p50 * 2.5:
-        fps = max(fps_floor, fps * 0.85)  # 꼬리 지연 완화
+    if _AIMD_ENABLED:
+        # AIMD: 고정 하한(floor)을 쓰지 않는다. 하한이 처리량(예: 20명 × 8fps = 160fps)을 넘으면 요청이 처리량보다 많아져
+        # 대기 초과 폐기(드롭)와 지연(수백 ms)이 쌓이고, 버려지는 프레임도 업로드 대역폭을 먹는다.
+        # 대신 update_aimd() 가 2초마다 과부하 신호를 보고 요청 fps 를 줄이거나(곱셈 감소) 천천히 올린다.
+        fps = float(max(_AIMD_MIN_FPS, min(fps_cap, _AIMD_FPS)))
+    else:
+        fps = float(max(fps_floor, min(fps_cap, per_client)))
+        if p90 > 0 and p50 > 0 and p90 > p50 * 2.5:
+            fps = max(fps_floor, fps * 0.85)  # 꼬리 지연 완화
 
     return {
         "max_w": max_w,
@@ -426,6 +476,77 @@ def get_adaptive_profile(n_clients: int) -> dict:
         "capacity_fps": round(capacity_fps, 1),
         "measured_fps": round(measured, 1),
     }
+
+
+# ── 입장 제어(admission control) ─────────────────────────────────
+# 딥페이크 1프레임은 GPU 에서 약 7~8ms(inswapper) — 이 하드웨어의 총 처리량은 약 120~170 fps 로 "고정"이고
+# 모든 참가자가 나눠 쓴다. 인원이 늘면 화질이 아니라 참가자당 fps 가 (총량 ÷ 인원) 으로 떨어진다.
+# 그래서 새 딥페이크 적용 요청이 들어올 때마다 "추가했을 때 참가자당 fps" 를 계산해, 최소 fps 미만이 되면 거절한다.
+#   FACE_SWAP_ADMISSION=0          입장 제어 끔
+#   FACE_SWAP_MIN_ADMIT_FPS=6      추가 후 참가자당 fps 가 이 값 미만이면 거절 (기본 6)
+#   FACE_SWAP_MAX_CLIENTS=0        동시 딥페이크 상한(0 = 처리량으로만 판단)
+#   FACE_SWAP_CAPACITY_FPS=150     처리량 하한 추정치(실측 최고치가 이보다 크면 실측 사용). RTX 5070 Ti 실측 120~172fps. GPU 가 다르면 조정.
+#                                   (과부하 신호가 보이면 위 추정과 무관하게 "실측 처리량 ÷ 인원" 으로 더 보수적으로 판단한다)
+# 호스트(X-Client-Prio: host)는 거절하지 않는다.
+_ADMIT_ENABLED = os.environ.get("FACE_SWAP_ADMISSION", "1") != "0"
+_ADMIT_MIN_FPS = max(1.0, float(os.environ.get("FACE_SWAP_MIN_ADMIT_FPS", "6")))
+_ADMIT_MAX_CLIENTS = max(0, int(float(os.environ.get("FACE_SWAP_MAX_CLIENTS", "0"))))
+_ADMIT_CAPACITY_FLOOR = max(10.0, float(os.environ.get("FACE_SWAP_CAPACITY_FPS", "150")))
+_ACTIVE_WINDOW = 6.0            # 이 시간 안에 프레임을 보냈거나 방금 승인된 참가자 = "활성"
+_ACTIVE_TS: dict = {}           # client_key -> 마지막 활동 시각
+ADMIT_REJECTED_TOTAL = 0
+ADMIT_ACCEPTED_TOTAL = 0
+
+
+def note_active(client_key: str):
+    _ACTIVE_TS[client_key] = time.time()
+
+
+def active_clients() -> set:
+    now_t = time.time()
+    for k in [k for k, t in _ACTIVE_TS.items() if now_t - t > _ACTIVE_WINDOW]:
+        _ACTIVE_TS.pop(k, None)
+    return set(_ACTIVE_TS.keys())
+
+
+def capacity_estimate_fps() -> float:
+    return max(_PEAK_FPS_EMA, _ADMIT_CAPACITY_FLOOR)
+
+
+def admission_decision(client_key: str, prio: str = ""):
+    """(허용 여부, 정보 dict). 허용 시 활성 목록에 등록한다."""
+    global ADMIT_REJECTED_TOTAL, ADMIT_ACCEPTED_TOTAL
+    active = active_clients()
+    cap = capacity_estimate_fps()
+    n_after = len(active | {client_key})
+    per = (cap * 0.9) / n_after
+    # 지금 이미 과부하(대기 초과 폐기가 발생 중)면 "실측 처리량 ÷ 인원" 으로 더 보수적으로 판단
+    now_t = time.time()
+    recent_stale = sum(1 for t in _STALE_EVENTS if now_t - t < 4.0)
+    measured = measured_throughput_fps()
+    if recent_stale >= 3 and measured > 0:
+        per = min(per, measured / n_after)
+    max_by_fps = int((cap * 0.9) // _ADMIT_MIN_FPS)
+    limit = min(max_by_fps, _ADMIT_MAX_CLIENTS) if _ADMIT_MAX_CLIENTS else max_by_fps
+    info = {"active": len(active), "capacity_fps": round(cap, 1), "per_client_fps": round(per, 1),
+            "min_fps": _ADMIT_MIN_FPS, "max_clients": max(1, limit)}
+    if not _ADMIT_ENABLED or prio == "host" or client_key in active:
+        note_active(client_key)
+        ADMIT_ACCEPTED_TOTAL += 1
+        return True, info
+    if per < _ADMIT_MIN_FPS or (_ADMIT_MAX_CLIENTS and n_after > _ADMIT_MAX_CLIENTS):
+        ADMIT_REJECTED_TOTAL += 1
+        logger.warning(f"[ADMIT] 거절 key={client_key} active={len(active)} → {n_after}명이면 참가자당 {per:.1f}fps "
+                       f"(최소 {_ADMIT_MIN_FPS}, 처리량 {cap:.0f}fps, 상한 {info['max_clients']}명)")
+        return False, info
+    note_active(client_key)
+    ADMIT_ACCEPTED_TOTAL += 1
+    logger.info(f"[ADMIT] 승인 key={client_key} → {n_after}명, 참가자당 예상 {per:.1f}fps (처리량 {cap:.0f}fps)")
+    return True, info
+
+
+def _busy_payload(info: dict) -> str:
+    return json.dumps({"type": "busy", "reason": "capacity", **info})
 
 
 _LAST_BROADCAST_N = -1
@@ -594,8 +715,9 @@ _EXECUTOR = None                         # type: ignore
 PROCESSED_TOTAL = 0
 DROPPED_TOTAL = 0
 STALE_DROPPED_TOTAL = 0
-_THROUGHPUT_EVENTS = collections.deque(maxlen=512)   # 완료 시각 (초) — 실측 처리량 계산용
+_THROUGHPUT_EVENTS = collections.deque(maxlen=4096)  # 완료 시각 (초) — 실측 처리량 계산용
 _STALE_EVENTS = collections.deque(maxlen=256)        # 대기 초과로 폐기된 시각 — 과부하 감지용
+_DROP_EVENTS = collections.deque(maxlen=1024)        # 새 프레임에 덮어써져 버려진 시각 — 과부하 감지용(AIMD)
 _PEAK_FPS_EMA = 0.0
 MAX_QUEUE_MS = float(os.environ.get("FACE_SWAP_MAX_QUEUE_MS", "350"))
 
@@ -794,6 +916,9 @@ def _note_completed(dropped: bool = False, stale: bool = False):
         if stale:
             STALE_DROPPED_TOTAL += 1
             _STALE_EVENTS.append(time.time())
+        else:
+            # 새 프레임이 대기 중이던 이전 프레임을 덮어써서 버려진 경우(= 클라이언트가 처리 속도보다 빨리 보냄)
+            _DROP_EVENTS.append(time.time())
         return
     PROCESSED_TOTAL += 1
     now = time.time()
@@ -1112,6 +1237,11 @@ async def handle_stats(request):
         "dropped_total": DROPPED_TOTAL,
         "stale_dropped_total": STALE_DROPPED_TOTAL,
         "protocol": "v2",
+        "admission": {
+            "enabled": _ADMIT_ENABLED, "min_fps": _ADMIT_MIN_FPS, "max_clients_cfg": _ADMIT_MAX_CLIENTS,
+            "capacity_fps": round(capacity_estimate_fps(), 1), "active": len(active_clients()),
+            "accepted": ADMIT_ACCEPTED_TOTAL, "rejected": ADMIT_REJECTED_TOTAL,
+        },
         "gpu": await asyncio.to_thread(gpu_snapshot),
         "providers": modules.globals.execution_providers,
     })
@@ -1170,14 +1300,26 @@ async def handle_websocket(request):
                   or request.query.get("client")
                   or request.query.get("client_id")
                   or f"ws{client_id}")
-    logger.info(f"WebSocket client connected: {client_id} key={client_key}")
+    prio = (request.headers.get("X-Client-Prio") or "").strip().lower()
+    logger.info(f"WebSocket client connected: {client_id} key={client_key} prio={prio or '-'}")
     current_source = get_default_photo_source()
+
+    # 딥페이크 적용을 시작할 때마다 서버 여유를 확인한다. 한계면 busy 를 알리고 연결을 닫는다.
+    admitted, admit_info = admission_decision(client_key, prio)
+    if not admitted:
+        try:
+            await ws.send_str(_busy_payload(admit_info))
+            await ws.close(code=4003, message=b"capacity")
+        except Exception:
+            pass
+        return ws
 
     CONNECTED_WS.add(ws)
     await broadcast_throttle()
 
     # 참가자당 "최신 프레임 1장" 슬롯. 새 프레임이 오면 아직 시작 못 한 이전 프레임은 폐기하고
     # (v2 클라이언트에는 drop 알림) 항상 가장 최근 프레임만 GPU 에 올린다 → 지연 누적/고속재생 방지.
+    rejected = False        # set_source 시점 입장 제어에서 거절된 연결
     latest_pending = None   # (src_name, frame_bytes, seq|None, recv_ts)
     processing_event = asyncio.Event()
     is_closed = False
@@ -1249,6 +1391,10 @@ async def handle_websocket(request):
                     src_name = current_source
                     frame_bytes = data
 
+                if rejected:
+                    continue          # 입장 거절된 연결의 프레임은 처리하지 않는다
+                note_active(client_key)
+
                 # 항상 최신 프레임으로 덮어써서 이전 적체 프레임 즉시 드랍 (지연 누적 원천 방지)
                 if latest_pending is not None:
                     _note_completed(dropped=True)
@@ -1272,6 +1418,13 @@ async def handle_websocket(request):
                         await ws.send_json({"type": "hello_ack", "clientId": client_key})
 
                     elif mtype == "set_source":
+                        # 얼굴을 (다시) 고를 때마다 입장 제어를 다시 확인 — 한동안 쉬었다가(활성 목록에서 빠짐) 재적용하는 경우
+                        ok_now, info_now = admission_decision(client_key, prio)
+                        if not ok_now:
+                            rejected = True
+                            await ws.send_str(_busy_payload(info_now))
+                            continue
+                        rejected = False
                         req_source = payload.get("source") or get_default_photo_source()
                         face = await asyncio.to_thread(load_source_face, req_source)
                         current_source = req_source
@@ -1306,6 +1459,7 @@ async def handle_websocket(request):
         processing_event.set()
         worker_task.cancel()
         CONNECTED_WS.discard(ws)
+        _ACTIVE_TS.pop(client_key, None)
         _TRACK_CACHE.pop(client_key, None)
         CLIENT_WORKER.pop(client_key, None)
         await broadcast_throttle()
@@ -1380,10 +1534,11 @@ async def start_server():
             await asyncio.sleep(2.0)
             try:
                 update_peak_throughput()
+                update_aimd(len(CONNECTED_WS))
                 if len(CONNECTED_WS) > 0:
                     await broadcast_throttle()
             except Exception:
-                pass
+                logger.exception("[throttle_loop] error")
     asyncio.create_task(_throttle_loop())
 
     while True:

@@ -45,6 +45,11 @@ export class ViewerSubscriber {
     this.avatarManager = new VirtualAvatarManager({ width: 640, height: 360, fps: 28 });
     // 참가자 식별자를 아바타 매니저로 전달 → 워커가 참가자별로 스왑 프레임을 분리
     try { this.avatarManager.setClientId?.(signaling?.localClientId || null); } catch { /* ignore */ }
+    // 서버가 "호스트가 딥페이크 직송을 화면에 그리는 중"이라고 알리면 SFU 카메라 송출(VP8)을 저fps 로 낮춘다.
+    // (직송이 정상인 동안 SFU 영상은 폴백용일 뿐이므로 업로드/호스트 디코드를 줄인다. 직송이 이상하면 즉시 복원)
+    this._feedSave = false;
+    this._feedSaveTimer = null;
+    this.avatarManager.onFeedState = (live) => { this._setFeedSave(!!live); };
     this._faceRoomCount = 1;
     this.rawCameraStream = null;
     /** @type {MediaStream|null} */
@@ -821,6 +826,36 @@ export class ViewerSubscriber {
     return openWebcamFlexible();
   }
 
+  /** 직송 정상 동안의 SFU 카메라 송출 프로파일 (폴백용: 끊기지 않을 정도의 저fps/저비트레이트) */
+  _feedSaveProfile() {
+    return { maxBitrate: 100_000, fps: 3 };
+  }
+
+  /** 지금 적용해야 할 카메라 송출 프로파일 (절감 모드면 저fps, 아니면 방 인원 기반 프로파일) */
+  _currentFaceProfile() {
+    return this._feedSave ? this._feedSaveProfile() : this.avatarManager.getFaceProfile();
+  }
+
+  /**
+   * 서버의 feed 상태 통지 반영.
+   *  live=true  → SFU 카메라 송출을 저fps 로 (서버가 4초마다 재통지하므로 재송출/재접속에도 다시 적용됨)
+   *  live=false → 즉시 원래 프로파일로 복원
+   * 통지가 8초간 없으면(서버/연결 이상) 안전하게 복원한다.
+   */
+  _setFeedSave(live) {
+    clearTimeout(this._feedSaveTimer);
+    this._feedSaveTimer = null;
+    if (live) {
+      this._feedSaveTimer = setTimeout(() => this._setFeedSave(false), 8000);
+    }
+    const changed = this._feedSave !== live;
+    this._feedSave = live;
+    // 상태가 바뀌었거나 live 재통지(새 producer 가 기본값으로 떠 있을 수 있음)일 때 적용
+    if (!changed && !live) return;
+    if (!this.sfu) return;
+    this.sfu.updateCameraEncodings?.('viewer-camera', this._currentFaceProfile())?.catch?.(() => {});
+  }
+
   /**
    * 방 인원 수에 따라 얼굴 송출 화질 자동 전환
    * (클라이언트는 업로드만 — 타인 얼굴 수신/디코드 없음)
@@ -830,7 +865,7 @@ export class ViewerSubscriber {
     this._faceRoomCount = count;
     if (!this.avatarManager) return;
     const mode = faceModeForRoomCount(count);
-    const profile = this.avatarManager.getFaceProfile();
+    const profile = this._currentFaceProfile();
     // 카메라가 비활성 상태(사용자가 켜지 않음)일 때는 canvas 출력 스트림을 생성/재할당하지 않음
     if (!this.cameraWanted || !this.cameraStream) {
       this.avatarManager.setFaceMode(mode);
@@ -1029,6 +1064,8 @@ export class ViewerSubscriber {
       clearTimeout(this._streamOffTimer);
       this._streamOffTimer = null;
     }
+    clearTimeout(this._feedSaveTimer);
+    this._feedSaveTimer = null;
     try { this._unsubStatus?.(); } catch { /* ignore */ }
     this.clearRemote();
     this.stopCamera();
