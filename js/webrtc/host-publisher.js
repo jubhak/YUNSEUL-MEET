@@ -1,6 +1,6 @@
 import { TRACK_KIND } from './config.js';
-import { SfuClient } from './sfu-client.js?v=20260929hd2';
-import { VirtualAvatarManager, openWebcamFlexible, faceModeForRoomCount } from '../virtual-avatar-manager.js?v=20260927tenuser1';
+import { SfuClient } from './sfu-client.js?v=20260930a';
+import { VirtualAvatarManager, openWebcamFlexible, faceModeForRoomCount } from '../virtual-avatar-manager.js?v=20260930c';
 
 /**
  * Host -> SFU display share (+ optional tab audio / mic).
@@ -121,6 +121,8 @@ export class HostPublisher {
     this.sfu.onConsumed = (info, consumer) => this._onRemoteConsumed(info, consumer);
     this.sfu.onProducerClosed = (msg) => this._onRemoteProducerClosed(msg);
     await this.sfu.init();
+    // 카메라 송신 정지 감시 + 단계적 자동 복구(ICE 재시작 → producer 재생성 → 트랜스포트 재생성)
+    this.sfu.startSenderMonitor();
     return this.sfu;
   }
 
@@ -133,6 +135,8 @@ export class HostPublisher {
         this.onNetworkQuality?.(data);
       });
     }
+    // 참가자 얼굴 영상 정지 자동 복구 (PLI → consumer 재동기화 → 재-consume → ICE 재시작)
+    sfu.startReceiverMonitor();
     return sfu;
   }
 
@@ -178,14 +182,27 @@ export class HostPublisher {
 
   _onRemoteProducerClosed(msg) {
     const clientId = msg?.clientId;
-    if (clientId && this._relayPeerId === clientId) {
-      this.restoreOwnDisplay().catch(() => {});
-    }
-    if (clientId) {
+    if (!clientId) return;
+    // 어떤 producer 가 닫혔는지 구분한다. 예전에는 참가자의 "아무" producer 가 닫혀도
+    // (예: 카메라만 껐다 켬) 화면공유 릴레이가 끊기고 마이크 재생이 정리되었다.
+    const source = msg?.source || '';
+    const kind = msg?.kind || '';
+    const isDisplay = source === 'viewer-display';
+    const isCamera = source === 'viewer-camera' || source === 'camera' || (!source && kind === 'video' && !isDisplay);
+    const isMic = source === 'viewer-mic' || (kind === 'audio' && source !== 'tab-audio');
+
+    if (isDisplay || (!source && !kind)) {
       this._viewerDisplayStreams.delete(clientId);
+      if (this._relayPeerId === clientId) {
+        this.restoreOwnDisplay().catch(() => {});
+      }
+    }
+    if (isCamera || (!source && !kind)) {
       this.onRemoteCameraClosed?.(clientId);
+    }
+    if (isMic || (!source && !kind)) {
       if (this._remoteAudioEls) {
-        for (const [key, el] of [...this._remoteAudioEls.entries()]) {
+        for (const [key] of [...this._remoteAudioEls.entries()]) {
           if (key.startsWith(`${clientId}:`)) {
             this._cleanupViewerAudio(key, clientId);
           }
@@ -220,6 +237,10 @@ export class HostPublisher {
             noiseSuppression: false,
             autoGainControl: false,
             channelCount: 2,
+            sampleRate: 48000,
+            // Chrome: 이 페이지(참가자 목소리 재생)의 소리는 캡처에서 제외 → 시스템 오디오 공유 시 에코/무한반복 방지
+            restrictOwnAudio: true,
+            suppressLocalAudioPlayback: false,
           }
         : false,
       preferCurrentTab: false,
@@ -381,10 +402,11 @@ export class HostPublisher {
       throw new Error('화면 비디오 트랙이 없습니다. 공유를 다시 시작해 주세요.');
     }
 
-    const tabTracks = (this._relayStream
-      ? this._relayStream.getAudioTracks()
-      : this._tabAudioTracks
-    ).filter((t) => t?.readyState === 'live');
+    // 참가자 화면 릴레이 중에도 호스트 PC 음악(탭/시스템 오디오)은 계속 송출한다.
+    // (릴레이 스트림에 자체 오디오가 있을 때만 그쪽을 사용)
+    const relayAudio = this._relayStream ? this._relayStream.getAudioTracks() : [];
+    const tabTracks = (relayAudio.length ? relayAudio : this._tabAudioTracks)
+      .filter((t) => t?.readyState === 'live');
     if (tabTracks.length) {
       try {
         await sfu.publishStream(new MediaStream(tabTracks), {
@@ -483,7 +505,7 @@ export class HostPublisher {
       }
 
       // SFU가 이미 준비되어 있다면 송출
-      if (this.sfu && this.sfu.sendTransport) {
+      if (this.sfu && !this.sfu._closed) {
         try {
           await this.sfu.publishStream(outgoingStream, {
             source: 'camera',
@@ -523,7 +545,7 @@ export class HostPublisher {
       const outgoingStream = this.avatarManager.getOutputStream();
       this.cameraStream = outgoingStream;
 
-      if (this.sfu && this.sfu.sendTransport) {
+      if (this.sfu && !this.sfu._closed) {
         try {
           await this.sfu.publishStream(outgoingStream, {
             source: 'camera',
@@ -793,15 +815,10 @@ export class HostPublisher {
       || this._ownStream?.getVideoTracks()?.[0]
       || this.localStream?.getVideoTracks()?.[0];
     if (video) ms.addTrack(video);
-    if (this._relayStream) {
-      this._relayStream.getAudioTracks().forEach((t) => {
-        if (t?.readyState === 'live') ms.addTrack(t);
-      });
-    } else {
-      this._tabAudioTracks.forEach((t) => {
-        if (t?.readyState === 'live') ms.addTrack(t);
-      });
-    }
+    const relayAudio = this._relayStream ? this._relayStream.getAudioTracks() : [];
+    (relayAudio.length ? relayAudio : this._tabAudioTracks).forEach((t) => {
+      if (t?.readyState === 'live') ms.addTrack(t);
+    });
     this._micTracks.forEach((t) => {
       if (t?.readyState === 'live') ms.addTrack(t);
     });
@@ -959,33 +976,16 @@ export class HostPublisher {
    * 호스트 목소리는 mic producer로 별도 전송.
    */
   _syncTabAudioForFeedback() {
-    let liveViewerMic = false;
-    if (this._remoteAudioEls) {
-      for (const el of this._remoteAudioEls.values()) {
-        const trk = el.srcObject?.getAudioTracks?.()[0];
-        if (trk && trk.readyState === 'live') {
-          liveViewerMic = true;
-          break;
-        }
-      }
-    }
-    const shouldMuteTab = liveViewerMic;
+    // 예전에는 참가자 마이크가 하나라도 살아 있으면 호스트 음악(탭/시스템 소리)을 통째로 꺼서
+    // "음악이 클라이언트에게 안 들리는" 문제가 있었다(마이크 필수 방에서는 항상 무음).
+    // 이제는 에코 원인을 근본적으로 차단한다:
+    //  - 화면공유 오디오에 restrictOwnAudio 를 요청해 이 페이지가 재생하는 참가자 목소리가 다시 실리지 않게 함
+    //  - 참가자 마이크는 브라우저 AEC 를 켠 채로 송출
+    // 따라서 사용자의 탭소리 ON/OFF 설정만 반영한다.
     this._tabAudioTracks.forEach((t) => {
       if (!t) return;
-      // 사용자가 탭소리 OFF면 그대로 유지
-      if (!this.tabAudioWanted) {
-        t.enabled = false;
-        return;
-      }
-      t.enabled = !shouldMuteTab;
+      t.enabled = !!this.tabAudioWanted;
     });
-    if (shouldMuteTab) {
-      this.signaling?.socket?.emit?.('client-diag', {
-        kind: 'host-audio',
-        event: 'tab-audio-ducked',
-        reason: 'viewer-mic-feedback-guard',
-      });
-    }
   }
 
   _startHostMicLevelWatch(track) {

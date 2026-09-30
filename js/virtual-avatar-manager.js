@@ -233,20 +233,45 @@ class NonRepeatingDeck {
  * 가상 얼굴 매니저
  */
 /** 얼굴 송출 프로파일 */
+/**
+ * 스로틀되지 않는 주기 타이머 (Web Worker 기반, 실패 시 setInterval 폴백).
+ * 백그라운드 탭에서도 카메라 렌더/딥페이크 요청이 끊기지 않게 한다.
+ * @returns {{ stop: () => void }}
+ */
+export function createWorkerTicker(intervalMs, cb) {
+  try {
+    const src = 'let t=null;onmessage=(e)=>{clearInterval(t);if(e.data>0)t=setInterval(()=>postMessage(0),e.data)};';
+    const url = URL.createObjectURL(new Blob([src], { type: 'text/javascript' }));
+    const w = new Worker(url);
+    w.onmessage = () => { try { cb(); } catch (err) { console.warn('[ticker]', err); } };
+    w.postMessage(Math.max(4, Math.round(intervalMs)));
+    return {
+      stop() {
+        try { w.postMessage(0); } catch { /* ignore */ }
+        try { w.terminate(); } catch { /* ignore */ }
+        try { URL.revokeObjectURL(url); } catch { /* ignore */ }
+      },
+    };
+  } catch {
+    const id = setInterval(() => { try { cb(); } catch (err) { console.warn('[ticker]', err); } }, Math.max(4, Math.round(intervalMs)));
+    return { stop() { clearInterval(id); } };
+  }
+}
+
 export const FACE_OUT_W = 480;
 export const FACE_OUT_H = 270;
 export const FACE_OUT_FPS = 22;
 export const FACE_OUT_W_HD = 640;
 export const FACE_OUT_H_HD = 360;
 export const FACE_OUT_FPS_HD = 28;
-export const FACE_OUT_W_CROWD = 480;
-export const FACE_OUT_H_CROWD = 270;
+export const FACE_OUT_W_CROWD = 512;
+export const FACE_OUT_H_CROWD = 288;
 export const FACE_OUT_FPS_CROWD = 20;
 
 /** 호스트만 수신하는 구조: 10명 이상 다자간 화상에서도 부드러운 20fps와 무지연 보장 */
 export const FACE_PROFILE_SOLO = { mode: 'solo', width: FACE_OUT_W_HD, height: FACE_OUT_H_HD, fps: FACE_OUT_FPS_HD, maxBitrate: 350_000 };
 export const FACE_PROFILE_MULTI = { mode: 'multi', width: FACE_OUT_W, height: FACE_OUT_H, fps: FACE_OUT_FPS, maxBitrate: 180_000 };
-export const FACE_PROFILE_CROWD = { mode: 'crowd', width: FACE_OUT_W_CROWD, height: FACE_OUT_H_CROWD, fps: FACE_OUT_FPS_CROWD, maxBitrate: 140_000 };
+export const FACE_PROFILE_CROWD = { mode: 'crowd', width: FACE_OUT_W_CROWD, height: FACE_OUT_H_CROWD, fps: FACE_OUT_FPS_CROWD, maxBitrate: 170_000 };
 
 export function faceModeForRoomCount(totalPeople = 1) {
   const n = Math.max(1, Number(totalPeople) || 1);
@@ -401,8 +426,22 @@ export class VirtualAvatarManager {
     // 동시에 파이프라인에 띄우는 스왑 요청 수.
     // 서버(handle_websocket)는 연결당 latest_pending 슬롯 1개로 프레임을 직렬 처리하므로
     // in-flight를 1로 맞춰 낭비 전송과 카운터 불일치(화면 정지 현상)를 방지한다.
-    this._maxInFlight = 1;
+    // 프로토콜 v2: 요청마다 seq 를 붙이고(요청 이름 + \x1f + seq) 응답 헤더 FS2\0 로 매칭한다.
+    // 서버는 연결당 "최신 1장" 슬롯이므로 in-flight 2 = (GPU 처리 중 1장 + 전송/인코딩 중 1장)으로
+    // 네트워크 왕복·JPEG 인코딩을 GPU 처리와 겹쳐 파이프라이닝한다 (초당 처리량 ↑, 지연 증가 없음).
+    this._maxInFlight = 2;
     this._inFlight = 0;
+    this._pending = new Map();      // seq -> 전송 시각(performance.now)
+    this._seq = 0;
+    this._lastShownSeq = -1;        // 이미 표시한 최신 seq (역전/지연 도착 프레임 폐기)
+    this._encoding = false;
+    this._lastSendAt = 0;
+    this._wsRetryAt = 0;
+    this._wsRetryDelay = 500;
+    this._rttMs = 0;
+    this._procMs = 0;
+    this._playQ = [];               // 재생 지터 버퍼 (디코드된 ImageBitmap)
+    this._serverMaxW = 0;
     this._serverFpsCap = 0;
     this.swapStats = { sent: 0, recv: 0, dropped: 0 };
     this.onSwapStats = null;
@@ -637,13 +676,16 @@ export class VirtualAvatarManager {
       this._requestFaceSwapFrame();
     };
     const ms = Math.round(1000 / Math.max(4, this._swapRequestFps()));
-    this._swapPumpTimer = setInterval(tick, ms);
+    // 워커 타이머: 백그라운드 탭에서도 스로틀 없이 일정한 주기 유지
+    this._swapPumpTimer = createWorkerTicker(ms, tick);
     // 즉시 1장
     tick();
   }
 
   /** 서버로부터 받은 동적 fps 캡을 적용하고, 펌프가 돌고 있으면 새 주기로 재시작한다. */
-  _applyServerThrottle(fps) {
+  _applyServerThrottle(fps, maxW) {
+    const w = Number(maxW);
+    if (Number.isFinite(w) && w >= 320) this._serverMaxW = w;
     const n = Number(fps);
     if (!Number.isFinite(n) || n <= 0) return;
     if (this._serverFpsCap === n) return;
@@ -655,15 +697,67 @@ export class VirtualAvatarManager {
 
   _stopSwapPump() {
     if (this._swapPumpTimer) {
-      clearInterval(this._swapPumpTimer);
+      try { this._swapPumpTimer.stop(); } catch { /* ignore */ }
       this._swapPumpTimer = null;
     }
   }
 
   /** 스왑 요청 1건 종료 처리 (성공/실패/드랍 공통) */
-  _settleSwap() {
-    this._swapBusy = false;
-    this._inFlight = Math.max(0, this._inFlight - 1);
+  _settleSwap(seq = null) {
+    if (seq == null) {
+      // seq 불명(v1 응답/오류): 가장 오래된 요청 하나를 완료 처리
+      const first = this._pending.keys().next();
+      if (!first.done) this._pending.delete(first.value);
+    } else {
+      this._pending.delete(seq);
+    }
+    this._syncInFlight();
+  }
+
+  _syncInFlight() {
+    this._inFlight = this._pending.size;
+    this._swapBusy = this._inFlight > 0;
+  }
+
+  _resetSwapPipeline() {
+    this._pending.clear();
+    this._encoding = false;
+    this._syncInFlight();
+  }
+
+  /** 응답/드랍 직후 다음 프레임을 곧바로 전송 (최소 간격은 유지) */
+  _kickSwap() {
+    if (this.mode !== 'swap') return;
+    const gap = performance.now() - this._lastSendAt;
+    const period = 1000 / Math.max(4, this._swapRequestFps());
+    if (gap >= period * 0.7) this._requestFaceSwapFrame();
+  }
+
+  /** 디코드된 스왑 프레임을 재생 큐에 넣는다 (지터 흡수) */
+  _enqueuePlayout(bitmap) {
+    const q = this._playQ;
+    q.push({ bmp: bitmap, t: performance.now() });
+    while (q.length > 3) {
+      const old = q.shift();
+      try { old.bmp.close(); } catch { /* ignore */ }
+    }
+  }
+
+  /** 렌더 틱마다 호출: 일정한 템포로 다음 프레임을 꺼내 _lastBitmap 갱신 */
+  _advancePlayout() {
+    const q = this._playQ;
+    if (!q.length) return;
+    const now = performance.now();
+    // 큐에 2장 이상 쌓였으면 즉시 소비, 1장뿐이면 최대 45ms 만 붙잡아 도착 간격의 흔들림을 흡수
+    if (q.length >= 2 || (now - q[0].t) >= 45) {
+      const next = q.shift();
+      const old = this._lastBitmap;
+      this._lastBitmap = next.bmp;
+      this._lastSwapSuccessTime = Date.now();
+      if (old && old !== next.bmp) {
+        try { old.close(); } catch { /* ignore */ }
+      }
+    }
   }
 
   /** 외부(호스트/참가자 코드)에서 참가자 식별자를 주입한다. */
@@ -844,15 +938,20 @@ export class VirtualAvatarManager {
       document.addEventListener('visibilitychange', this._visHandler);
     }
 
-    if (this._heartbeatTimer) clearInterval(this._heartbeatTimer);
-    this._heartbeatTimer = setInterval(() => {
+    // 백그라운드/최소화 탭에서는 setInterval 이 1초 단위로 스로틀되고 rAF 는 멈춘다 →
+    // 참가자가 다른 탭을 보는 순간 카메라 송출이 1fps 로 얼어붙는 원인. Web Worker 타이머는
+    // 스로틀되지 않으므로 워커 틱으로 렌더 루프를 구동한다. (탭이 보일 때는 rAF 와 중복 렌더 방지)
+    if (this._heartbeatTimer) { try { this._heartbeatTimer.stop(); } catch { /* ignore */ } }
+    this._heartbeatTimer = createWorkerTicker(16, () => {
       const targetFps = this.captureFps || FACE_OUT_FPS;
       const minFrameMs = 1000 / Math.max(1, targetFps);
-      if (performance.now() - lastRenderTime > minFrameMs * 1.5) {
+      const lag = performance.now() - lastRenderTime;
+      const hidden = typeof document !== 'undefined' && document.visibilityState === 'hidden';
+      if (lag > (hidden ? minFrameMs * 0.98 : minFrameMs * 1.5)) {
         lastRenderTime = performance.now();
         this._renderFrame();
       }
-    }, 50);
+    });
   }
 
   _updateMouthLevel() {
@@ -977,6 +1076,7 @@ export class VirtualAvatarManager {
     // 중요: 여기서는 "그리기만" 한다. toBlob/스왑 요청은 별도 펌프(_startSwapPump)에서만.
     // 렌더마다 스왑 요청하면 워커 적체 → 10초 정지 진동의 주원인.
     if (this.mode === 'swap') {
+      this._advancePlayout();
       ctx.save();
       if (this._lastBitmap) {
         ctx.drawImage(this._lastBitmap, 0, 0, w, h);
@@ -1527,6 +1627,10 @@ export class VirtualAvatarManager {
   _initSwapWebSocket() {
     if (this._ws && (this._ws.readyState === WebSocket.OPEN || this._ws.readyState === WebSocket.CONNECTING)) return;
     if (typeof WebSocket === 'undefined') return;
+    // 재연결 폭주 방지 (0.5s → 최대 4s 백오프)
+    const nowMs = performance.now();
+    if (nowMs < this._wsRetryAt) return;
+    this._wsRetryAt = nowMs + this._wsRetryDelay;
     try {
       const host = window.location.host;
       const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
@@ -1536,6 +1640,9 @@ export class VirtualAvatarManager {
       this._ws = ws;
       ws.binaryType = 'arraybuffer';
       ws.onopen = () => {
+        this._wsRetryDelay = 500;
+        this._wsRetryAt = 0;
+        this._resetSwapPipeline();
         try {
           ws.send(JSON.stringify({ type: 'hello', clientId: this.clientId || null }));
         } catch { /* ignore */ }
@@ -1544,116 +1651,266 @@ export class VirtualAvatarManager {
             ws.send(JSON.stringify({ type: 'set_source', source: this.activeSwapFace }));
           } catch { /* ignore */ }
         }
+        this._kickSwap();
       };
-      ws.onmessage = async (event) => {
-        let arrayBuffer = null;
-        if (event.data instanceof ArrayBuffer) {
-          arrayBuffer = event.data;
-        } else if (event.data instanceof Blob) {
-          try { arrayBuffer = await event.data.arrayBuffer(); } catch { /* ignore */ }
-        }
-
-        if (arrayBuffer) {
-          this.swapStats.recv += 1;
-          this.onSwapStats?.(this.swapStats);
-          if (arrayBuffer.byteLength < 100) { this._settleSwap(); return; }
-          const blob = new Blob([arrayBuffer], { type: 'image/jpeg' });
-          if (typeof createImageBitmap === 'function') {
-            try {
-              const bitmap = await createImageBitmap(blob);
-              const old = this._lastBitmap;
-              this._lastBitmap = bitmap;
-              this._lastSwapSuccessTime = Date.now();
-              if (old) {
-                try { old.close(); } catch { /* ignore */ }
-              }
-              this._settleSwap();
-              return;
-            } catch {
-              // fallback to DOM Image
-            }
-          }
-          const img = new Image();
-          img.onload = () => {
-            if (this._lastSwappedUrl) {
-              try { URL.revokeObjectURL(this._lastSwappedUrl); } catch { /* ignore */ }
-            }
-            this._lastSwappedImage = img;
-            this._lastSwappedUrl = img.src;
-            this._lastSwapSuccessTime = Date.now();
-            this._settleSwap();
-          };
-          img.onerror = () => { this._settleSwap(); };
-          img.src = URL.createObjectURL(blob);
-        } else if (typeof event.data === 'string') {
-          // 서버 제어 메시지 (동시 참가자 수 기반 fps 조절 등)
-          try {
-            const msg = JSON.parse(event.data);
-            if (msg.type === 'throttle' && msg.fps) {
-              this._applyServerThrottle(msg.fps);
-            } else if (msg.type === 'skip') {
-              // 서버가 과부하로 이 프레임을 건너뜀 → 응답 대기 해제
-              this._settleSwap();
-            }
-          } catch { /* ignore non-JSON text frames */ }
-        } else {
-          this._settleSwap();
-        }
-      };
+      ws.onmessage = (event) => { this._onSwapMessage(event); };
       ws.onerror = () => {
         if (this._ws === ws) this._ws = null;
-        this._settleSwap();
+        this._wsRetryDelay = Math.min(4000, this._wsRetryDelay * 2);
+        this._resetSwapPipeline();
       };
       ws.onclose = () => {
         if (this._ws === ws) this._ws = null;
-        this._settleSwap();
+        this._wsRetryDelay = Math.min(4000, this._wsRetryDelay * 2);
+        this._resetSwapPipeline();
       };
     } catch {
       this._ws = null;
-      this._settleSwap();
+      this._resetSwapPipeline();
+    }
+  }
+
+  /** 서버 메시지 처리 (프로토콜 v2 우선, v1 순수 JPEG 응답도 호환) */
+  async _onSwapMessage(event) {
+    const data = event.data;
+    if (typeof data === 'string') {
+      let msg = null;
+      try { msg = JSON.parse(data); } catch { return; }
+      if (msg.type === 'throttle') {
+        this._applyServerThrottle(msg.fps, msg.max_w);
+      } else if (msg.type === 'drop') {
+        this.swapStats.dropped += 1;
+        this._settleSwap(Number.isFinite(msg.seq) ? msg.seq : null);
+        this._kickSwap();
+      } else if (msg.type === 'skip') {
+        this._settleSwap(null);
+        this._kickSwap();
+      }
+      return;
+    }
+
+    let buf = null;
+    if (data instanceof ArrayBuffer) {
+      buf = data;
+    } else if (typeof Blob !== 'undefined' && data instanceof Blob) {
+      try { buf = await data.arrayBuffer(); } catch { buf = null; }
+    }
+    if (!buf) return;
+
+    const u8 = new Uint8Array(buf);
+    let seq = null;
+    let offset = 0;
+    if (u8.length > 12 && u8[0] === 0x46 && u8[1] === 0x53 && u8[2] === 0x32 && u8[3] === 0x00) {
+      const dv = new DataView(buf);
+      seq = dv.getUint32(4);
+      const proc = dv.getUint16(8);
+      offset = 12;
+      if (proc) this._procMs = this._procMs ? this._procMs * 0.8 + proc * 0.2 : proc;
+    }
+
+    const sentAt = seq != null ? this._pending.get(seq) : undefined;
+    this._settleSwap(seq);
+    if (sentAt != null) {
+      const rtt = performance.now() - sentAt;
+      this._rttMs = this._rttMs ? this._rttMs * 0.8 + rtt * 0.2 : rtt;
+    }
+    this.swapStats.recv += 1;
+    this.onSwapStats?.(this.swapStats);
+
+    if (u8.length - offset < 100) { this._kickSwap(); return; }
+    // 이미 더 새로운 프레임을 표시했다면(순서 역전/지연 도착) 폐기
+    if (seq != null && seq <= this._lastShownSeq) { this._kickSwap(); return; }
+
+    const blob = new Blob([offset ? u8.subarray(offset) : u8], { type: 'image/jpeg' });
+    // 다음 프레임 요청은 디코드를 기다리지 않고 바로 (파이프라인 유지)
+    this._kickSwap();
+
+    if (typeof createImageBitmap === 'function') {
+      try {
+        const bitmap = await createImageBitmap(blob);
+        if (seq != null) {
+          if (seq <= this._lastShownSeq) {
+            try { bitmap.close(); } catch { /* ignore */ }
+            return;
+          }
+          this._lastShownSeq = seq;
+        }
+        this._enqueuePlayout(bitmap);
+        return;
+      } catch {
+        // DOM Image 폴백
+      }
+    }
+    const img = new Image();
+    img.onload = () => {
+      if (this._lastSwappedUrl) {
+        try { URL.revokeObjectURL(this._lastSwappedUrl); } catch { /* ignore */ }
+      }
+      if (seq != null) {
+        if (seq <= this._lastShownSeq) return;
+        this._lastShownSeq = seq;
+      }
+      this._lastSwappedImage = img;
+      this._lastSwappedUrl = img.src;
+      this._lastSwapSuccessTime = Date.now();
+    };
+    img.src = URL.createObjectURL(blob);
+  }
+
+  /** 서버가 권고한 max_w 와 방 인원 프로파일을 함께 반영한 전송 해상도 */
+  _swapSendSize() {
+    // 호스트에는 서버 직송(face-feed)으로 이 해상도 그대로 표시되므로, 방 인원과 무관하게
+    // 서버가 허용하는 최대 폭(기본 640)까지 보낸다. (서버가 과부하면 throttle 메시지의 max_w 로 자동 축소)
+    const outW = this.width || 640;
+    const outH = this.height || 360;
+    let w = 640;
+    if (this._serverMaxW) w = Math.min(w, this._serverMaxW);
+    w = Math.min(w, 640);
+    w = Math.max(320, Math.round(w / 16) * 16);
+    const h = Math.max(180, Math.round((w * outH) / outW / 2) * 2);
+    return { w, h };
+  }
+
+  _swapJpegQuality() {
+    // RTT 가 크거나(네트워크 병목) 서버가 바쁘면 품질을 낮춰 대역/인코딩 시간을 절약
+    if (this._rttMs > 350) return 0.6;
+    if (this._rttMs > 200) return 0.66;
+    return 0.72;
+  }
+
+  /** JPEG 인코딩 전용 워커 (미지원/오류 시 false → 메인 스레드 폴백) */
+  _getEncoderWorker() {
+    if (this._encWorker !== undefined) return this._encWorker;
+    this._encWorker = false;
+    try {
+      if (typeof Worker === 'undefined' || typeof OffscreenCanvas === 'undefined' || typeof createImageBitmap !== 'function') return false;
+      const src = `
+        let oc = null, c = null;
+        onmessage = async (e) => {
+          const { bitmap, w, h, q, seq } = e.data;
+          try {
+            if (!oc || oc.width !== w || oc.height !== h) {
+              oc = new OffscreenCanvas(w, h);
+              c = oc.getContext('2d', { alpha: false });
+            }
+            c.setTransform(-1, 0, 0, 1, w, 0); // 거울 반사
+            c.drawImage(bitmap, 0, 0, w, h);
+            bitmap.close();
+            const blob = await oc.convertToBlob({ type: 'image/jpeg', quality: q });
+            const buf = await blob.arrayBuffer();
+            postMessage({ seq, buf }, [buf]);
+          } catch (err) {
+            try { bitmap.close(); } catch (_) {}
+            postMessage({ seq, err: String(err) });
+          }
+        };`;
+      const url = URL.createObjectURL(new Blob([src], { type: 'text/javascript' }));
+      const worker = new Worker(url);
+      this._encWorkerUrl = url;
+      worker.onmessage = (e) => this._onEncoded(e.data);
+      worker.onerror = () => {
+        console.warn('[Avatar] encoder worker error → 메인 스레드 인코딩으로 폴백');
+        try { worker.terminate(); } catch { /* ignore */ }
+        this._encWorker = false;
+        this._encoding = false;
+      };
+      this._encWorker = worker;
+    } catch {
+      this._encWorker = false;
+    }
+    return this._encWorker;
+  }
+
+  _requestViaWorker(now) {
+    const worker = this._getEncoderWorker();
+    if (!worker) return false;
+    const video = this.rawWebcamVideo;
+    const { w, h } = this._swapSendSize();
+    const seq = (this._seq = (this._seq + 1) >>> 0);
+    this._encoding = true;
+    this._lastSendAt = now;
+    this._encJob = { seq, face: this.activeSwapFace || 'superman', ws: this._ws, t0: now };
+    createImageBitmap(video, { resizeWidth: w, resizeHeight: h, resizeQuality: 'low' })
+      .then((bitmap) => {
+        worker.postMessage({ bitmap, w, h, q: this._swapJpegQuality(), seq }, [bitmap]);
+      })
+      .catch(() => { this._encoding = false; });
+    return true;
+  }
+
+  _onEncoded(msg) {
+    const job = this._encJob;
+    this._encoding = false;
+    if (!job || !msg || msg.seq !== job.seq || !msg.buf) return;
+    const ws = job.ws;
+    if (this.mode !== 'swap' || !ws || ws.readyState !== WebSocket.OPEN) return;
+    try {
+      this._encMs = performance.now() - job.t0;
+      const nameBytes = new TextEncoder().encode(`${job.face}\x1f${job.seq}`);
+      const jpeg = new Uint8Array(msg.buf);
+      const packet = new Uint8Array(4 + nameBytes.length + jpeg.length);
+      new DataView(packet.buffer).setUint32(0, nameBytes.length);
+      packet.set(nameBytes, 4);
+      packet.set(jpeg, 4 + nameBytes.length);
+      this._pending.set(job.seq, performance.now());
+      this._syncInFlight();
+      this.swapStats.sent += 1;
+      this.onSwapStats?.(this.swapStats);
+      ws.send(packet);
+    } catch {
+      this._pending.delete(job.seq);
+      this._syncInFlight();
+      try { ws.close(); } catch { /* ignore */ }
+      if (this._ws === ws) this._ws = null;
     }
   }
 
   _requestFaceSwapFrame() {
-    if (!this.rawWebcamVideo || this.rawWebcamVideo.readyState < 2) {
-      return;
-    }
-    const now = Date.now();
-    if (this._inFlight >= this._maxInFlight) {
-      this.swapStats.dropped += 1;
-      this.onSwapStats?.(this.swapStats);
-      return;
-    }
-    if (now - this._lastSwapReqTime > 600) {
-      // 응답이 0.6초 이상 지연되면 즉시 카운터를 자동 복구하여 멈춤 원천 차단
-      this._inFlight = 0;
-      this._swapBusy = false;
-    }
-    this._lastSwapReqTime = now;
-    this._swapBusy = true;
-    this._inFlight += 1;
-    this.swapStats.sent += 1;
-    this.onSwapStats?.(this.swapStats);
+    const video = this.rawWebcamVideo;
+    if (!video || video.readyState < 2) return;
+    const now = performance.now();
+    // 인코딩이 1.5초 넘게 끝나지 않으면(워커 정지 등) 잠금 해제
+    if (this._encoding && now - this._lastSendAt > 1500) this._encoding = false;
 
-    if (!this._ws || this._ws.readyState === WebSocket.CLOSED) {
+    // 응답이 유실된 요청은 1.5초 뒤 자동 폐기 → 파이프라인 정지 방지
+    for (const [s, t] of this._pending) {
+      if (now - t > 1500) this._pending.delete(s);
+    }
+    this._syncInFlight();
+
+    if (!this._ws || this._ws.readyState === WebSocket.CLOSED || this._ws.readyState === WebSocket.CLOSING) {
+      this._ws = null;
       this._initSwapWebSocket();
+      return;
     }
-    // WS 미연결이면 다음 틱에 재시도
-    if (!this._ws || this._ws.readyState !== WebSocket.OPEN) {
-      this._settleSwap();
+    if (this._ws.readyState !== WebSocket.OPEN) return;
+
+    if (this._encoding || this._pending.size >= this._maxInFlight) {
+      this.swapStats.dropped += 1;
+      return;
+    }
+    // 송신 버퍼가 밀려 있으면(업링크 혼잡) 새 프레임을 만들지 않음 → 지연 누적 방지
+    if (this._ws.bufferedAmount > 192 * 1024) {
+      this.swapStats.dropped += 1;
       return;
     }
 
-    // InsightFace 얼굴 검출에 최적인 표준 해상도 (최소 480x270 ~ 640x360 보장)
-    const targetW = Math.max(480, this.width || 640);
-    const targetH = Math.max(270, this.height || 360);
-    if (!this._offscreenCanvas || this._offscreenCanvas.width !== targetW || this._offscreenCanvas.height !== targetH) {
-      this._offscreenCanvas = document.createElement('canvas');
-      this._offscreenCanvas.width = targetW;
-      this._offscreenCanvas.height = targetH;
-      this._offscreenCtx = this._offscreenCanvas.getContext('2d', { alpha: false });
-    }
+    // 1순위: 전용 Web Worker 에서 리사이즈+JPEG 인코딩 (메인 스레드 부하 ↓, 숨겨진 탭에서도 지연 없음)
+    if (this._requestViaWorker(now)) return;
 
+    const { w: targetW, h: targetH } = this._swapSendSize();
+    if (!this._offscreenCanvas || this._offscreenCanvas.width !== targetW || this._offscreenCanvas.height !== targetH) {
+      // OffscreenCanvas.convertToBlob 은 Promise 기반이라 백그라운드 탭에서도 지연 없이 완료된다
+      // (HTMLCanvasElement.toBlob 은 숨겨진 탭에서 ~1초씩 지연되어 딥페이크가 1fps 로 떨어짐)
+      if (typeof OffscreenCanvas !== 'undefined') {
+        this._offscreenCanvas = new OffscreenCanvas(targetW, targetH);
+      } else {
+        this._offscreenCanvas = document.createElement('canvas');
+        this._offscreenCanvas.width = targetW;
+        this._offscreenCanvas.height = targetH;
+      }
+      this._offscreenCtx = this._offscreenCanvas.getContext('2d', { alpha: false, willReadFrequently: true });
+    }
     const oc = this._offscreenCanvas;
     const octx = this._offscreenCtx;
 
@@ -1661,39 +1918,47 @@ export class VirtualAvatarManager {
     octx.save();
     octx.translate(oc.width, 0);
     octx.scale(-1, 1);
-    octx.drawImage(this.rawWebcamVideo, 0, 0, oc.width, oc.height);
+    octx.drawImage(video, 0, 0, oc.width, oc.height);
     octx.restore();
 
+    const seq = (this._seq = (this._seq + 1) >>> 0);
     const targetFace = this.activeSwapFace || 'superman';
+    const ws = this._ws;
+    this._encoding = true;
+    this._lastSendAt = now;
 
-    oc.toBlob(async (blob) => {
-      if (!blob || this.mode !== 'swap') {
-        this._settleSwap();
-        return;
+    const quality = this._swapJpegQuality();
+    const encodeJpeg = typeof oc.convertToBlob === 'function'
+      ? oc.convertToBlob({ type: 'image/jpeg', quality })
+      : new Promise((resolve) => oc.toBlob(resolve, 'image/jpeg', quality));
+
+    const tEnc0 = performance.now();
+    encodeJpeg.then(async (blob) => {
+      try {
+        this._encMs = performance.now() - tEnc0;
+        if (!blob || this.mode !== 'swap' || ws.readyState !== WebSocket.OPEN) return;
+        const nameBytes = new TextEncoder().encode(`${targetFace}\x1f${seq}`);
+        const blobBytes = new Uint8Array(await blob.arrayBuffer());
+        this._encTotalMs = performance.now() - tEnc0;
+        const packet = new Uint8Array(4 + nameBytes.length + blobBytes.length);
+        new DataView(packet.buffer).setUint32(0, nameBytes.length);
+        packet.set(nameBytes, 4);
+        packet.set(blobBytes, 4 + nameBytes.length);
+        if (ws.readyState !== WebSocket.OPEN) return;
+        this._pending.set(seq, performance.now());
+        this._syncInFlight();
+        this.swapStats.sent += 1;
+        this.onSwapStats?.(this.swapStats);
+        ws.send(packet);
+      } catch {
+        this._pending.delete(seq);
+        this._syncInFlight();
+        try { ws.close(); } catch { /* ignore */ }
+        if (this._ws === ws) this._ws = null;
+      } finally {
+        this._encoding = false;
       }
-
-      // 1순위: 직접 WebSocket 초고속 바이너리 전송
-      if (this._ws && this._ws.readyState === WebSocket.OPEN) {
-        try {
-          const nameBytes = new TextEncoder().encode(targetFace);
-          const header = new Uint8Array(4);
-          new DataView(header.buffer).setUint32(0, nameBytes.length);
-          const blobBytes = new Uint8Array(await blob.arrayBuffer());
-          const packet = new Uint8Array(4 + nameBytes.length + blobBytes.length);
-          packet.set(header, 0);
-          packet.set(nameBytes, 4);
-          packet.set(blobBytes, 4 + nameBytes.length);
-          this._ws.send(packet);
-          // busy는 onmessage에서 해제 (응답 없으면 2.5s 가드)
-          return;
-        } catch {
-          this._ws = null;
-          this._settleSwap();
-        }
-      }
-
-      this._settleSwap();
-    }, 'image/jpeg', 0.70);
+    }).catch(() => { this._encoding = false; });
   }
 
   destroy() {
@@ -1702,14 +1967,23 @@ export class VirtualAvatarManager {
       this._visHandler = null;
     }
     this._stopSwapPump();
-    this._inFlight = 0;
-    this._swapBusy = false;
+    this._resetSwapPipeline();
+    for (const it of this._playQ) { try { it.bmp.close(); } catch { /* ignore */ } }
+    this._playQ = [];
+    if (this._encWorker) {
+      try { this._encWorker.terminate(); } catch { /* ignore */ }
+      this._encWorker = undefined;
+    }
+    if (this._encWorkerUrl) {
+      try { URL.revokeObjectURL(this._encWorkerUrl); } catch { /* ignore */ }
+      this._encWorkerUrl = null;
+    }
     if (this._animId) {
       cancelAnimationFrame(this._animId);
       this._animId = null;
     }
     if (this._heartbeatTimer) {
-      clearInterval(this._heartbeatTimer);
+      try { this._heartbeatTimer.stop(); } catch { /* ignore */ }
       this._heartbeatTimer = null;
     }
     if (this._ws) {

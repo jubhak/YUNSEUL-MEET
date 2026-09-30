@@ -144,22 +144,56 @@ export class SfuClient {
             console.warn(`[sfu-client] ${label} still disconnected, attempting ICE restart...`);
             await this.restartIce(transport);
           }
-        }, 1200);
+        }, 700);
       } else if (state === 'failed') {
         console.warn(`[sfu-client] ${label} failed, attempting immediate ICE restart...`);
         const ok = await this.restartIce(transport);
         if (!ok) {
           try { transport.close(); } catch { /* ignore */ }
           try { this.onTransportFailed?.(transport, label); } catch { /* ignore */ }
+          // 수신 트랜스포트가 복구 불가면 새로 만들어 모든 producer 를 다시 consume
+          if (label === 'recv-transport' && !this._closed && !this._rebuildingRecv) {
+            this._rebuildingRecv = true;
+            (async () => {
+              try {
+                for (const [pid, c] of [...this.consumers.entries()]) {
+                  try { this.remoteStream.removeTrack(c.track); } catch { /* ignore */ }
+                  try { c.close(); } catch { /* ignore */ }
+                  this.consumers.delete(pid);
+                  this.consumerMeta.delete(pid);
+                }
+                this.recvTransport = null;
+                await this.ensureRecvTransport();
+                await this.consumeExistingProducers();
+                console.log('[sfu-client] recv transport rebuilt');
+              } catch (err) {
+                console.warn('[sfu-client] recv rebuild failed', err);
+              } finally {
+                this._rebuildingRecv = false;
+              }
+            })();
+          }
+          // 송신 트랜스포트가 복구 불가면, 같은 종류의 producer 를 새 트랜스포트로 즉시 재송출
+          if (String(label).startsWith('send-transport') && !this._closed) {
+            const purpose = transport.appData?.purpose === 'audio' ? 'audio' : 'video';
+            for (const [key, producer] of [...this.producers.entries()]) {
+              if (!producer) continue;
+              if ((producer.kind === 'audio') !== (purpose === 'audio')) continue;
+              this.recoverProducer(key, { recreateTransport: false }).catch(() => {});
+            }
+          }
         }
       }
     });
   }
 
-  async _createSendTransport() {
-    const info = await this.request('sfu-create-transport', { direction: 'send' });
+  async _createSendTransport(purpose = 'video') {
+    // purpose(audio|video)를 서버에 알려 "종류별 독립 트랜스포트"를 유지한다.
+    // (예전에는 마이크용 send transport 를 만들 때 서버가 영상 send transport 까지 닫아 영상이 멈췄다)
+    const info = await this.request('sfu-create-transport', { direction: 'send', purpose });
     const transport = this.device.createSendTransport(info);
-    this._attachTransportHealth(transport, 'send-transport');
+    transport.appData = { ...(transport.appData || {}), purpose };
+    this._attachTransportHealth(transport, `send-transport:${purpose}`);
     transport.on('connect', ({ dtlsParameters }, callback, errback) => {
       this.request('sfu-connect-transport', {
         transportId: transport.id,
@@ -185,18 +219,24 @@ export class SfuClient {
   }
 
   async ensureSendTransportFor(kind) {
-    if (kind === 'audio') {
-      if (this.sendTransportAudio && !this.sendTransportAudio.closed) {
-        return this.sendTransportAudio;
-      }
-      this.sendTransportAudio = await this._createSendTransport();
-      return this.sendTransportAudio;
+    const purpose = kind === 'audio' ? 'audio' : 'video';
+    const field = purpose === 'audio' ? 'sendTransportAudio' : 'sendTransportVideo';
+    const cur = this[field];
+    if (cur && !cur.closed && cur.connectionState !== 'failed') return cur;
+    // 동시 호출(마이크 + 카메라 동시 시작 등)에도 트랜스포트가 이중 생성되지 않도록 잠금
+    if (!this._sendCreating) this._sendCreating = {};
+    if (this._sendCreating[purpose]) return this._sendCreating[purpose];
+    this._sendCreating[purpose] = (async () => {
+      if (cur && !cur.closed) { try { cur.close(); } catch { /* ignore */ } }
+      const t = await this._createSendTransport(purpose);
+      this[field] = t;
+      return t;
+    })();
+    try {
+      return await this._sendCreating[purpose];
+    } finally {
+      this._sendCreating[purpose] = null;
     }
-    if (this.sendTransportVideo && !this.sendTransportVideo.closed) {
-      return this.sendTransportVideo;
-    }
-    this.sendTransportVideo = await this._createSendTransport();
-    return this.sendTransportVideo;
   }
 
   /** @deprecated 호환용 — video transport */
@@ -252,6 +292,10 @@ export class SfuClient {
         const source = appData.source || 'display';
         const produceOpts = {
           track,
+          // 중요: mediasoup-client 기본값(stopTracks=true)은 replaceTrack()/close() 때 "이전 트랙"을 stop() 한다.
+          // 그러면 참가자 화면 릴레이 시작 때 호스트 자신의 화면 트랙이 죽어, 릴레이가 끝나도
+          // 호스트 화면으로 복귀할 수 없었다(재송출 복구도 불가). 트랙 수명은 호출자가 직접 관리한다.
+          stopTracks: false,
           appData: {
             trackKind: appData.trackKind || track.kind,
             source,
@@ -296,7 +340,8 @@ export class SfuClient {
           produceOpts.codecOptions = {
             opusStereo: source !== 'mic' && source !== 'viewer-mic',
             opusFec: true,
-            opusDtx: false,
+            // 마이크는 DTX(무음 구간 전송 생략): 꺼진/조용한 마이크가 대역폭·디코드를 쓰지 않게 함
+            opusDtx: source === 'mic' || source === 'viewer-mic',
             opusMaxAverageBitrate: (source === 'mic' || source === 'viewer-mic') ? 64000 : 128000,
           };
         }
@@ -396,11 +441,260 @@ export class SfuClient {
     }
   }
 
+  /**
+   * producer 를 (같은 트랙, 같은 appData 로) 닫고 다시 만든다. 필요하면 트랜스포트도 새로 만든다.
+   * 송신 정지(freeze) 복구의 마지막 수단.
+   */
+  async recoverProducer(key, { recreateTransport = false } = {}) {
+    const producer = this.producers.get(key);
+    // 트랜스포트가 닫혀 producer 가 이미 closed 인 경우에도 복구할 수 있어야 한다
+    // (stopTracks:false 이므로 track 은 살아 있다)
+    if (!producer) return false;
+    const track = producer.track;
+    if (!track || track.readyState !== 'live') return false;
+    const appData = { ...(producer.appData || {}) };
+    const kind = producer.kind;
+    const oldId = producer.id;
+    try { if (!producer.closed) producer.close(); } catch { /* ignore */ }
+    this.producers.delete(key);
+    this.request('sfu-close-producer', { producerId: oldId }).catch(() => {});
+    if (recreateTransport) {
+      const field = kind === 'audio' ? 'sendTransportAudio' : 'sendTransportVideo';
+      const t = this[field];
+      if (t && !t.closed) { try { t.close(); } catch { /* ignore */ } }
+      this[field] = null;
+    }
+    try {
+      await this.publishStream(new MediaStream([track]), appData);
+      console.log(`[sfu-client] producer 복구 완료: ${key} (recreateTransport=${recreateTransport})`);
+      return true;
+    } catch (err) {
+      console.warn('[sfu-client] producer 복구 실패:', key, err);
+      return false;
+    }
+  }
+
+  /**
+   * 송신 정지 감시: 카메라/마이크 producer 의 bytesSent 가 멈추면 단계적으로 복구한다.
+   *  1단계(2.5초): ICE 재시작 + 같은 트랙 replaceTrack (인코더 키프레임 강제)
+   *  2단계(6초):   producer 재생성(트랜스포트 유지)
+   *  3단계(12초):  트랜스포트까지 새로 만들어 재송출
+   */
+  startSenderMonitor({ intervalMs = 1500, onStalled = null, onRecovered = null } = {}) {
+    if (this._senderTimer) return;
+    this._senderState = new Map();
+    this.onSenderStalled = onStalled || this.onSenderStalled;
+    this.onSenderRecovered = onRecovered || this.onSenderRecovered;
+    this._senderBusy = false;
+    this._senderTimer = setInterval(() => {
+      if (this._senderBusy || this._closed) return;
+      this._senderBusy = true;
+      this._senderTick().catch(() => {}).finally(() => { this._senderBusy = false; });
+    }, intervalMs);
+  }
+
+  stopSenderMonitor() {
+    if (this._senderTimer) clearInterval(this._senderTimer);
+    this._senderTimer = null;
+  }
+
+  async _senderTick() {
+    // 마이크는 DTX 로 정상적으로도 패킷이 거의 없을 수 있어 감시 대상에서 제외
+    const monitored = new Set(['camera', 'viewer-camera']);
+    const now = Date.now();
+    for (const [key, producer] of [...this.producers.entries()]) {
+      if (!producer) { this._senderState.delete(key); continue; }
+      const source = producer.appData?.source || '';
+      if (producer.closed) {
+        // 트랜스포트 종료 등으로 producer 만 닫힌 경우: 트랙이 살아 있으면 재송출
+        this._senderState.delete(key);
+        if (monitored.has(source) && producer.track?.readyState === 'live') {
+          await this.recoverProducer(key, { recreateTransport: false });
+        }
+        continue;
+      }
+      if (!monitored.has(source)) continue;
+      const track = producer.track;
+      if (!track || track.readyState !== 'live' || producer.paused) { this._senderState.delete(key); continue; }
+      if (producer.kind === 'audio' && track.enabled === false) { this._senderState.delete(key); continue; }
+      let bytes = null;
+      try {
+        const stats = await producer.getStats();
+        stats.forEach((r) => {
+          if (r.type === 'outbound-rtp' && (r.kind || r.mediaType) === producer.kind) {
+            bytes = Math.max(bytes ?? 0, Number(r.bytesSent) || 0);
+          }
+        });
+      } catch { /* ignore */ }
+      if (bytes == null) continue;
+      const st = this._senderState.get(key) || { bytes: -1, lastAdvance: now, stage: 0, holdUntil: 0 };
+      if (bytes > st.bytes) {
+        if (st.stage > 0) {
+          try { this.onSenderRecovered?.({ key, source, stage: st.stage }); } catch { /* ignore */ }
+        }
+        st.bytes = bytes;
+        st.lastAdvance = now;
+        st.stage = 0;
+      } else if (now >= st.holdUntil) {
+        const stalled = now - st.lastAdvance;
+        const transport = producer.kind === 'audio' ? this.sendTransportAudio : this.sendTransportVideo;
+        if (stalled > 2500 && st.stage < 1) {
+          st.stage = 1;
+          try { this.onSenderStalled?.({ key, source, stage: 1, stalledMs: stalled }); } catch { /* ignore */ }
+          if (transport && transport.connectionState !== 'connected') this.restartIce(transport).catch(() => {});
+          try { await producer.replaceTrack({ track }); } catch { /* ignore */ }
+        } else if (stalled > 6000 && st.stage < 2) {
+          st.stage = 2;
+          try { this.onSenderStalled?.({ key, source, stage: 2, stalledMs: stalled }); } catch { /* ignore */ }
+          await this.recoverProducer(key, { recreateTransport: false });
+          st.bytes = -1;
+          st.lastAdvance = Date.now();
+        } else if (stalled > 12000 && st.stage < 3) {
+          st.stage = 3;
+          try { this.onSenderStalled?.({ key, source, stage: 3, stalledMs: stalled }); } catch { /* ignore */ }
+          await this.recoverProducer(key, { recreateTransport: true });
+          st.bytes = -1;
+          st.lastAdvance = Date.now();
+          st.stage = 0;
+          st.holdUntil = Date.now() + 10_000; // 반복 재송출(thrash) 방지
+        }
+      }
+      this._senderState.set(key, st);
+    }
+  }
+
+  /**
+   * 수신측 얼굴 영상 정지 감시 (참가자 카메라 consumer 대상).
+   * framesDecoded(없으면 bytesReceived)가 멈추면 단계적으로 복구한다:
+   *   1.5s  키프레임(PLI) 요청
+   *   3.5s  consumer 서버측 pause→resume (재동기화 + 키프레임)
+   *   6.5s  consumer 를 닫고 같은 producer 를 다시 consume
+   *   12s   수신 트랜스포트 ICE 재시작
+   */
+  startReceiverMonitor({ intervalMs = 1000, onStalled = null, onRecovered = null } = {}) {
+    if (this._rxMonTimer) return;
+    this._rxState = new Map();
+    this._rxLastIceRestart = 0;
+    this._rxMonTimer = setInterval(() => {
+      this._receiverTick(onStalled, onRecovered).catch(() => {});
+    }, intervalMs);
+  }
+
+  stopReceiverMonitor() {
+    if (this._rxMonTimer) {
+      clearInterval(this._rxMonTimer);
+      this._rxMonTimer = null;
+    }
+    this._rxState?.clear();
+  }
+
+  async _receiverTick(onStalled, onRecovered) {
+    if (this._closed || this._rxBusy) return;
+    if (typeof document !== 'undefined' && document.visibilityState === 'hidden') {
+      // 백그라운드 탭은 디코딩이 스로틀되므로 판정 보류
+      this._rxState.forEach((st) => { st.changedAt = performance.now(); st.stage = 0; });
+      return;
+    }
+    this._rxBusy = true;
+    try {
+      const now = performance.now();
+      const alive = new Set();
+      for (const [producerId, consumer] of [...this.consumers.entries()]) {
+        if (!consumer || consumer.closed || consumer.kind !== 'video') continue;
+        const meta = this.consumerMeta.get(producerId);
+        const source = meta?.appData?.source || '';
+        if (source !== 'viewer-camera' && source !== 'camera') continue;
+        alive.add(consumer.id);
+        if (consumer.paused || consumer.producerPaused) {
+          this._rxState.delete(consumer.id);
+          continue;
+        }
+        let frames = null;
+        let bytes = 0;
+        try {
+          const stats = await consumer.getStats();
+          stats.forEach((r) => {
+            if (r.type === 'inbound-rtp' && (r.kind === 'video' || r.mediaType === 'video')) {
+              if (typeof r.framesDecoded === 'number') frames = r.framesDecoded;
+              bytes = r.bytesReceived || 0;
+            }
+          });
+        } catch { continue; }
+
+        const metric = frames != null ? frames : bytes;
+        const st = this._rxState.get(consumer.id);
+        if (!st) {
+          this._rxState.set(consumer.id, { metric, changedAt: now, stage: 0 });
+          continue;
+        }
+        if (metric > st.metric) {
+          if (st.stage > 0) onRecovered?.({ producerId, clientId: meta?.clientId, stage: st.stage });
+          st.metric = metric;
+          st.changedAt = now;
+          st.stage = 0;
+          continue;
+        }
+        const stalledMs = now - st.changedAt;
+        const step = stalledMs >= 12000 ? 4 : stalledMs >= 6500 ? 3 : stalledMs >= 3500 ? 2 : stalledMs >= 1500 ? 1 : 0;
+        if (step <= st.stage) continue;
+        st.stage = step;
+        onStalled?.({ producerId, clientId: meta?.clientId, stalledMs, stage: step });
+        console.warn(`[sfu] rx stall ${Math.round(stalledMs)}ms client=${String(meta?.clientId || '').slice(0, 8)} stage=${step}`);
+        try {
+          if (step === 1) {
+            await this.requestKeyFrame(consumer.id);
+          } else if (step === 2) {
+            await this.request('sfu-pause-consumer', { consumerId: consumer.id }).catch(() => {});
+            await this.request('sfu-resume-consumer', { consumerId: consumer.id }).catch(() => {});
+            await this.requestKeyFrame(consumer.id);
+          } else if (step === 3) {
+            await this._reconsume(producerId);
+            this._rxState.delete(consumer.id);
+          } else if (step === 4) {
+            if (now - this._rxLastIceRestart > 15000 && this.recvTransport && !this.recvTransport.closed) {
+              this._rxLastIceRestart = now;
+              await this.restartIce(this.recvTransport);
+            }
+          }
+        } catch (err) {
+          console.warn('[sfu] rx recover step failed', step, err?.message || err);
+        }
+      }
+      for (const id of [...this._rxState.keys()]) {
+        if (!alive.has(id)) this._rxState.delete(id);
+      }
+    } finally {
+      this._rxBusy = false;
+    }
+  }
+
+  /** consumer 를 조용히 교체 (onProducerClosed 는 호출하지 않음 → 상위 UI 는 새 트랙으로만 갱신) */
+  async _reconsume(producerId) {
+    const consumer = this.consumers.get(producerId);
+    const meta = this.consumerMeta.get(producerId);
+    if (!consumer || !meta || this._closed) return null;
+    try { this.remoteStream.removeTrack(consumer.track); } catch { /* ignore */ }
+    try { consumer.close(); } catch { /* ignore */ }
+    this.consumers.delete(producerId);
+    this.consumerMeta.delete(producerId);
+    try { await this.request('sfu-close-consumer', { consumerId: consumer.id }); } catch { /* ignore */ }
+    return await this.consumeProducer({
+      producerId,
+      clientId: meta.clientId,
+      role: meta.role,
+      kind: meta.kind,
+      appData: meta.appData,
+    });
+  }
+
   async stopPublishing({ source } = {}) {
     for (const [key, producer] of [...this.producers.entries()]) {
       if (source && !key.startsWith(`${source}:`)) continue;
       const id = producer.id;
+      const ownedTrack = producer.track;
       try { producer.close(); } catch { /* ignore */ }
+      // 명시적 송출 중지는 예전과 동일하게 트랙도 정리한다(마이크 파이프라인 출력 트랙 제외)
+      if (ownedTrack && !ownedTrack._ymKeepAlive) { try { ownedTrack.stop(); } catch { /* ignore */ } }
       this.producers.delete(key);
       try { await this.request('sfu-close-producer', { producerId: id }); } catch { /* ignore */ }
     }
@@ -589,6 +883,9 @@ export class SfuClient {
     const producerId = msg?.producerId;
     if (!producerId) return;
     const consumer = this.consumers.get(producerId);
+    const meta = this.consumerMeta.get(producerId);
+    const kind = consumer?.kind || meta?.kind || msg?.kind || null;
+    const source = meta?.appData?.source || msg?.source || null;
     if (consumer) {
       try {
         this.remoteStream.removeTrack(consumer.track);
@@ -598,7 +895,7 @@ export class SfuClient {
       this.consumerMeta.delete(producerId);
     }
     this.onRemoteStream?.(this.remoteStream);
-    this.onProducerClosed?.(msg);
+    this.onProducerClosed?.({ ...msg, kind, source });
   }
 
   startNetworkStatsMonitor(callback, intervalMs = 2500) {
@@ -665,6 +962,8 @@ export class SfuClient {
   dispose() {
     this._closed = true;
     this.stopNetworkStatsMonitor();
+    this.stopSenderMonitor();
+    this.stopReceiverMonitor();
     this.socket.off('sfu-new-producer', this._boundNewProducer);
     this.socket.off('sfu-producer-closed', this._boundProducerClosed);
     for (const producer of this.producers.values()) {

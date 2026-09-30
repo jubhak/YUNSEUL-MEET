@@ -29,6 +29,8 @@ const { spawn } = require('child_process');
 const express = require('express');
 const multer = require('multer');
 const { Server } = require('socket.io');
+const { createRemoteControl } = require('./remote-control');
+const { createFaceRelay } = require('./face-relay');
 const { attachSfuHandlers, cleanupSocketPeer, disposeSfuRoom, detectAnnouncedIp, getListenIps, getRtcPort, getSfuSnapshot, getWorker, getWorkerCount } = require('./sfu');
 
 const ROOT = path.join(__dirname, '..');
@@ -94,7 +96,8 @@ function defaultRoom(code, hostToken, interactionMode = 'bidirectional', require
     hostSocketId: null,
     hostClientId: null,
     hostName: '호스트',
-    hostMicState: (normMode === 'bidirectional' && !!requireMic) ? 'on' : 'off', // on | off | none
+    hostMicState: 'off', // on | off | none (실제 상태만 반영)
+    hostMicReady: false, // 필수 방: 호스트 마이크가 실제 작동 확인되었는지
     activeBroadcasterId: null,
     // bidirectional: 기존 화상 미팅 / unidirectional: 대규모 시청(참가자 produce 없음)
     interactionMode: normMode,
@@ -322,16 +325,22 @@ function viewersPayload(room) {
       micState: room.hostMicState === 'on' || room.hostMicState === 'none'
         ? room.hostMicState
         : 'off',
+      micReady: room.requireMic ? !!room.hostMicReady : true,
+      admitted: true,
     });
   }
   for (const [id, v] of room.viewers.entries()) {
     const micState = v.micState === 'on' || v.micState === 'none' ? v.micState : 'off';
+    // 마이크 필수 방: 검증된(작동 확인된) 마이크가 없는 참가자는 "입장 대기" 상태로 표시
+    const micReady = room.requireMic ? !!v.micReady : true;
     list.push({
       id,
       name: v.name || '참가자',
       role: 'viewer',
       lastSeen: v.lastSeen || 0,
       micState,
+      micReady,
+      admitted: micReady,
     });
   }
   return list;
@@ -374,6 +383,7 @@ function broadcastBroadcaster(io, room) {
     role: isHost ? 'host' : 'viewer',
     name,
   });
+  try { remoteControl.checkRoom(room); } catch { /* ignore */ }
 }
 
 function requireHost(room, token) {
@@ -687,23 +697,6 @@ app.get('/api/deep-live-cam/status', (_req, res) => {
   });
 });
 
-const photoUpload = multer({
-  storage: multer.diskStorage({
-    destination: (_req, _file, cb) => cb(null, PHOTO_DIR),
-    filename: (_req, file, cb) => {
-      const ext = path.extname(file.originalname || '').toLowerCase() || '.jpg';
-      const base = path.parse(file.originalname || 'custom').name.replace(/[^a-zA-Z0-9_\uAC00-\uD7A3-]/g, '_');
-      cb(null, `${base}_${Date.now()}${ext}`);
-    },
-  }),
-  limits: { fileSize: 20 * 1024 * 1024 },
-  fileFilter: (_req, file, cb) => {
-    const ext = path.extname(file.originalname || '').toLowerCase();
-    if (['.jpg', '.jpeg', '.png', '.webp'].includes(ext)) cb(null, true);
-    else cb(new Error('이미지 파일(.jpg, .jpeg, .png, .webp)만 업로드할 수 있습니다.'));
-  },
-});
-
 app.get('/api/photos', (_req, res) => {
   try {
     const photos = [];
@@ -726,20 +719,7 @@ app.get('/api/photos', (_req, res) => {
   }
 });
 
-app.post('/api/upload-face', photoUpload.single('photo'), (req, res) => {
-  if (!req.file) {
-    return res.status(400).json({ ok: false, error: '사진 파일이 필요합니다.' });
-  }
-  const filename = req.file.filename;
-  const id = path.parse(filename).name.toLowerCase();
-  res.json({
-    ok: true,
-    id,
-    filename,
-    name: path.parse(req.file.originalname || filename).name,
-    url: `/photo/${encodeURIComponent(filename)}`,
-  });
-});
+// 사진 업로드(/api/upload-face)는 제거됨 — 서버에 준비된 프리셋 얼굴(photo/)만 사용
 
 app.post('/api/swap-frame', (req, res) => {
   const sourceFace = req.headers['x-source-face'] || '';
@@ -1207,6 +1187,18 @@ const io = new Server(server, {
   pingTimeout: 10000,
 });
 
+// 원격 제어(호스트 → 화면 공유 중인 참가자 PC) — server/remote-control.js
+const remoteControl = createRemoteControl({ io, getRoom, requireHost });
+const faceRelay = createFaceRelay({ rooms, getRoom, requireHost });
+app.get('/api/face-relay/status', (_req, res) => {
+  res.setHeader('Cache-Control', 'no-store');
+  res.json({ ok: true, ...faceRelay.getStats() });
+});
+remoteControl.registerRoutes(app);
+function attachRemoteControlSocket(socket) {
+  remoteControl.attachSocket(socket);
+}
+
 io.on('connection', (socket) => {
   socket.data.roomCode = null;
   socket.data.role = null;
@@ -1221,7 +1213,16 @@ io.on('connection', (socket) => {
       const room = getRoom(socket.data.roomCode);
       return normalizeInteractionMode(room?.interactionMode);
     },
+    getRoomPolicy: () => {
+      const room = getRoom(socket.data.roomCode);
+      return {
+        allowClientCamera: room ? room.allowClientCamera !== false : true,
+        allowClientDeepfake: room ? room.allowClientDeepfake !== false : true,
+        requireMic: !!room?.requireMic,
+      };
+    },
   });
+  attachRemoteControlSocket(socket);
 
   socket.on('join', (msg, ack) => {
     try {
@@ -1270,9 +1271,9 @@ io.on('connection', (socket) => {
           socketId: socket.id,
           connected: true,
           lastSeen: Date.now(),
-          micState: prev?.micState === 'on' || prev?.micState === 'none'
-            ? prev.micState
-            : (room.requireMic ? 'on' : 'off'),
+          // 마이크 상태는 항상 "실제" 상태만 반영한다. (필수 방이라고 임의로 on 으로 만들지 않음)
+          micState: prev?.micState === 'on' || prev?.micState === 'none' ? prev.micState : 'off',
+          micReady: prev?.micReady === true,
         });
         room.lastActivity = Date.now();
       }
@@ -1675,19 +1676,21 @@ io.on('connection', (socket) => {
       const room = code ? getRoom(code) : null;
       if (!room || !socket.data.clientId) return;
       const raw = String(msg?.state || 'off');
-      let state = raw === 'on' || raw === 'none' ? raw : 'off';
-      if (room.requireMic && state === 'off') {
-        state = 'on';
-      }
+      const state = raw === 'on' || raw === 'none' ? raw : 'off';
+      // ready: 클라이언트가 "말했을 때 실제로 소리가 잡히는 마이크"를 확인했는가
+      // (필수 방에서 host/viewer 모두 ready=true 가 되어야 참여자로 인정)
+      const ready = msg?.ready === true && state !== 'none';
       if (socket.data.role === 'host') {
         if (!requireHost(room, socket.data.hostToken)) return;
-        if (room.hostMicState === state) return;
+        if (room.hostMicState === state && room.hostMicReady === ready) return;
         room.hostMicState = state;
+        room.hostMicReady = ready;
       } else {
         const viewer = room.viewers.get(socket.data.clientId);
         if (!viewer) return;
-        if (viewer.micState === state) return;
+        if (viewer.micState === state && viewer.micReady === ready) return;
         viewer.micState = state;
+        viewer.micReady = ready;
       }
       room.lastActivity = Date.now();
       broadcastViewerCount(io, room);
@@ -1753,6 +1756,7 @@ server.listen(PORT, HOST, () => {
 
   // Deep-Live-Cam 실시간 페이스 스왑 백그라운드 워커 기동
   startFaceSwapWorker();
+  try { startExtraFaceSwapWorkers(); } catch (err) { console.warn('[FaceSwap] extra workers', err); }
 
   try { sweepRooms(); } catch (err) { console.warn('[room] initial sweep', err); }
   setInterval(() => {
@@ -1762,6 +1766,15 @@ server.listen(PORT, HOST, () => {
 
 // WebSocket upgrade proxy: /face-swap-ws -> face_swap_worker:8765/ws
 server.on('upgrade', (req, socket, head) => {
+  // 원격 제어 에이전트(/rc-agent)는 자체 WebSocketServer 가 처리
+  if (req.url && req.url.startsWith('/rc-agent')) {
+    if (!remoteControl.handleUpgrade(req, socket, head)) {
+      try { socket.destroy(); } catch { /* ignore */ }
+    }
+    return;
+  }
+  // 딥페이크 릴레이(/face-swap-ws) + 호스트 직송(/face-feed). FACE_RELAY=0 이면 아래 raw 프록시가 처리한다.
+  if (faceRelay.handleUpgrade(req, socket, head)) return;
   if (req.url && (req.url.startsWith('/face-swap-ws') || req.url.startsWith('/ws'))) {
     socket.pause();
     const net = require('net');
@@ -1881,9 +1894,49 @@ function _spawnFaceSwapWorkerProcess() {
   }
 }
 
+// 추가 GPU 워커 프로세스 (선택): FACE_SWAP_EXTRA_WORKERS=N → 포트 base+1..base+N 에 독립 워커를 더 띄우고
+// 릴레이가 접속 수가 적은 워커로 분배한다. (GPU 1장에서는 이득이 작고 VRAM 을 2배 쓴다. GPU 여러 장/큰 VRAM 용)
+const extraFaceSwapProcs = new Map();
+function startExtraFaceSwapWorkers() {
+  const n = Math.max(0, Math.min(7, Number(process.env.FACE_SWAP_EXTRA_WORKERS || 0) || 0));
+  if (!n || process.env.FACE_SWAP_PORTS) return;
+  const base = Number(process.env.FACE_SWAP_PORT || 8765);
+  const ports = [base];
+  for (let i = 1; i <= n; i++) ports.push(base + i);
+  process.env.FACE_SWAP_PORTS = ports.join(',');
+  const workerScript = path.join(__dirname, 'face_swap_worker.py');
+  if (!fs.existsSync(workerScript)) return;
+  const spawnOne = (port) => {
+    if (faceSwapStopping || extraFaceSwapProcs.has(port)) return;
+    console.log(`[FaceSwap] extra worker on port ${port}`);
+    const child = spawn(getPythonCmd(), ['-u', workerScript], {
+      cwd: ROOT,
+      stdio: ['ignore', 'pipe', 'pipe'],
+      windowsHide: true,
+      env: { ...process.env, PYTHONUNBUFFERED: '1', FACE_SWAP_PORT: String(port), FACE_SWAP_WORKERS: '0' },
+    });
+    extraFaceSwapProcs.set(port, child);
+    const pipeLog = (d) => { const s = d.toString().trim(); if (s) console.log(`[FaceSwap:${port}]`, s); };
+    child.stdout.on('data', pipeLog);
+    child.stderr.on('data', pipeLog);
+    child.on('error', (err) => console.warn(`[FaceSwap:${port}] spawn error:`, err));
+    child.on('exit', (code) => {
+      console.log(`[FaceSwap:${port}] exited (code=${code})`);
+      extraFaceSwapProcs.delete(port);
+      if (!faceSwapStopping) setTimeout(() => spawnOne(port), 3000).unref?.();
+    });
+  };
+  // 메인 워커가 모델을 올린 뒤에 시작해 초기 VRAM/디스크 경합을 줄인다
+  setTimeout(() => { for (const p of ports.slice(1)) spawnOne(p); }, 20000).unref?.();
+}
+
 function stopFaceSwapWorker() {
   faceSwapStopping = true;
   clearTimeout(faceSwapRestartTimer);
+  for (const child of extraFaceSwapProcs.values()) {
+    try { child.kill('SIGTERM'); } catch { /* ignore */ }
+  }
+  extraFaceSwapProcs.clear();
   if (faceSwapProcess) {
     try {
       faceSwapProcess.kill('SIGTERM');

@@ -100,11 +100,11 @@ function renderList(viewers) {
       isSelected ? 'is-selected' : '',
     ].filter(Boolean).join(' ');
     return `
-      <li class="${classes}" data-id="${escapeHtml(v.id || '')}" data-role="${role}" data-name="${name}" ${selectable ? 'role="button" tabindex="0"' : ''}>
+      <li class="${classes}" data-speak-id="${escapeHtml(v.id || '')}" data-id="${escapeHtml(v.id || '')}" data-role="${role}" data-name="${name}" ${selectable ? 'role="button" tabindex="0"' : ''}>
         <span class="viewers-avatar" aria-hidden="true">${initial}</span>
         <span class="viewers-name">${name}</span>
         ${micHtml}
-        <span class="viewers-tag${role === 'host' ? ' is-host-tag' : ''}">${tag}</span>
+        <span class="viewers-tag${role === 'host' ? ' is-host-tag' : ''}">${v.admitted === false ? '마이크 확인 중' : tag}</span>
         ${isSelected ? '<span class="viewers-live">공유중</span>' : ''}
       </li>
     `;

@@ -1,6 +1,6 @@
 import { OverlayManager } from './overlay-manager.js?v=20260826link1';
 import { DrawCanvas } from './draw-canvas.js?v=20260918pen2';
-import { RoomSync } from './sync.js?v=20260926meetmobile1';
+import { RoomSync } from './sync.js?v=20260930a';
 import { goToSlide, getPptEngine } from './host-ppt-loader.js?v=20260715ah';
 import { findHttpLinkAt, findVideoHitAt } from './link-utils.js?v=20260715z';
 import {
@@ -8,13 +8,18 @@ import {
   setupViewersPanel,
   setSelectedBroadcaster,
   getLatestViewers,
-} from './viewers-panel.js?v=20260826mic1';
+} from './viewers-panel.js?v=20260930a';
 import { WebrtcSignaling } from './webrtc/signaling.js?v=20260715j';
-import { HostPublisher } from './webrtc/host-publisher.js?v=20260929hd3';
+import { HostPublisher } from './webrtc/host-publisher.js?v=20260930c';
 import { setupChatPanel } from './chat-panel.js?v=20260918fix2';
-import { CamFocusManager, VoiceActivityMonitor } from './cam-focus-manager.js?v=20260926perf1';
-import { TarotLoungeManager } from './tarot-lounge-manager.js?v=20260926meetmobile1';
-import { attachVideoFreezeWatchdog } from './webrtc/video-freeze-watchdog.js?v=20260929hd2';
+import { CamFocusManager } from './cam-focus-manager.js?v=20260930a';
+import { MicController } from './mic-controller.js?v=20260930a';
+import { speakingIndicator } from './speaking-indicator.js?v=20260930a';
+import { showToast } from './ui-toast.js?v=20260930a';
+import { RemoteControlHost } from './remote-control.js?v=20260930a';
+import { TarotLoungeManager } from './tarot-lounge-manager.js?v=20260930a';
+import { attachVideoFreezeWatchdog } from './webrtc/video-freeze-watchdog.js?v=20260930a';
+import { FaceFeedClient } from './face-feed-client.js?v=20260930c';
 
 const params = new URLSearchParams(window.location.search);
 const roomCode = (params.get('code') || sessionStorage.getItem('roomCode') || '').replace(/[^0-9]/g, '').slice(0, 4);
@@ -70,6 +75,10 @@ let preferMic = requireMic || sessionStorage.getItem(MIC_PREF_KEY) === '1';
 let chatPanel = null;
 let isMeetingStarted = false;
 let hostParticipantsGrid = null;
+/** @type {import('./mic-controller.js').MicController|null} */
+let micCtl = null;
+/** @type {import('./remote-control.js').RemoteControlHost|null} */
+let rcHost = null;
 
 function applyInteractionMode(mode, isRequireMic = requireMic) {
   interactionMode = mode === 'unidirectional' ? 'unidirectional' : 'bidirectional';
@@ -103,6 +112,7 @@ function applyInteractionMode(mode, isRequireMic = requireMic) {
       webrtcPublisher.ensureReceiving().catch(() => {});
     }
   }
+  if (micCtl && micCtl.requireMic !== requireMic) micCtl.setRequireMic(requireMic);
   hostParticipantsGrid?.updateVisibility();
   // 단방향: 명단에서 참가자 화면 공유 선택 비활성
   const hint = document.getElementById('viewers-popup-hint');
@@ -232,7 +242,13 @@ camFocusManager.onFocusChange = (focusedId) => {
   // 호스트 얼굴 송출은 256×144 고정 — 포커스해도 해상도 올리지 않음
   updateAvatarUi();
 };
-const vadMonitor = new VoiceActivityMonitor({ threshold: 0.026, holdMs: 5000 });
+// 말하는 사람 표시: 깨끗한 목소리 감지 시 노란 테두리 + 막대그래프 (js/speaking-indicator.js)
+const vadMonitor = {
+  attach: (id, track) => { if (id !== 'local') speakingIndicator.trackRemote(id, track); },
+  // 카메라 박스가 사라져도(그리드 전환 등) 오디오 분석은 유지 → 실제 오디오 종료 시에만 untrack
+  detach: () => {},
+};
+speakingIndicator.start();
 const tarotLounge = new TarotLoungeManager({ containerId: 'tarot-waiting-lounge', isHost: true });
 const btnMeetingWait = document.getElementById('btn-meeting-wait');
 const meetingStartModal = document.getElementById('meeting-start-modal');
@@ -418,7 +434,8 @@ class HostParticipantsGridManager {
   }
 
   setViewers(viewers = []) {
-    const next = (viewers || []).filter((v) => v && v.role !== 'host');
+    // 마이크 필수 방에서 마이크 검증이 안 된 참가자(admitted === false)는 아직 입장 전이므로 제외
+    const next = (viewers || []).filter((v) => v && v.role !== 'host' && v.admitted !== false);
     const prevIds = new Set(this.viewers.map((v) => v.id || v.clientId));
     const nextIds = new Set(next.map((v) => v.id || v.clientId));
     this.viewers = next;
@@ -527,6 +544,7 @@ class HostParticipantsGridManager {
     const card = document.createElement('div');
     card.className = 'participant-card';
     card.dataset.participantId = pid;
+    card.dataset.speakId = pid; // 말하는 사람 표시(노란 테두리 + 막대그래프) 대상
     card.innerHTML = `
       <div class="participant-card-media"></div>
       <div class="participant-card-footer">
@@ -698,6 +716,7 @@ function updateCameraPip(id, stream, { label = '카메라', isMirror = false, is
     box = document.createElement('div');
     box.id = `cam-box-${id}`;
     box.className = 'cam-pip-box';
+    box.dataset.speakId = id;
     const video = document.createElement('video');
     video.autoplay = true;
     video.playsInline = true;
@@ -795,11 +814,9 @@ function syncAvButtons() {
     ? (webrtcPublisher.hasTabAudio ? webrtcPublisher.tabAudioEnabled : preferTabAudio)
     : preferTabAudio;
   const isReqMic = interactionMode === 'bidirectional' && requireMic;
-  const micOn = isReqMic
-    ? true
-    : (webrtcPublisher
-      ? (webrtcPublisher.hasMic && webrtcPublisher.micEnabled)
-      : preferMic);
+  // 실제 상태만 표시한다(필수 방이라고 해서 켜진 것처럼 꾸미지 않음).
+  // 필수 방에서는 검증·송출이 끝나기 전까지는 비활성 → 끝나면 항상 활성.
+  const micOn = !!micCtl?.enabled;
   const camOn = !!(webrtcPublisher?.cameraWanted && webrtcPublisher?.hasCamera && webrtcPublisher?.cameraEnabled);
 
   if (btnAvSpeaker) {
@@ -813,15 +830,17 @@ function syncAvButtons() {
     btnAvMic.classList.toggle('is-active', !!micOn);
     btnAvMic.setAttribute('aria-pressed', micOn ? 'true' : 'false');
     btnAvMic.title = micOn
-      ? (isReqMic ? '마이크 켜짐 (마이크 필수 모임)' : '마이크 켜짐 — 클릭하여 끄기')
-      : '마이크 꺼짐 — 클릭하여 켜기';
+      ? (isReqMic ? '마이크 켜짐 (마이크 필수 모임 — 끌 수 없음)' : '마이크 켜짐 — 클릭하여 끄기')
+      : (micCtl?.state === 'none' ? '마이크를 사용할 수 없습니다 — 클릭하여 다시 시도' : '마이크 꺼짐 — 클릭하여 켜기');
   }
+  const btnMicDev = document.getElementById('btn-av-mic-device');
+  if (btnMicDev) btnMicDev.classList.toggle('hidden', !micCtl);
   if (btnAvCam) {
     btnAvCam.classList.toggle('is-active', !!camOn);
     btnAvCam.setAttribute('aria-pressed', camOn ? 'true' : 'false');
     btnAvCam.title = camOn ? '카메라 켜짐 — 클릭하여 끄기' : '카메라 꺼짐 — 클릭하여 켜기';
   }
-  if (optStreamMic) optStreamMic.checked = !!preferMic;
+  if (optStreamMic) optStreamMic.checked = !!micCtl?.enabled;
   updateAvatarUi();
 }
 
@@ -1005,26 +1024,6 @@ btnDlcClose?.addEventListener('click', closeDeepLiveCamModal);
 document.getElementById('btn-dlc-reset-real')?.addEventListener('click', onResetReal);
 document.getElementById('btn-face-effect')?.addEventListener('click', openDeepLiveCamModal);
 
-document.getElementById('dlc-file-input')?.addEventListener('change', async (e) => {
-  const file = e.target.files?.[0];
-  if (!file) return;
-  const formData = new FormData();
-  formData.append('photo', file);
-  try {
-    const res = await fetch('/api/upload-face', { method: 'POST', body: formData });
-    const data = await res.json();
-    if (data.ok) {
-      await loadModalPhotos();
-      onSelectHero(data.id, data.url);
-    } else {
-      alert(`사진 업로드 실패: ${data.error || '알 수 없는 오류'}`);
-    }
-  } catch (err) {
-    alert(`사진 업로드 실패: ${err.message}`);
-  } finally {
-    e.target.value = '';
-  }
-});
 
 deepLiveCamModal?.addEventListener('click', (e) => {
   if (e.target === deepLiveCamModal) closeDeepLiveCamModal();
@@ -1146,7 +1145,8 @@ async function startScreenShare() {
     showSharePrompt('이 기기에서는 화면 공유를 지원하지 않습니다. 「카메라로 송출」을 사용해 주세요.');
     return false;
   }
-  const withMic = !!preferMic || !!(interactionMode === 'bidirectional' && requireMic);
+  // 마이크는 MicController 가 화면 송출과 독립적으로 관리한다(마이크 토글이 영상에 영향 없음)
+  const withMic = false;
   const withTabAudio = preferTabAudio !== false;
   closeStreamOptions();
 
@@ -1161,8 +1161,7 @@ async function startScreenShare() {
   }
   try {
     await webrtcPublisher.startDisplayCapture({ withMic, withTabAudio });
-    updateStreamUi(true, (webrtcPublisher.kinds || []).includes('mic'));
-    emitMicStatus(webrtcPublisher.micEnabled ? 'on' : (withMic ? 'none' : 'off'));
+    updateStreamUi(true, !!micCtl?.enabled);
     hideSharePrompt();
     drawCanvas?.resize();
     const ids = [...knownViewerIds];
@@ -1202,7 +1201,7 @@ async function startCameraShare() {
     alert('방에 아직 연결되지 않았습니다.');
     return false;
   }
-  const withMic = !!preferMic;
+  const withMic = false;
   closeStreamOptions();
 
   if (btnStream) {
@@ -1216,8 +1215,7 @@ async function startCameraShare() {
   }
   try {
     await webrtcPublisher.startCameraCapture({ withMic, facingMode: 'environment' });
-    updateStreamUi(true, (webrtcPublisher.kinds || []).includes('mic'));
-    emitMicStatus(webrtcPublisher.micEnabled ? 'on' : (withMic ? 'none' : 'off'));
+    updateStreamUi(true, !!micCtl?.enabled);
     hideSharePrompt();
     drawCanvas?.resize();
     const ids = [...knownViewerIds];
@@ -1267,50 +1265,52 @@ async function toggleTabAudio() {
 }
 
 async function toggleMic() {
-  if (interactionMode === 'bidirectional' && requireMic) {
-    alert('마이크 필수 모임입니다. 마이크를 끌 수 없습니다.');
-    return;
-  }
-  if (!webrtcPublisher) return;
-  preferMic = !preferMic;
-  sessionStorage.setItem(MIC_PREF_KEY, preferMic ? '1' : '0');
-  if (preferMic) {
-    const ok = await webrtcPublisher.ensureMic(true);
-    if (!ok) {
-      preferMic = false;
-      sessionStorage.setItem(MIC_PREF_KEY, '0');
-      emitMicStatus('none');
-      alert('마이크를 사용할 수 없습니다. 권한·장치 연결을 확인해 주세요.');
-    } else {
-      emitMicStatus('on');
-    }
-  } else {
-    webrtcPublisher.setMicEnabled(false);
-    emitMicStatus('off');
-  }
-  syncAvButtons();
-}
-
-function emitMicStatus(state) {
+  if (!micCtl) return;
+  if (btnAvMic) btnAvMic.disabled = true;
   try {
-    sync?.socket?.emit?.('mic-status', { state });
-  } catch { /* ignore */ }
+    await micCtl.toggle();
+  } finally {
+    if (btnAvMic) btnAvMic.disabled = false;
+    syncAvButtons();
+  }
 }
 
-function probeHostMicAvailability() {
-  if (!navigator.mediaDevices?.enumerateDevices) {
-    emitMicStatus(preferMic && webrtcPublisher?.micEnabled ? 'on' : 'off');
-    return;
-  }
-  navigator.mediaDevices.enumerateDevices()
-    .then((list) => {
-      const hasMic = list.some((d) => d.kind === 'audioinput');
-      if (!hasMic) emitMicStatus('none');
-      else if (webrtcPublisher?.hasMic && webrtcPublisher.micEnabled) emitMicStatus('on');
-      else emitMicStatus('off');
-    })
-    .catch(() => emitMicStatus('off'));
+/** 서버에 현재 마이크 상태 재통지 (재접속/새 소켓 후) */
+function emitMicStatus() {
+  try { micCtl?._emit?.(); } catch { /* ignore */ }
 }
+
+function setupHostMic() {
+  if (micCtl || !webrtcPublisher || !sync) return;
+  const isReq = interactionMode === 'bidirectional' && requireMic;
+  micCtl = new MicController({
+    role: 'host',
+    clientId: sync.clientId,
+    speakIds: ['local', sync.clientId],
+    source: 'mic',
+    getSfu: () => webrtcPublisher._ensureSfu(),
+    socket: sync.socket,
+    requireMic: isReq,
+    onChange: () => syncAvButtons(),
+    onForced: () => showToast('마이크 사용이 필수인 모임입니다. 마이크를 끌 수 없습니다.', 'warn', 4200),
+    onNotice: (msg, kind) => showToast(msg, kind === 'error' ? 'error' : 'warn', 5200),
+    onLeave: () => { window.location.href = './'; },
+    onTrack: (track) => { try { webrtcPublisher.avatarManager?.attachMicTrack(track || null); } catch { /* ignore */ } },
+  });
+  sync.socket.on?.('connect', () => emitMicStatus());
+  micCtl._emit(); // 초기 상태(off / ready=false) 통지 → 아이콘은 비활성으로 시작
+  syncAvButtons();
+  if (isReq) {
+    // 필수 방: 검증 대화상자(필요 시) → 자동 ON
+    micCtl.enable().finally(() => syncAvButtons());
+  }
+}
+
+document.getElementById('btn-av-mic-device')?.addEventListener('click', async () => {
+  if (!micCtl) return;
+  await micCtl.openSettings();
+  syncAvButtons();
+});
 
 btnStream?.addEventListener('click', () => {
   if (webrtcPublisher?.isActive) stopScreenShare();
@@ -1323,14 +1323,10 @@ btnStreamStart?.addEventListener('click', () => startScreenShare());
 document.getElementById('btn-share-now')?.addEventListener('click', () => startScreenShare());
 document.getElementById('btn-camera-share')?.addEventListener('click', () => startCameraShare());
 
-optStreamMic?.addEventListener('change', () => {
-  if (interactionMode === 'bidirectional' && requireMic) {
-    optStreamMic.checked = true;
-    alert('마이크 필수 모임입니다. 마이크를 끌 수 없습니다.');
-    return;
-  }
-  preferMic = !!optStreamMic.checked;
-  sessionStorage.setItem(MIC_PREF_KEY, preferMic ? '1' : '0');
+optStreamMic?.addEventListener('change', async () => {
+  if (!micCtl) { optStreamMic.checked = false; return; }
+  if (optStreamMic.checked) await micCtl.enable();
+  else await micCtl.disable();
   syncAvButtons();
 });
 
@@ -1601,6 +1597,7 @@ document.getElementById('btn-clear-all')?.addEventListener('click', () => {
 
 window.addEventListener('resize', () => drawCanvas?.resize());
 
+let onEventLastCount = null;
 sync = new RoomSync({
   code: roomCode,
   role: 'host',
@@ -1616,7 +1613,11 @@ sync = new RoomSync({
       });
       hostParticipantsGrid.setViewers(payload.viewers || []);
       // count = 호스트+참가자 총원 → 1명 solo HQ / 2명+ multi LQ
-      webrtcPublisher?.setFaceQualityByRoomSize?.(payload.count ?? 1).catch?.(() => {});
+      // 마이크 on/off 등 상태 변화에도 viewer-count 가 오므로, 인원수가 바뀔 때만 화질 재계산
+      if (payload.count !== onEventLastCount) {
+        onEventLastCount = payload.count;
+        webrtcPublisher?.setFaceQualityByRoomSize?.(payload.count ?? 1).catch?.(() => {});
+      }
       if (tarotLounge.isActive && !tarotLounge._isCountingDown) {
         tarotLounge.renderParticipants(payload.viewers || []);
       }
@@ -1728,10 +1729,9 @@ sync.start()
     webrtcPublisher = new HostPublisher({
       signaling,
       onStatus: ({ active, withMic, kinds, audioShareMissing }) => {
-        updateStreamUi(!!active, !!withMic || (kinds || []).includes('mic'));
+        updateStreamUi(!!active, !!micCtl?.enabled);
         syncAvButtons();
         if (active) {
-          emitMicStatus(webrtcPublisher?.micEnabled ? 'on' : 'off');
           hideSharePrompt();
           if (audioShareMissing && !webrtcPublisher._audioWarned) {
             webrtcPublisher._audioWarned = true;
@@ -1765,7 +1765,23 @@ sync.start()
       }
       syncAvButtons();
     };
-    webrtcPublisher.onRemoteCamera = ({ clientId, stream }) => {
+    // ── 참가자 카메라 표시: 딥페이크 직송(faceFeed)이 살아 있으면 그것을, 아니면 SFU 스트림을 사용 ──
+    // 직송 경로: 참가자 JPEG → GPU 워커 → 서버 → 호스트 canvas (stress_test.html 과 같은 경로/속도)
+    // SFU 경로는 항상 유지되므로, 직송이 끊기거나 딥페이크가 꺼지면 자동으로 SFU 영상으로 돌아온다.
+    const sfuCameraStreams = new Map();   // clientId -> SFU MediaStream
+    const shownCameraSource = new Map();  // clientId -> 'feed' | 'sfu'
+    const feedDisabled = params.get('feed') === '0' || localStorage.getItem('ym_face_feed') === '0';
+    const faceFeed = feedDisabled ? null : new FaceFeedClient({
+      roomCode,
+      hostToken,
+      onFirstLive: (id) => showRemoteCamera(id),
+    });
+    function showRemoteCamera(clientId) {
+      const sfuStream = sfuCameraStreams.get(clientId);
+      if (!sfuStream) return; // 카메라가 꺼졌거나 아직 SFU 에 없음 → 직송만으로는 표시하지 않음
+      const useFeed = !!faceFeed?.isLive(clientId);
+      const stream = (useFeed && faceFeed.getStream(clientId)) || sfuStream;
+      shownCameraSource.set(clientId, stream === sfuStream ? 'sfu' : 'feed');
       hostParticipantsGrid.setStream(clientId, stream);
       if (hostParticipantsGrid?.isVisible) {
         removeCameraPip(clientId);
@@ -1775,11 +1791,33 @@ sync.start()
       const v = viewers.find((x) => x.clientId === clientId || x.id === clientId);
       const label = v ? `${v.name || '참가자'}` : '참가자';
       updateCameraPip(clientId, stream, { label, isMirror: false, isHost: false });
+    }
+    webrtcPublisher.onRemoteCamera = ({ clientId, stream }) => {
+      sfuCameraStreams.set(clientId, stream);
+      showRemoteCamera(clientId);
     };
     webrtcPublisher.onRemoteCameraClosed = (clientId) => {
+      sfuCameraStreams.delete(clientId);
+      shownCameraSource.delete(clientId);
+      faceFeed?.dropClient(clientId);
       hostParticipantsGrid.removeStream(clientId);
       removeCameraPip(clientId);
     };
+    if (faceFeed?.supported) {
+      faceFeed.start();
+      // 직송이 끊기면(0.9s 무프레임) SFU 로 복귀, 다시 살아나면 직송으로 전환
+      setInterval(() => {
+        for (const clientId of sfuCameraStreams.keys()) {
+          const want = faceFeed.isLive(clientId) ? 'feed' : 'sfu';
+          if (shownCameraSource.get(clientId) !== want) showRemoteCamera(clientId);
+        }
+      }, 400);
+      window.__ymDebug = window.__ymDebug || {};
+      Object.defineProperties(window.__ymDebug, {
+        faceFeed: { configurable: true, get: () => faceFeed.stats() },
+        cameraSources: { configurable: true, get: () => Object.fromEntries(shownCameraSource) },
+      });
+    }
     webrtcPublisher.onMicTrack = (track) => {
       if (track) {
         vadMonitor.attach('local', track);
@@ -1791,7 +1829,7 @@ sync.start()
       vadMonitor.attach(clientId, track);
     };
     webrtcPublisher.onRemoteAudioTrackClosed = (clientId) => {
-      vadMonitor.detach(clientId);
+      speakingIndicator.untrack(clientId);
     };
     webrtcPublisher.onNetworkQuality = ({ pingMs, lossRate, quality }) => {
       hostParticipantsGrid.updateNetworkQuality('local', { pingMs, lossRate, quality });
@@ -1815,9 +1853,17 @@ sync.start()
       });
     }
     setupGlobalAudioUnlock();
+    // 원격 제어(마우스/키보드) — 참가자 화면을 중계 중일 때만 요청 가능
+    if (!rcHost && sync?.socket) {
+      rcHost = new RemoteControlHost({ socket: sync.socket, getVideoEl: () => guestShareVideo });
+    }
+    document.getElementById('btn-guest-share-stop')?.addEventListener('click', () => {
+      returnToHostDisplay().catch((err) => console.warn('[host] returnToHostDisplay', err));
+    });
     webrtcPublisher.onRelayChange = ({ peerId, active, stream }) => {
       if (active && stream) {
         const name = getLatestViewers().find((v) => v.id === peerId)?.name || '참가자';
+        rcHost?.setTarget({ id: peerId, name });
         showGuestShare(stream, name);
         activeBroadcasterId = peerId;
         setSelectedBroadcaster(peerId);
@@ -1827,6 +1873,7 @@ sync.start()
           name,
         });
       } else {
+        rcHost?.setTarget(null);
         hideGuestShare();
         activeBroadcasterId = sync.clientId;
         setSelectedBroadcaster(sync.clientId);
@@ -1855,22 +1902,14 @@ sync.start()
       webrtcPublisher.ensureReceiving().catch((err) => {
         console.warn('[host] ensureReceiving error:', err);
       });
-      if (requireMic) {
-        preferMic = true;
-        sessionStorage.setItem(MIC_PREF_KEY, '1');
-        webrtcPublisher.ensureMic(true).then((ok) => {
-          if (ok) emitMicStatus('on');
-          syncAvButtons();
-        }).catch((err) => {
-          console.warn('[host] requireMic auto ensureMic err:', err);
-        });
-      }
     }
+
+    // 마이크: 필수 방이면 검증 후 자동 ON, 아니면 꺼진 상태(아이콘 비활성)로 시작
+    setupHostMic();
 
     // 입장 직후 호스트 메뉴 표시
     // 모바일: 자동 화면공유는 사용자 제스처 없이 실패하므로 안내만 표시
     showHostMenu();
-    probeHostMicAvailability();
     if (isMeetingStarted) {
       if (isMobileHostEnv() || !canDisplayCapture()) {
         showSharePrompt('');

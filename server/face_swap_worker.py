@@ -3,7 +3,16 @@
 server/face_swap_worker.py - YUNSEUL-PPT Deep-Live-Cam 실시간 페이스 스왑 워커
 - InsightFace + inswapper_128_fp16.onnx 모델 상시 로드
 - WebSocket (ws://...:8765/ws) 및 HTTP POST (/api/swap-frame) 동시 지원
-- photo/ 폴더의 영웅/인물 사진 임베딩 자동 캐싱 및 신규 사진 업로드 처리
+- photo/ 폴더의 인물 사진 임베딩 자동 캐싱 (사진 업로드 기능은 제거됨)
+
+[v2 개선 요약]
+- 인프로세스 "모델 인스턴스 풀": 스레드마다 독립 ONNX 세션(검출+스왑)을 가져 GPU 동시성을 확보
+  (기존: 세션 1개를 스레드 2개가 공유 → 사실상 직렬. VRAM 은 남는데 GPU/CPU 는 놀았다)
+- 프로토콜 v2: 요청에 seq 를 실어 보내고(이름 뒤 \\x1f seq), 응답은 b'FS2\\0'+seq+처리시간 헤더 + JPEG
+  → 클라이언트가 순서/지연을 알고 파이프라이닝(depth 2)과 재생 버퍼를 쓸 수 있다.
+  구 클라이언트(v1: 이름만 전송)는 그대로 순수 JPEG 응답을 받는다(하위 호환).
+- 오래 기다린 프레임은 GPU 에 올리지 않고 폐기(drop) → 과부하 시 지연 누적 방지
+- /stats 에 GPU 사용률/VRAM/처리량/드랍 수 노출
 """
 
 import os
@@ -338,6 +347,7 @@ def _track_faces(frame: np.ndarray, client_key: str):
 # 총량"이 실시간 예산(약 33~50ms/frame)을 넘지 않도록 맞춘다.
 # ----------------------------------------------------
 CONNECTED_WS = set()
+FS2_MAGIC = b"FS2\x00"   # v2 응답 헤더: magic(4) + seq(u32) + procMs(u16) + totalMs(u16) + JPEG
 INFERENCE_SEMAPHORE = asyncio.Semaphore(3)  # (비풀 모드) 동시 추론 상한
 WORKER_COUNT_EFFECTIVE = 0  # start_server 에서 확정
 
@@ -369,35 +379,37 @@ def get_adaptive_profile(n_clients: int) -> dict:
     """활성 클라이언트 수 + 실측 지연 + 워커 수로
     처리 해상도 상한(max_w)과 클라이언트 권고 fps를 계산한다."""
     n = max(1, int(n_clients or 1))
-    workers = max(1, WORKER_COUNT_EFFECTIVE or WORKER_COUNT)
+    threads = max(1, _MODEL_THREADS or WORKER_COUNT_EFFECTIVE or WORKER_COUNT)
     p50 = _latency_percentile(0.5)
     p90 = _latency_percentile(0.9)
 
-    per_worker_fps = (1000.0 / max(25.0, p50)) if p50 > 0 else 25.0
-    capacity_fps = per_worker_fps * workers
-    per_client = max(10.0, (capacity_fps * 0.85) / n)
+    # 이론 처리능력: 스레드 수 × (1000/서비스시간). 단, GPU 는 스레드에 비례해 늘지 않으므로(측정: K=4 에서
+    # 포화, 1스레드 대비 약 1.3~1.9배) 0.55 를 곱해 보수적으로 잡고, 실측 최고 처리량(EMA)이 더 크면 그것을 신뢰한다.
+    service_ms = max(8.0, p50)
+    theory_fps = (1000.0 / service_ms) * threads * 0.55
+    measured = measured_throughput_fps()
+    capacity_fps = max(theory_fps, _PEAK_FPS_EMA)
+    # 최근 4초 안에 "대기 초과 폐기"가 여러 번 있었다면 과부하 → 실측 처리량을 기준으로 강하
+    now_t = time.time()
+    recent_stale = sum(1 for t in _STALE_EVENTS if now_t - t < 4.0)
+    if recent_stale >= 3 and measured > 0:
+        capacity_fps = min(capacity_fps, max(6.0, measured * 1.05))
+    per_client = (capacity_fps * 0.90) / n
 
-    # 참가자 수별 하한(floor) 및 상한(cap) 설정 - 1인 호스트는 절대 뚝뚝 끊기지 않음!
+    # 참가자 수별 하한(floor)/상한(cap) — 1인 호스트는 절대 끊기지 않게, 다수일수록 fps 를 낮추되
+    # 해상도는 예전(320px)처럼 뭉개지 않는다 (스왑 GPU 비용은 프레임 해상도와 무관하게 128px 크롭 기준).
     if n <= 1:
-        fps_floor = 24.0
-        fps_cap = 28.0
-        max_w = 640
+        fps_floor, fps_cap, max_w = 24.0, 30.0, 640
     elif n == 2:
-        fps_floor = 20.0
-        fps_cap = 24.0
-        max_w = 640
+        fps_floor, fps_cap, max_w = 20.0, 26.0, 640
     elif n <= 4:
-        fps_floor = 16.0
-        fps_cap = 20.0
-        max_w = 480
+        fps_floor, fps_cap, max_w = 16.0, 22.0, 640
     elif n <= 7:
-        fps_floor = 14.0
-        fps_cap = 18.0
-        max_w = 384
+        fps_floor, fps_cap, max_w = 12.0, 18.0, 576
+    elif n <= 12:
+        fps_floor, fps_cap, max_w = 10.0, 15.0, 512
     else:
-        fps_floor = 10.0
-        fps_cap = 15.0
-        max_w = 320
+        fps_floor, fps_cap, max_w = 8.0, 12.0, 448
 
     fps = float(max(fps_floor, min(fps_cap, per_client)))
     if p90 > 0 and p50 > 0 and p90 > p50 * 2.5:
@@ -407,11 +419,12 @@ def get_adaptive_profile(n_clients: int) -> dict:
         "max_w": max_w,
         "fps": int(round(fps)),
         "detect_every": _DETECT_EVERY,
-        "workers": workers,
+        "workers": threads,
         "clients": n,
         "p50_ms": round(p50, 1),
         "p90_ms": round(p90, 1),
         "capacity_fps": round(capacity_fps, 1),
+        "measured_fps": round(measured, 1),
     }
 
 
@@ -538,7 +551,7 @@ def process_frame(source_name: str, frame_bytes: bytes, n_clients: int = 0,
                     or _finalize_and_encode(_blur_faces(frame_s, target_faces), 80, restore_size))
 
         # 스왑 결과를 원본 해상도로 되돌리지 않는다(순수 낭비 제거).
-        result_bytes = _finalize_and_encode(swapped, 74, None)
+        result_bytes = _finalize_and_encode(swapped, 80, None)
         _cache_put(client_key, source_key, result_bytes)
         _cache_put(client_key, "_latest", result_bytes)
         return result_bytes
@@ -564,7 +577,290 @@ def process_frame(source_name: str, frame_bytes: bytes, n_clients: int = 0,
 
 
 # ----------------------------------------------------
-# 멀티프로세스 GPU 워커 풀
+# 인프로세스 모델 인스턴스 풀 (기본 모드 — GPU/VRAM 을 실제로 쓰는 병렬 처리)
+#
+# [측정 결과 — RTX 5070 Ti, 12명 동시]
+#  · 예전 구조(세션 1개 + 스레드 2개): 합계 ~77fps → 참가자당 6.4fps, GPU 66%, VRAM 3.2GB/16GB
+#  · inswapper 순수 추론은 GPU 상 ~6ms(≈165 inf/s 상한). 배치(>1)는 모델이 지원하지 않는다.
+#  · 따라서 목표는 "GPU 를 놀리지 않게" 여러 독립 세션(스레드별)을 두어 CPU 전/후처리와
+#    GPU 추론을 겹치는 것. 세션은 검출 모델 + 스왑 모델 한 쌍이며 VRAM 은 인스턴스당 ~0.3~0.6GB.
+# ----------------------------------------------------
+import concurrent.futures as _cf
+import subprocess as _subprocess
+
+_tls = threading.local()
+_MODEL_THREADS = 0                       # start_server 에서 확정
+_EXECUTOR = None                         # type: ignore
+PROCESSED_TOTAL = 0
+DROPPED_TOTAL = 0
+STALE_DROPPED_TOTAL = 0
+_THROUGHPUT_EVENTS = collections.deque(maxlen=512)   # 완료 시각 (초) — 실측 처리량 계산용
+_STALE_EVENTS = collections.deque(maxlen=256)        # 대기 초과로 폐기된 시각 — 과부하 감지용
+_PEAK_FPS_EMA = 0.0
+MAX_QUEUE_MS = float(os.environ.get("FACE_SWAP_MAX_QUEUE_MS", "350"))
+
+
+def _install_thread_local_models():
+    """DLC 모듈의 전역 싱글턴 getter 를 '스레드 로컬 우선' 으로 감싼다.
+    풀 스레드에서는 자기 전용 세션을, 그 외 스레드(메인/이벤트 루프)에서는 원래 싱글턴을 쓴다."""
+    import modules.face_analyser as fa_mod
+    import modules.processors.frame.face_swapper as fs_mod
+
+    if getattr(fa_mod, "_ym_tls_installed", False):
+        return
+    orig_analyser = fa_mod.get_face_analyser
+    orig_swapper = fs_mod.get_face_swapper
+
+    def tl_analyser():
+        a = getattr(_tls, "analyser", None)
+        return a if a is not None else orig_analyser()
+
+    def tl_swapper():
+        s = getattr(_tls, "swapper", None)
+        return s if s is not None else orig_swapper()
+
+    fa_mod.get_face_analyser = tl_analyser
+    fs_mod.get_face_swapper = tl_swapper
+    fa_mod._ym_tls_installed = True
+
+
+_BUILD_LOCK = threading.Lock()
+
+
+def _build_thread_models():
+    """현재 스레드 전용 검출+스왑 세션을 만든다(스레드당 1회).
+    CUDA Graph 캡처는 캡처 중 다른 스레드의 CUDA 호출을 실패시키므로 모델 생성은 직렬화한다."""
+    with _BUILD_LOCK:
+        _build_thread_models_locked()
+
+
+def _build_thread_models_locked():
+    import insightface
+    import modules.face_analyser as fa_mod
+    import modules.processors.frame.face_swapper as fs_mod
+    from modules.processors.frame._onnx_enhancer import build_provider_config
+
+    providers = build_provider_config()
+    # 검출 입력 크기: 웹캠 프레임은 얼굴이 크므로 640 보다 작아도 검출된다(비용 ~ 면적에 비례).
+    det_edge = int(os.environ.get("FACE_SWAP_DET_SIZE", "480"))
+    analyser = insightface.app.FaceAnalysis(
+        name="buffalo_l", providers=providers, allowed_modules=["detection"])
+    analyser.prepare(ctx_id=0, det_size=(det_edge, det_edge))
+
+    fp32 = os.path.join(fs_mod.models_dir, "inswapper_128.onnx")
+    fp16 = os.path.join(fs_mod.models_dir, "inswapper_128_fp16.onnx")
+    if getattr(fs_mod, "_HAS_TORCH_CUDA", False) and os.path.exists(fp16):
+        model_path = fp16
+    elif os.path.exists(fp32):
+        model_path = fp32
+    else:
+        model_path = fp16
+    swap_providers = providers
+    if os.environ.get("FACE_SWAP_TRT", "0") == "1" and USING_CUDA:
+        # (선택) TensorRT FP16 — `pip install tensorrt-cu12` 등으로 TensorRT 라이브러리가 있을 때만 유효.
+        # 실패하면 ONNX Runtime 이 자동으로 CUDA 로 폴백한다. 첫 기동 시 엔진 빌드로 수 분 걸릴 수 있다.
+        cache_dir = os.path.join(fs_mod.models_dir, "trt_cache")
+        os.makedirs(cache_dir, exist_ok=True)
+        swap_providers = [("TensorrtExecutionProvider", {
+            "trt_fp16_enable": True, "trt_engine_cache_enable": True, "trt_engine_cache_path": cache_dir,
+        })] + list(providers)
+    swapper = insightface.model_zoo.get_model(model_path, providers=swap_providers)
+    if USING_CUDA and os.environ.get("FACE_SWAP_CUDA_GRAPH", "1") == "1" and "TensorrtExecutionProvider" not in str(swap_providers):
+        _wrap_with_cuda_graph(swapper, model_path)
+    _tls.analyser = analyser
+    _tls.swapper = swapper
+
+
+class _GraphSession:
+    """스레드 전용 CUDA Graph 세션 어댑터 (insightface INSwapper 가 호출하는 session.run 만 대체).
+    커널 런치 오버헤드를 제거하고, 입력/출력 버퍼를 GPU 에 상주시켜 호스트↔디바이스 복사를 줄인다."""
+
+    def __init__(self, underlying, sess, io, ort_in, ort_lat, out_name):
+        self._underlying = underlying
+        self._sess = sess
+        self._io = io
+        self._in = ort_in
+        self._lat = ort_lat
+        self._out = out_name
+
+    def run(self, output_names, input_dict, **kwargs):
+        try:
+            keys = list(input_dict.keys())
+            self._in.update_inplace(np.ascontiguousarray(input_dict[keys[0]], dtype=np.float32))
+            self._lat.update_inplace(np.ascontiguousarray(input_dict[keys[1]], dtype=np.float32))
+            self._sess.run_with_iobinding(self._io)
+            return [self._io.get_outputs()[0].numpy()]
+        except Exception:
+            return self._underlying.run(output_names, input_dict, **kwargs)
+
+    def __getattr__(self, name):
+        return getattr(self._underlying, name)
+
+
+def _wrap_with_cuda_graph(swapper, model_path: str):
+    try:
+        import onnxruntime as ort_
+        sess = ort_.InferenceSession(
+            model_path, providers=[("CUDAExecutionProvider", {"enable_cuda_graph": "1"}), "CPUExecutionProvider"])
+        in_names = [i.name for i in sess.get_inputs()]
+        out_name = sess.get_outputs()[0].name
+        ort_in = ort_.OrtValue.ortvalue_from_numpy(np.zeros((1, 3, 128, 128), dtype=np.float32), "cuda", 0)
+        ort_lat = ort_.OrtValue.ortvalue_from_numpy(np.zeros((1, 512), dtype=np.float32), "cuda", 0)
+        io = sess.io_binding()
+        io.bind_ortvalue_input(in_names[0], ort_in)
+        io.bind_ortvalue_input(in_names[1], ort_lat)
+        io.bind_output(out_name, "cuda", 0)
+        sess.run_with_iobinding(io)   # 1회차: 그래프 캡처
+        sess.run_with_iobinding(io)
+        swapper.session = _GraphSession(swapper.session, sess, io, ort_in, ort_lat, out_name)
+    except Exception as e:
+        logger.warning(f"CUDA graph 세션 생성 실패 → 일반 세션 사용: {e}")
+
+
+def _resolve_model_threads() -> int:
+    """동시 모델 인스턴스(=추론 스레드) 수.
+    FACE_SWAP_CONCURRENCY 로 직접 지정 가능. 기본은 VRAM/CPU 에 맞춰 자동 결정."""
+    raw = str(os.environ.get("FACE_SWAP_CONCURRENCY", "auto")).strip().lower()
+    if raw not in ("", "auto"):
+        try:
+            return int(max(1, min(int(raw), 12)))
+        except ValueError:
+            pass
+    cpu = os.cpu_count() or 4
+    if not USING_CUDA:
+        return int(max(1, min(2, cpu // 4)))
+    vram = _detect_vram_gb()
+    # 측정: 세션 4개에서 GPU 처리량이 포화(K>=4 이후 증가 거의 없음). VRAM 여유가 크면 4, 작으면 줄인다.
+    if vram >= 10:
+        n = 4
+    elif vram >= 6:
+        n = 3
+    else:
+        n = 2
+    return int(max(1, min(n, max(1, cpu // 2))))
+
+
+def _init_executor(n_threads: int):
+    """추론 스레드 풀 생성 + 각 스레드에서 모델 인스턴스를 병렬로 미리 만들고 워밍업한다."""
+    global _EXECUTOR, _MODEL_THREADS
+    _install_thread_local_models()
+    _MODEL_THREADS = max(1, n_threads)
+    _EXECUTOR = _cf.ThreadPoolExecutor(max_workers=_MODEL_THREADS, thread_name_prefix="swap")
+    barrier = threading.Barrier(_MODEL_THREADS)
+    errors = []
+
+    def warm(idx):
+        try:
+            if _MODEL_THREADS > 1:
+                _build_thread_models()
+            else:
+                # 단일 스레드는 원래 싱글턴을 그대로 사용
+                _tls.analyser = get_face_analyser()
+                _tls.swapper = get_face_swapper()
+            # 더미 프레임으로 cuDNN 알고리즘 선택/메모리 풀 워밍업
+            dummy = np.full((360, 640, 3), 127, dtype=np.uint8)
+            try:
+                _tls.analyser.det_model.detect(dummy, max_num=0, metric="default")
+            except Exception:
+                pass
+            barrier.wait(timeout=120)
+        except Exception as e:  # pragma: no cover
+            errors.append(str(e))
+            try:
+                barrier.abort()
+            except Exception:
+                pass
+
+    futs = [_EXECUTOR.submit(warm, i) for i in range(_MODEL_THREADS)]
+    for f in futs:
+        f.result()
+    # 붙여넣기(paste-back)는 얼굴 크롭(~200px) 수준이라 CPU(cv2 SIMD)가 더 싸다. torch .cuda() 왕복은
+    # 기본(NULL) 스트림에서 동기화를 유발해 다른 스레드의 GPU 작업과 서로 기다리게 만든다 → 기본은 CPU 경로.
+    if os.environ.get("FACE_SWAP_CPU_PASTE", "1") == "1":
+        try:
+            import modules.processors.frame.face_swapper as _fsm
+            _fsm._HAS_TORCH_CUDA = False   # 모델 선택은 이미 끝났으므로 paste-back 경로만 바뀐다
+        except Exception:
+            pass
+    if errors:
+        logger.error(f"모델 인스턴스 초기화 오류: {errors[:2]}")
+    logger.info(f"✅ 모델 인스턴스 풀 준비: threads={_MODEL_THREADS} (스레드별 독립 ONNX 세션)")
+
+
+def _note_completed(dropped: bool = False, stale: bool = False):
+    global PROCESSED_TOTAL, DROPPED_TOTAL, STALE_DROPPED_TOTAL, _PEAK_FPS_EMA
+    if dropped:
+        DROPPED_TOTAL += 1
+        if stale:
+            STALE_DROPPED_TOTAL += 1
+            _STALE_EVENTS.append(time.time())
+        return
+    PROCESSED_TOTAL += 1
+    now = time.time()
+    _THROUGHPUT_EVENTS.append(now)
+
+
+def update_peak_throughput():
+    """2초마다 호출: 실측 처리량이 지금까지의 최고치보다 높으면 갱신(포화 상태에서의 처리능력 자가 보정)."""
+    global _PEAK_FPS_EMA
+    m = measured_throughput_fps()
+    if m > _PEAK_FPS_EMA:
+        _PEAK_FPS_EMA = m if not _PEAK_FPS_EMA else (0.6 * _PEAK_FPS_EMA + 0.4 * m)
+    else:
+        _PEAK_FPS_EMA *= 0.985
+
+
+def measured_throughput_fps(window: float = 4.0) -> float:
+    now = time.time()
+    n = 0
+    for t in reversed(_THROUGHPUT_EVENTS):
+        if now - t > window:
+            break
+        n += 1
+    return n / window
+
+
+def _process_in_thread(source_name, frame_bytes, n_clients, client_key, enq_ts):
+    """풀 스레드에서 실행. 너무 오래 대기한 프레임은 GPU 에 올리지 않고 None(폐기)."""
+    waited_ms = (time.time() - enq_ts) * 1000.0
+    if waited_ms > MAX_QUEUE_MS:
+        return None, waited_ms, 0.0
+    t0 = time.perf_counter()
+    data = process_frame(source_name, frame_bytes, n_clients, client_key)
+    return data, waited_ms, (time.perf_counter() - t0) * 1000.0
+
+
+_GPU_CACHE = {"t": 0.0, "v": None}
+
+
+def gpu_snapshot():
+    """nvidia-smi 로 GPU 사용률/VRAM 을 2초 캐시로 조회 (실패 시 None)."""
+    now = time.time()
+    if now - _GPU_CACHE["t"] < 2.0:
+        return _GPU_CACHE["v"]
+    v = None
+    try:
+        out = _subprocess.check_output(
+            ["nvidia-smi", "--query-gpu=name,utilization.gpu,memory.used,memory.total,temperature.gpu,power.draw",
+             "--format=csv,noheader,nounits"], timeout=2.5, creationflags=getattr(_subprocess, "CREATE_NO_WINDOW", 0)
+        ).decode(errors="ignore").strip().splitlines()[0].split(",")
+        v = {
+            "name": out[0].strip(),
+            "util_pct": float(out[1]),
+            "vram_used_mib": float(out[2]),
+            "vram_total_mib": float(out[3]),
+            "temp_c": float(out[4]),
+            "power_w": float(out[5]),
+        }
+    except Exception:
+        v = None
+    _GPU_CACHE["t"] = now
+    _GPU_CACHE["v"] = v
+    return v
+
+
+# ----------------------------------------------------
+# 멀티프로세스 GPU 워커 풀 (선택 — FACE_SWAP_WORKERS>0 일 때만; 측정상 인프로세스 풀이 더 빠르고 VRAM 도 덜 쓴다)
 #
 # 기존 구조는 이 서버 프로세스 하나가 얼굴 검출/스왑 모델을 직접 들고
 # 있었다 (전역 dml_lock으로 사실상 완전 직렬화). 이제는 이 프로세스는
@@ -724,6 +1020,23 @@ def _assign_worker(client_key: str) -> int:
     return wid
 
 
+async def run_inproc(source_name: str, frame_bytes: bytes, n_clients: int, client_key: str):
+    """인프로세스 모델 풀(스레드별 독립 세션)에서 프레임 1장 처리.
+    반환: (jpeg bytes | None(폐기), 큐 대기 ms, 처리 ms)"""
+    if _EXECUTOR is None:
+        t0 = time.perf_counter()
+        data = await asyncio.to_thread(process_frame, source_name, frame_bytes, n_clients, client_key)
+        return data, 0.0, (time.perf_counter() - t0) * 1000.0
+    loop = asyncio.get_running_loop()
+    data, waited, proc = await loop.run_in_executor(
+        _EXECUTOR, _process_in_thread, source_name, frame_bytes, n_clients, client_key, time.time())
+    if data is None:
+        _note_completed(dropped=True, stale=True)
+    else:
+        _note_completed()
+    return data, waited, proc
+
+
 async def submit_frame(source_name: str, frame_bytes: bytes, n_clients: int,
                        client_key: str = "anon", timeout: float = None) -> bytes:
     """프레임 하나를 처리 요청한다. 풀이 활성화되어 있으면 워커 프로세스로,
@@ -735,8 +1048,10 @@ async def submit_frame(source_name: str, frame_bytes: bytes, n_clients: int,
         timeout = max(4.5, min(12.0, (1000.0 / max(4, prof["fps"])) * 4 / 1000.0))
 
     if not POOL_ENABLED or POOL_TASK_QUEUE is None or len(POOL_TASK_QUEUES) == 0:
-        async with INFERENCE_SEMAPHORE:
-            return await asyncio.to_thread(process_frame, source_name, frame_bytes, n_clients, client_key)
+        data, _w, _p = await run_inproc(source_name, frame_bytes, n_clients, client_key)
+        if data is None:  # 대기 초과로 폐기 → 직전 스왑 프레임(있으면)
+            return _cache_get(client_key, "_latest") or b""
+        return data
 
     wid = _assign_worker(client_key)
     req_id = uuid.uuid4().hex
@@ -790,6 +1105,15 @@ async def handle_stats(request):
         "detect_every": _DETECT_EVERY,
         "tracked_clients": len(_TRACK_CACHE),
         "cached_faces": list(SOURCE_FACE_CACHE.keys()),
+        "model_threads": _MODEL_THREADS,
+        "throughput_fps": round(measured_throughput_fps(), 1),
+        "peak_fps": round(_PEAK_FPS_EMA, 1),
+        "processed_total": PROCESSED_TOTAL,
+        "dropped_total": DROPPED_TOTAL,
+        "stale_dropped_total": STALE_DROPPED_TOTAL,
+        "protocol": "v2",
+        "gpu": await asyncio.to_thread(gpu_snapshot),
+        "providers": modules.globals.execution_providers,
     })
 
 
@@ -834,35 +1158,10 @@ async def handle_swap_frame(request):
     })
 
 
-async def handle_upload_photo(request):
-    """사용자가 직접 얼굴 사진 업로드"""
-    reader = await request.multipart()
-    field = await reader.next()
-    if field.name != "photo":
-        return web.json_response({"ok": False, "error": "photo field required"}, status=400)
-
-    filename = field.filename or f"custom_{int(time.time())}.jpg"
-    dest = PHOTO_DIR / filename
-    with open(dest, "wb") as f:
-        while True:
-            chunk = await field.read_chunk()
-            if not chunk:
-                break
-            f.write(chunk)
-
-    face = await asyncio.to_thread(load_source_face, filename)
-    return web.json_response({
-        "ok": True,
-        "id": dest.stem.lower(),
-        "filename": filename,
-        "url": f"photo/{filename}",
-        "faceDetected": face is not None
-    })
-
-
 async def handle_websocket(request):
     """실시간 양방향 WebSocket 핸들러 - 최신 프레임 우선 처리(버퍼 적체 및 고속 재생 완벽 방지)"""
-    ws = web.WebSocketResponse(max_msg_size=10 * 1024 * 1024, heartbeat=30.0)
+    # JPEG 은 압축이 되지 않으므로 permessage-deflate 를 끈다(프레임당 CPU/지연 낭비 방지)
+    ws = web.WebSocketResponse(max_msg_size=10 * 1024 * 1024, heartbeat=30.0, compress=False)
     await ws.prepare(request)
     client_id = id(ws)
     # Node 프록시가 넘겨준 X-Client-Id(또는 ?client=)를 우선 사용한다.
@@ -877,9 +1176,21 @@ async def handle_websocket(request):
     CONNECTED_WS.add(ws)
     await broadcast_throttle()
 
-    latest_pending = None
+    # 참가자당 "최신 프레임 1장" 슬롯. 새 프레임이 오면 아직 시작 못 한 이전 프레임은 폐기하고
+    # (v2 클라이언트에는 drop 알림) 항상 가장 최근 프레임만 GPU 에 올린다 → 지연 누적/고속재생 방지.
+    latest_pending = None   # (src_name, frame_bytes, seq|None, recv_ts)
     processing_event = asyncio.Event()
     is_closed = False
+
+    async def send_drop(seq):
+        try:
+            if not ws.closed:
+                if seq is None:
+                    await ws.send_str('{"type":"skip"}')
+                else:
+                    await ws.send_str('{"type":"drop","seq":%d}' % seq)
+        except Exception:
+            pass
 
     async def worker_loop():
         nonlocal latest_pending
@@ -888,18 +1199,30 @@ async def handle_websocket(request):
             processing_event.clear()
             if is_closed or ws.closed:
                 break
-            if latest_pending is not None:
-                src_name, frame_bytes = latest_pending
+            while latest_pending is not None and not ws.closed:
+                src_name, frame_bytes, seq, recv_ts = latest_pending
                 latest_pending = None
                 try:
-                    swapped = await submit_frame(src_name, frame_bytes, len(CONNECTED_WS), client_key)
-                    if not ws.closed:
-                        if swapped:
-                            await ws.send_bytes(swapped)
-                        else:
-                            await ws.send_str('{"type":"skip"}')
+                    if POOL_ENABLED:
+                        swapped = await submit_frame(src_name, frame_bytes, len(CONNECTED_WS), client_key)
+                        waited, proc = 0.0, 0.0
+                    else:
+                        swapped, waited, proc = await run_inproc(
+                            src_name, frame_bytes, len(CONNECTED_WS), client_key)
+                    if ws.closed:
+                        break
+                    if not swapped:
+                        await send_drop(seq)
+                    elif seq is None:
+                        await ws.send_bytes(swapped)          # v1: 순수 JPEG
+                    else:
+                        total_ms = min(65535, int((time.time() - recv_ts) * 1000))
+                        proc_ms = min(65535, int(proc))
+                        await ws.send_bytes(
+                            FS2_MAGIC + struct.pack(">IHH", seq & 0xFFFFFFFF, proc_ms, total_ms) + swapped)
                 except Exception as ex:
                     logger.warning(f"Error sending swapped frame: {ex}")
+                    await send_drop(seq)
 
     worker_task = asyncio.create_task(worker_loop())
 
@@ -910,15 +1233,27 @@ async def handle_websocket(request):
                 if len(data) < 5:
                     continue
                 name_len = struct.unpack(">I", data[:4])[0]
+                seq = None
                 if 4 + name_len <= len(data):
-                    src_name = data[4:4 + name_len].decode("utf-8", errors="ignore") or current_source
+                    raw_name = data[4:4 + name_len].decode("utf-8", errors="ignore")
                     frame_bytes = data[4 + name_len:]
+                    # v2: "얼굴이름\x1fseq" — seq 가 있으면 v2 응답 헤더를 붙여 돌려준다
+                    if "\x1f" in raw_name:
+                        raw_name, _, seq_s = raw_name.partition("\x1f")
+                        try:
+                            seq = int(seq_s)
+                        except ValueError:
+                            seq = None
+                    src_name = raw_name or current_source
                 else:
                     src_name = current_source
                     frame_bytes = data
 
                 # 항상 최신 프레임으로 덮어써서 이전 적체 프레임 즉시 드랍 (지연 누적 원천 방지)
-                latest_pending = (src_name, frame_bytes)
+                if latest_pending is not None:
+                    _note_completed(dropped=True)
+                    await send_drop(latest_pending[2])
+                latest_pending = (src_name, frame_bytes, seq, time.time())
                 processing_event.set()
 
             elif msg.type == web.WSMsgType.TEXT:
@@ -1001,7 +1336,6 @@ def create_app():
     app.router.add_get("/stats", handle_stats)
     app.router.add_get("/api/photos", handle_list_photos)
     app.router.add_post("/api/swap-frame", handle_swap_frame)
-    app.router.add_post("/api/upload-face", handle_upload_photo)
     app.router.add_get("/ws", handle_websocket)
     app.router.add_get("/", handle_websocket)
     return app
@@ -1023,6 +1357,11 @@ async def start_server():
         logger.info("✅ Deep-Live-Cam AI models loaded successfully!")
         preload_all_photos()
         logger.info(f"✅ Preloaded {len(SOURCE_FACE_CACHE)} source face embeddings!")
+        n_threads = _resolve_model_threads()
+        logger.info(f"모델 인스턴스 풀 초기화 중... threads={n_threads} "
+                    f"(VRAM={_detect_vram_gb():.1f}GB, cpu={os.cpu_count()})")
+        await asyncio.get_running_loop().run_in_executor(None, _init_executor, n_threads)
+        WORKER_COUNT_EFFECTIVE = _MODEL_THREADS
 
     app = create_app()
     runner = web.AppRunner(app)
@@ -1040,6 +1379,7 @@ async def start_server():
         while True:
             await asyncio.sleep(2.0)
             try:
+                update_peak_throughput()
                 if len(CONNECTED_WS) > 0:
                     await broadcast_throttle()
             except Exception:

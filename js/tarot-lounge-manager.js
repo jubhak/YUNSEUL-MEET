@@ -121,8 +121,9 @@ export class TarotLoungeManager {
     // 중복 제거 및 호스트를 맨 앞으로 정렬
     const unique = [];
     const seen = new Set();
+    // 마이크 확인 대기(admitted === false) 중인 참가자는 아직 입장 전이므로 카드를 배정하지 않는다
     const hosts = list.filter((p) => p && p.role === 'host');
-    const viewers = list.filter((p) => p && p.role !== 'host');
+    const viewers = list.filter((p) => p && p.role !== 'host' && p.admitted !== false);
     [...hosts, ...viewers].forEach((p) => {
       const pid = p.id || p.clientId;
       if (pid && !seen.has(pid)) {

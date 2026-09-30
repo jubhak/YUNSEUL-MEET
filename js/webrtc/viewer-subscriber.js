@@ -1,5 +1,5 @@
-import { SfuClient } from './sfu-client.js?v=20260929hd2';
-import { VirtualAvatarManager, openWebcamFlexible, faceModeForRoomCount } from '../virtual-avatar-manager.js?v=20260927tenuser1';
+import { SfuClient } from './sfu-client.js?v=20260930a';
+import { VirtualAvatarManager, openWebcamFlexible, faceModeForRoomCount } from '../virtual-avatar-manager.js?v=20260930c';
 
 /**
  * 참가자: SFU에서 호스트 display 수신 + (선택) 마이크/화면 업링크
@@ -172,6 +172,7 @@ export class ViewerSubscriber {
         if (!this.hasLiveVideo()) this._notifyIfStreamDead();
       };
       await sfu.init();
+      sfu.startSenderMonitor();
       this.sfu = sfu;
       return sfu;
     })();

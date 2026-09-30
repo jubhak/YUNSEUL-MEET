@@ -6,7 +6,8 @@
   <meta name="mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <title>참가 - YUNSEUL MEET</title>
-  <link rel="stylesheet" href="css/style.css?v=20260928lounge1">
+  <link rel="stylesheet" href="css/style.css?v=20260930a">
+  <link rel="stylesheet" href="css/av-extras.css?v=20260930a">
   <style>
     #main-toolbar.toolbar {
       position: relative !important;
@@ -371,6 +372,9 @@
           <span class="ico ico-on" aria-hidden="true">🎙️</span>
           <span class="ico ico-off" aria-hidden="true">🚫</span>
         </button>
+        <button type="button" id="btn-av-mic-device" class="btn btn-icon btn-av btn-av-mic-device hidden" title="마이크 장치 선택 / 테스트 (이어폰 마이크 등)" aria-label="마이크 장치 선택">
+          <span class="ico" aria-hidden="true">⚙️</span>
+        </button>
         <button type="button" id="btn-av-cam" class="btn btn-icon btn-av" title="카메라 꺼짐 — 클릭하여 켜기" aria-pressed="false" aria-label="카메라">
           <span class="ico ico-on" aria-hidden="true">
             <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="display:inline-block!important;vertical-align:middle;width:20px;height:20px;">
@@ -568,11 +572,6 @@
             <span>👤</span>
             <span>원래 내 얼굴</span>
           </button>
-          <label class="dlc-action-btn dlc-btn-upload" title="내 컴퓨터에서 새 얼굴 사진 선택">
-            <span>➕</span>
-            <span>내 사진 직접 선택</span>
-            <input type="file" id="dlc-file-input" accept="image/jpeg,image/png,image/webp" style="display:none;">
-          </label>
         </div>
 
         <!-- 사진 카드 그리드 -->
@@ -599,7 +598,7 @@
   <script src="js/progress-bar.js?v=20260715d"></script>
   <script type="module" src="js/load-progress.js?v=20260715d"></script>
   <script type="module" src="js/deps.js?v=20260715d"></script>
-  <script type="module" src="js/viewer.js?v=20260929hd6"></script>
+  <script type="module" src="js/viewer.js?v=20260930c"></script>
   <script type="module">
     import { setupDisplayMode } from './js/display-mode.js?v=20260819e';
     setupDisplayMode({ autoPromptMobile: false });

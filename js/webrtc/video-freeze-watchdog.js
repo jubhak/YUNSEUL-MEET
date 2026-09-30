@@ -17,13 +17,13 @@ export function attachVideoFreezeWatchdog(videoEl, {
   videoEl._hasFreezeWatchdog = true;
 
   const isFace = mode === 'face';
-  const interval = isFace ? Math.min(checkIntervalMs, 1000) : checkIntervalMs;
+  const interval = isFace ? Math.min(checkIntervalMs, 700) : checkIntervalMs;
   // PLI를 너무 자주 보내면 인코더가 키프레임만 만들다 오히려 10초급 정지 진동이 남
   // 10인 동시 접속에서는 인코더가 키프레임을 자주 만들 수 없다(만들면 대역폭 폭증).
   // 따라서 "정지 판정"은 빠르게 하고, 완전 복구(full recover)를 단계적으로 올린다.
-  const keyframeCooldownMs = isFace ? 3500 : 3000;
+  const keyframeCooldownMs = isFace ? 1500 : 3000;
   const mutedTicksBeforePli = isFace ? 2 : 2;
-  const stuckTicksBeforePli = isFace ? 3 : 4;
+  const stuckTicksBeforePli = isFace ? 2 : 4;
 
   let lastTime = -1;
   let freezeCount = 0;
@@ -104,7 +104,12 @@ export function attachVideoFreezeWatchdog(videoEl, {
       return;
     }
 
-    const cur = videoEl.currentTime;
+    // 프레임 카운터 기반 판정(currentTime 은 정지 프레임에서도 흐를 수 있음)
+    let cur = videoEl.currentTime;
+    try {
+      const q = videoEl.getVideoPlaybackQuality?.();
+      if (q && typeof q.totalVideoFrames === 'number' && q.totalVideoFrames > 0) cur = q.totalVideoFrames;
+    } catch { /* ignore */ }
     if (cur > 0 && cur === lastTime) {
       if (mode === 'display') {
         // 화면 공유(PPT/슬라이드)는 정지 화면이 정상이므로 currentTime 멈춤을 freeze로 간주하지 않음

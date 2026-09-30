@@ -2,20 +2,24 @@
  * 참가자: WebRTC로 호스트 화면을 시청 (화상회의 수신 모드)
  * PPT ZIP/동영상 추출 없음 — 추후 다자 화상 UI를 같은 레이어에 확장 가능
  */
-import { RoomSync } from './sync.js?v=20260926meetmobile1';
+import { RoomSync } from './sync.js?v=20260930a';
 import {
   setViewerCount,
   setupViewersPanel,
   setSelectedBroadcaster,
-} from './viewers-panel.js?v=20260826mic1';
+} from './viewers-panel.js?v=20260930a';
 import { WebrtcSignaling } from './webrtc/signaling.js?v=20260715j';
-import { ViewerSubscriber } from './webrtc/viewer-subscriber.js?v=20260929hd3';
-import { setupViewerZoom } from './viewer-zoom.js?v=20260819b';
+import { ViewerSubscriber } from './webrtc/viewer-subscriber.js?v=20260930c';
+import { setupViewerZoom } from './viewer-zoom.js?v=20260930a';
 import { setupChatPanel } from './chat-panel.js?v=20260918fix2';
-import { CamFocusManager, VoiceActivityMonitor } from './cam-focus-manager.js?v=20260918focus1';
-import { TarotLoungeManager } from './tarot-lounge-manager.js?v=20260929hd3';
+import { CamFocusManager } from './cam-focus-manager.js?v=20260930a';
+import { MicController } from './mic-controller.js?v=20260930a';
+import { speakingIndicator } from './speaking-indicator.js?v=20260930a';
+import { showToast } from './ui-toast.js?v=20260930a';
+import { RemoteControlViewer } from './remote-control.js?v=20260930a';
+import { TarotLoungeManager } from './tarot-lounge-manager.js?v=20260930a';
 import { DrawCanvas } from './draw-canvas.js?v=20260918pen2';
-import { attachVideoFreezeWatchdog } from './webrtc/video-freeze-watchdog.js?v=20260929hd2';
+import { attachVideoFreezeWatchdog } from './webrtc/video-freeze-watchdog.js?v=20260930a';
 
 const params = new URLSearchParams(window.location.search);
 const roomCode = (params.get('code') || sessionStorage.getItem('roomCode') || '').toUpperCase();
@@ -58,15 +62,20 @@ if (liveVideo) {
 window.addEventListener('resize', () => viewerDrawCanvas?.resize());
 
 /** 로컬 핀치 줌 — 호스트 화면 전환과 무관하게 유지 */
-setupViewerZoom(liveStage);
+const viewerZoom = setupViewerZoom(liveStage);
 
 let sync = null;
 let subscriber = null;
+// 진단/자동화 테스트용 (읽기 전용 접근자)
+try { window.__ymDebug = { get subscriber() { return subscriber; }, get micCtl() { return micCtl; } }; } catch { /* ignore */ }
 let chatPanel = null;
 let interactionMode = 'bidirectional';
 let requireMic = sessionStorage.getItem('requireMic') === 'true';
 let allowClientCamera = true;
 let allowClientDeepfake = true;
+/** @type {import('./mic-controller.js').MicController|null} */
+let micCtl = null;
+let rcViewer = null;
 
 /** 호스트가 아직 링크를 열어 둔 동안 유지 */
 let activeHostLink = null; // { url, title }
@@ -82,14 +91,17 @@ function applyRoomPermissions(state) {
   const btnAvCam = document.getElementById('btn-av-cam');
   if (btnAvCam) {
     if (!allowClientCamera) {
+      // 카메라 불허 방: 참가자에게는 카메라 아이콘 자체를 보여주지 않는다
       btnAvCam.classList.remove('is-active');
-      btnAvCam.title = '호스트가 카메라를 허용하지 않은 방입니다 (마이크만 가능)';
-      btnAvCam.style.opacity = '0.4';
+      btnAvCam.classList.add('hidden');
+      btnAvCam.style.setProperty('display', 'none', 'important');
       // 이미 켜져 있다면 강제 끄기
       if (subscriber?.cameraWanted) {
         subscriber.setCameraEnabled(false).catch(() => {});
       }
     } else {
+      btnAvCam.classList.remove('hidden');
+      btnAvCam.style.removeProperty('display');
       btnAvCam.style.opacity = '1.0';
       btnAvCam.title = subscriber?.cameraWanted ? '카메라 켜짐 — 클릭하여 끄기' : '카메라 꺼짐 — 클릭하여 켜기';
     }
@@ -134,8 +146,13 @@ function applyInteractionMode(mode, isRequireMic = requireMic) {
       subscriber.ensureReceiving?.().catch(() => {});
     }
   }
-  if (interactionMode === 'unidirectional' && subscriber?.micOn) {
-    subscriber.setMicEnabled(false).catch(() => {});
+  if (micCtl) {
+    if (interactionMode === 'unidirectional') {
+      micCtl.setRequireMic(false);
+      if (micCtl.enabled) micCtl.disable().catch(() => {});
+    } else if (micCtl.requireMic !== requireMic) {
+      micCtl.setRequireMic(requireMic);
+    }
   }
   if (typeof syncAvButtons === 'function') syncAvButtons();
 }
@@ -414,16 +431,8 @@ function initFullscreenPrompt() {
 
 document.getElementById('btn-mic-retry')?.addEventListener('click', async () => {
   hideMicRequiredGate();
-  if (subscriber) {
-    const ok = await subscriber.setMicEnabled(true);
-    if (ok) {
-      emitMicStatus('on');
-      syncAvButtons();
-      return;
-    }
-  }
-  // 권한 재요청 실패 시 다시 안내창 표시
-  checkMicRequirement(true);
+  // 권한/장치 재확인 (검증 대화상자 재실행)
+  checkMicRequirement();
 });
 
 unmuteBanner?.classList.add('hidden');
@@ -443,7 +452,11 @@ camFocusManager.onFocusChange = (focusedId) => {
     updateAvatarUi();
   }
 };
-const vadMonitor = new VoiceActivityMonitor({ threshold: 0.026, holdMs: 5000 });
+const vadMonitor = {
+  attach: (id, track) => { if (id !== 'local') speakingIndicator.trackRemote(id, track); },
+  detach: () => {},
+};
+speakingIndicator.start();
 const tarotLounge = new TarotLoungeManager({ containerId: 'tarot-waiting-lounge', isHost: false });
 
 /** 호스트 화면 송출이 없거나 미팅 시작 전 대기실일 때 타로 카드 대기실 표시 */
@@ -490,6 +503,7 @@ function updateCameraPip(id, stream, { label = '카메라', isMirror = false, is
     box = document.createElement('div');
     box.id = `cam-box-${id}`;
     box.className = 'cam-pip-box';
+    box.dataset.speakId = id;
     const video = document.createElement('video');
     video.autoplay = true;
     video.playsInline = true;
@@ -562,7 +576,8 @@ function showAvToast(text, { off = false } = {}) {
 function syncAvButtons() {
   const speakerOn = subscriber ? subscriber.speakerOn : false;
   const isReqMic = interactionMode === 'bidirectional' && requireMic;
-  const micOn = isReqMic ? true : (subscriber ? subscriber.micOn : false);
+  // 실제 상태만 표시 (필수 방에서도 검증·송출 전에는 비활성으로 보임)
+  const micOn = !!micCtl?.enabled;
   const camOn = !!(subscriber?.cameraWanted && subscriber?.hasCamera && subscriber?.cameraEnabled);
   if (btnAvSpeaker) {
     btnAvSpeaker.classList.toggle('is-active', speakerOn);
@@ -573,9 +588,10 @@ function syncAvButtons() {
     btnAvMic.classList.toggle('is-active', micOn);
     btnAvMic.setAttribute('aria-pressed', micOn ? 'true' : 'false');
     btnAvMic.title = micOn
-      ? (isReqMic ? '마이크 켜짐 (마이크 필수 모임)' : '마이크 켜짐 — 클릭하여 끄기')
-      : '마이크 꺼짐 — 클릭하여 켜기';
+      ? (isReqMic ? '마이크 켜짐 (마이크 필수 모임 — 끌 수 없음)' : '마이크 켜짐 — 클릭하여 끄기')
+      : (micCtl?.state === 'none' ? '마이크를 사용할 수 없습니다 — 클릭하여 다시 시도' : '마이크 꺼짐 — 클릭하여 켜기');
   }
+  document.getElementById('btn-av-mic-device')?.classList.toggle('hidden', !micCtl || interactionMode === 'unidirectional');
   if (btnAvCam) {
     btnAvCam.classList.toggle('is-active', camOn);
     btnAvCam.setAttribute('aria-pressed', camOn ? 'true' : 'false');
@@ -792,26 +808,6 @@ btnDlcClose?.addEventListener('click', closeDeepLiveCamModal);
 document.getElementById('btn-dlc-reset-real')?.addEventListener('click', onResetReal);
 document.getElementById('btn-face-effect')?.addEventListener('click', openDeepLiveCamModal);
 
-document.getElementById('dlc-file-input')?.addEventListener('change', async (e) => {
-  const file = e.target.files?.[0];
-  if (!file) return;
-  const formData = new FormData();
-  formData.append('photo', file);
-  try {
-    const res = await fetch('/api/upload-face', { method: 'POST', body: formData });
-    const data = await res.json();
-    if (data.ok) {
-      await loadModalPhotos();
-      onSelectHero(data.id, data.url);
-    } else {
-      alert(`사진 업로드 실패: ${data.error || '알 수 없는 오류'}`);
-    }
-  } catch (err) {
-    alert(`사진 업로드 실패: ${err.message}`);
-  } finally {
-    e.target.value = '';
-  }
-});
 
 deepLiveCamModal?.addEventListener('click', (e) => {
   if (e.target === deepLiveCamModal) closeDeepLiveCamModal();
@@ -882,141 +878,83 @@ btnAvSpeaker?.addEventListener('click', () => {
 });
 
 btnAvMic?.addEventListener('click', async () => {
-  if (!subscriber) return;
+  if (!subscriber || !micCtl) return;
   if (interactionMode === 'unidirectional') {
-    alert('단방향(대규모 시청) 모드에서는 마이크를 사용할 수 없습니다.');
+    showToast('단방향(대규모 시청) 모드에서는 마이크를 사용할 수 없습니다.', 'warn');
     return;
   }
-  if (interactionMode === 'bidirectional' && requireMic) {
-    showAvToast('마이크 필수 모임');
-    alert('마이크 필수 모임입니다. 마이크를 끌 수 없습니다.');
+  if (!sync?.socket?.connected) {
+    showToast('방에 연결되지 않았습니다.', 'error');
     return;
   }
-  const next = !subscriber.micOn;
-  if (next && !sync?.socket?.connected) {
-    alert('방에 연결되지 않았습니다.');
+  if (!window.isSecureContext) {
+    showToast('마이크는 HTTPS(보안 연결)에서만 사용할 수 있습니다.', 'error');
     return;
   }
   btnAvMic.disabled = true;
-  const ok = await subscriber.setMicEnabled(next);
-  btnAvMic.disabled = false;
-  if (next && !ok) {
-    const err = subscriber._lastMicError;
-    const name = err?.name || '';
-    const msg = err?.message || String(err || '');
-    const permission =
-      name === 'NotAllowedError'
-      || name === 'PermissionDeniedError'
-      || /Permission|NotAllowed|denied/i.test(msg);
-    const unavailable =
-      name === 'NotFoundError'
-      || name === 'DevicesNotFoundError'
-      || name === 'NotReadableError'
-      || /NotFound|device|found|no microphone/i.test(msg);
-    emitMicStatus(unavailable || permission ? 'none' : 'off');
-    if (!window.isSecureContext) {
-      alert('마이크는 HTTPS(보안 연결)에서만 사용할 수 있습니다.');
-    } else if (permission) {
-      alert(
-        '마이크 권한이 없거나 거부되었습니다.\n주소창 왼쪽 자물쇠 → 사이트 설정에서 마이크를 허용해 주세요.'
-      );
-    } else if (unavailable) {
-      alert('마이크 장치를 찾을 수 없습니다. PC/브라우저 마이크 연결을 확인해 주세요.');
-    } else {
-      alert(`마이크를 켤 수 없습니다.\n${msg || '알 수 없는 오류'}`);
-    }
-  } else {
-    emitMicStatus(subscriber.micOn ? 'on' : 'off');
+  try {
+    await micCtl.toggle();
+  } finally {
+    btnAvMic.disabled = false;
+    syncAvButtons();
   }
+});
+
+document.getElementById('btn-av-mic-device')?.addEventListener('click', async () => {
+  if (!micCtl) return;
+  await micCtl.openSettings();
   syncAvButtons();
 });
 
-function emitMicStatus(state) {
-  try {
-    sync?.socket?.emit?.('mic-status', { state });
-  } catch { /* ignore */ }
+/** 서버에 현재 마이크 상태를 다시 알림 (재접속 등) */
+function emitMicStatus() {
+  try { micCtl?._emit?.(); } catch { /* ignore */ }
 }
 
-async function checkMicRequirement(forcePrompt = false) {
+/** 마이크 컨트롤러 생성 (subscriber 준비 후 1회) */
+function setupViewerMic() {
+  if (micCtl || !subscriber || !sync) return;
+  const isReq = interactionMode === 'bidirectional' && requireMic;
+  micCtl = new MicController({
+    role: 'viewer',
+    clientId: sync.clientId,
+    speakIds: ['local', sync.clientId],
+    source: 'viewer-mic',
+    getSfu: () => subscriber._ensureSfu(),
+    socket: sync.socket,
+    requireMic: isReq,
+    onChange: () => syncAvButtons(),
+    onForced: () => showToast('마이크 사용이 필수인 모임입니다. 마이크를 끌 수 없습니다.', 'warn', 4200),
+    onNotice: (msg, kind) => showToast(msg, kind === 'error' ? 'error' : 'warn', 5200),
+    onLeave: () => {
+      try { sessionStorage.removeItem('roomCode'); } catch { /* ignore */ }
+      window.location.href = './';
+    },
+    onTrack: (track) => {
+      try { subscriber.avatarManager?.attachMicTrack(track || null); } catch { /* ignore */ }
+    },
+  });
+  sync.socket?.on?.('connect', () => emitMicStatus());
+  micCtl._emit(); // 초기 상태: off / ready=false → 아이콘 비활성으로 시작
+  syncAvButtons();
+}
+
+/** 마이크 필수 방: 검증 대화상자(장치 선택 + 말하기 확인) 통과 후 자동 ON */
+async function checkMicRequirement() {
   if (interactionMode !== 'bidirectional' || !requireMic) {
     hideMicRequiredGate();
     return true;
   }
-
-  // HTTPS 또는 로컬호스트 확인
   if (!window.isSecureContext) {
     showMicRequiredGate('마이크 사용 필수 미팅입니다.<br>마이크는 보안 연결(HTTPS 또는 localhost)에서만 사용할 수 있습니다.');
     return false;
   }
-
-  // 장치 존재 여부 사전 점검
-  if (navigator.mediaDevices?.enumerateDevices) {
-    try {
-      const list = await navigator.mediaDevices.enumerateDevices();
-      const hasMic = list.some((d) => d.kind === 'audioinput');
-      if (!hasMic) {
-        emitMicStatus('none');
-        showMicRequiredGate('이 미팅은 마이크 사용이 필수입니다.<br>연결된 마이크 장치를 찾을 수 없습니다. 마이크 연결 후 다시 시도해 주세요.');
-        return false;
-      }
-    } catch { /* ignore */ }
-  }
-
-  if (subscriber?.micOn) {
-    hideMicRequiredGate();
-    return true;
-  }
-
-  // 마이크 활성화 시도
-  if (subscriber) {
-    btnAvMic && (btnAvMic.disabled = true);
-    const ok = await subscriber.setMicEnabled(true);
-    btnAvMic && (btnAvMic.disabled = false);
-    if (ok) {
-      hideMicRequiredGate();
-      emitMicStatus('on');
-      syncAvButtons();
-      showAvToast('마이크 켜짐 (필수 미팅)');
-      return true;
-    }
-
-    const err = subscriber._lastMicError;
-    const name = err?.name || '';
-    const msg = err?.message || String(err || '');
-    const permission =
-      name === 'NotAllowedError'
-      || name === 'PermissionDeniedError'
-      || /Permission|NotAllowed|denied/i.test(msg);
-    const unavailable =
-      name === 'NotFoundError'
-      || name === 'DevicesNotFoundError'
-      || name === 'NotReadableError'
-      || /NotFound|device|found|no microphone/i.test(msg);
-
-    emitMicStatus(unavailable || permission ? 'none' : 'off');
-    syncAvButtons();
-
-    if (permission) {
-      showMicRequiredGate('이 미팅은 마이크 사용이 필수입니다.<br>마이크 권한이 허용되지 않았습니다. 브라우저 주소창 좌측 설정에서 마이크를 허용해 주세요.');
-    } else if (unavailable) {
-      showMicRequiredGate('이 미팅은 마이크 사용이 필수입니다.<br>연결된 마이크를 찾을 수 없습니다. 마이크 장치 연결을 확인해 주세요.');
-    } else {
-      showMicRequiredGate(`이 미팅은 마이크 사용이 필수입니다.<br>마이크를 활성화할 수 없습니다: ${msg || '권한 또는 장치 확인 필요'}`);
-    }
-    return false;
-  }
-  return false;
-}
-
-function probeMicAvailability() {
-  if (!navigator.mediaDevices?.enumerateDevices) return;
-  navigator.mediaDevices.enumerateDevices()
-    .then((list) => {
-      const hasMic = list.some((d) => d.kind === 'audioinput');
-      if (!hasMic) emitMicStatus('none');
-      else if (!subscriber?.micOn) emitMicStatus('off');
-    })
-    .catch(() => {});
+  hideMicRequiredGate();
+  if (!micCtl) return false;
+  if (micCtl.enabled) return true;
+  const ok = await micCtl.enable();
+  syncAvButtons();
+  return ok;
 }
 
 function handleEvent(type, data) {
@@ -1026,12 +964,24 @@ function handleEvent(type, data) {
       setViewerCount(data.count ?? 0, data.viewers, {
         activeBroadcasterId: data.activeBroadcasterId,
       });
-      subscriber?.setFaceQualityByRoomSize?.(data.count ?? 1).catch?.(() => {});
+      // 마이크 on/off 같은 상태 변화마다 viewer-count 가 오므로, 인원수가 바뀔 때만 화질 재계산
+      // 모바일 기본 확대: 호스트 화면의 얼굴 수(입장 완료 참가자 + 호스트)에 맞춰 ~10명이 화면을 채우도록
+      viewerZoom?.setFaceCount?.(
+        (Array.isArray(data.viewers) ? data.viewers.filter((v) => v.admitted !== false).length : (data.count ?? 0)) + 1,
+      );
+      if (data.count !== handleEvent._lastCount) {
+        handleEvent._lastCount = data.count;
+        subscriber?.setFaceQualityByRoomSize?.(data.count ?? 1).catch?.(() => {});
+      }
       if (data.meetingStarted) {
+        const firstStart = !isMeetingStarted;
         isMeetingStarted = true;
         tarotLounge.hide();
         showLive();
-        subscriber?.watch?.().catch((err) => console.warn('[viewer] watch', err));
+        // 이미 영상이 정상 재생 중이면 재-watch 하지 않는다(마이크 토글 시 화면이 흔들리는 원인)
+        if (firstStart || !subscriber?.hasLiveVideo?.()) {
+          subscriber?.watch?.().catch((err) => console.warn('[viewer] watch', err));
+        }
       }
       if (tarotLounge.isActive && !tarotLounge._isCountingDown && !isMeetingStarted) {
         tarotLounge.renderParticipants(currentViewers);
@@ -1383,7 +1333,6 @@ sync.start()
 
     // 기본: 소리 ON — 별도 <audio>로 재생 (첫 클릭 시 unlock)
     subscriber.speakerOn = true;
-    subscriber.micOn = false;
     subscriber.interactionMode = interactionMode;
     if (subscriber.avatarManager) {
       subscriber.avatarManager.onAvatarChange = () => updateAvatarUi();
@@ -1401,18 +1350,11 @@ sync.start()
 
     subscriber.onRemoteCamera = () => {};
     subscriber.onRemoteCameraClosed = () => {};
-    subscriber.onMicTrack = (track) => {
-      if (track) {
-        vadMonitor.attach('local', track);
-      } else {
-        vadMonitor.detach('local');
-      }
-    };
     subscriber.onRemoteAudioTrack = ({ clientId, track }) => {
       vadMonitor.attach(clientId, track);
     };
     subscriber.onRemoteAudioTrackClosed = (clientId) => {
-      vadMonitor.detach(clientId);
+      speakingIndicator.untrack(clientId);
     };
     subscriber.onNetworkQuality = ({ pingMs, lossRate, quality }) => {
       const syncEl = document.getElementById('sync-status');
@@ -1433,8 +1375,12 @@ sync.start()
     if (data.state?.hostClientId) {
       subscriber.hostPeerId = data.state.hostClientId;
     }
+    setupViewerMic();
+    if (sync?.socket && interactionMode === 'bidirectional') {
+      // 호스트의 원격 제어(마우스/키보드) 요청 승인 UI
+      rcViewer = new RemoteControlViewer({ socket: sync.socket });
+    }
     syncAvButtons();
-    probeMicAvailability();
 
     if (isMeetingStarted) {
       tarotLounge.hide();
@@ -1501,6 +1447,11 @@ sync.start()
       activeBroadcasterId: data.state?.activeBroadcasterId,
     });
     subscriber?.setFaceQualityByRoomSize?.(data.state?.viewerCount ?? 1).catch?.(() => {});
+    viewerZoom?.setFaceCount?.(
+      (Array.isArray(data.state?.viewers)
+        ? data.state.viewers.filter((v) => v.admitted !== false).length
+        : (data.state?.viewerCount ?? 0)) + 1,
+    );
 
     chatPanel = setupChatPanel({
       getSocket: () => sync?.socket,

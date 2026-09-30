@@ -303,8 +303,25 @@ function emitToHostPeers(io, room, event, payload) {
   }
 }
 
+/**
+ * 프로듀서 이벤트 브로드캐스트.
+ * 얼굴 영상(camera / viewer-camera)은 호스트만 consume 하므로 호스트에게만 보낸다
+ * (참가자 수백 명에게 의미 없는 이벤트가 퍼지는 것을 방지).
+ */
 function emitProducerEvent(io, room, roomCode, event, payload, appData = {}) {
-  try { io.to(roomCode).emit(event, payload); } catch { /* ignore */ }
+  try {
+    if (isHostOnlyFaceSource(appData?.source || '')) {
+      emitToHostPeers(io, room, event, payload);
+      return;
+    }
+    io.to(roomCode).emit(event, payload);
+  } catch { /* ignore */ }
+}
+
+/** 트랜스포트 종류 키: direction + purpose (audio / video). 종류별로 서로 독립. */
+function transportKey(direction, purpose) {
+  const p = purpose === 'audio' || purpose === 'video' ? purpose : '';
+  return `${direction}:${p}`;
 }
 
 /**
@@ -564,18 +581,24 @@ function attachSfuHandlers(socket, ctx) {
       peer.role = ctx.getRole() || peer.role;
       peer.socketId = socket.id;
       const direction = msg?.direction === 'recv' ? 'recv' : 'send';
-      // 재접속/새로고침 시 동일 direction의 기존 트랜스포트가 남아 있다면 즉시 안전하게 종료 및 정리 (타임아웃 캐스케이드 차단)
+      const purpose = direction === 'send' && (msg?.purpose === 'audio' || msg?.purpose === 'video')
+        ? msg.purpose
+        : '';
+      const key = transportKey(direction, purpose);
+      // [핵심 버그 수정] 예전에는 direction(send/recv)만 비교해서, 마이크(오디오) 송신 트랜스포트를
+      // 만들 때 살아 있는 "영상 송신 트랜스포트"까지 닫아 버렸다 → 마이크만 켜도 영상이 멈췄다.
+      // 이제 (direction, purpose) 가 같은 트랜스포트만 교체한다.
       for (const [oldId, oldT] of [...peer.transports.entries()]) {
-        if (oldT.appData?.direction === direction) {
-          console.log(`[sfu] cleaning up replaced transport ${oldId} for peer ${String(clientId).slice(0, 8)} (${direction})`);
+        if (oldT.appData?.key === key) {
+          console.log(`[sfu] cleaning up replaced transport ${String(oldId).slice(0, 8)} for peer ${String(clientId).slice(0, 8)} (${key})`);
           try { oldT.close(); } catch { /* ignore */ }
           peer.transports.delete(oldId);
         }
       }
       const { transport, params } = await createWebRtcTransport(room);
       peer.transports.set(transport.id, transport);
-      transport.appData = { direction, clientId };
-      const label = `${code}/${peer.role}/${direction}/${String(clientId).slice(0, 8)}`;
+      transport.appData = { direction, purpose, key, clientId };
+      const label = `${code}/${peer.role}/${key}/${String(clientId).slice(0, 8)}`;
       attachTransportDiag(transport, label);
       const cands = (params.iceCandidates || [])
         .map((c) => `${c.protocol}/${c.ip || c.address}:${c.port}`)
@@ -587,7 +610,7 @@ function attachSfuHandlers(socket, ctx) {
           peer.transports.delete(transport.id);
         }
       });
-      cb?.({ ok: true, ...params, direction });
+      cb?.({ ok: true, ...params, direction, purpose });
     } catch (err) {
       console.error('[sfu-create-transport]', err);
       cb?.({ error: err.message || 'sfu-error' });
@@ -646,6 +669,19 @@ function attachSfuHandlers(socket, ctx) {
       if (!transport) return cb?.({ error: 'transport-not-found' });
       peer.role = role || peer.role;
       peer.socketId = socket.id;
+
+      // 방 정책 서버 강제: 카메라 비허용 방에서는 참가자 카메라 producer 를 받지 않는다.
+      if (role === 'viewer') {
+        const policy = typeof ctx.getRoomPolicy === 'function' ? (ctx.getRoomPolicy() || {}) : {};
+        const src = String(msg?.appData?.source || '');
+        if (src === 'viewer-camera' && policy.allowClientCamera === false) {
+          return cb?.({ error: 'camera-not-allowed' });
+        }
+        if (src === 'camera' || src === 'display' || src === 'tab-audio') {
+          // 참가자는 호스트 전용 source 로 위장할 수 없다.
+          return cb?.({ error: 'source-not-allowed' });
+        }
+      }
 
       const producer = await transport.produce({
         kind: msg.kind,
