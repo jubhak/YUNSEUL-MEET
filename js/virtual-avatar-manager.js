@@ -275,9 +275,9 @@ export const FACE_PROFILE_CROWD = { mode: 'crowd', width: FACE_OUT_W_CROWD, heig
 
 export function faceModeForRoomCount(totalPeople = 1) {
   const n = Math.max(1, Number(totalPeople) || 1);
-  if (n <= 1) return 'solo';
-  if (n <= 5) return 'multi';
-  return 'crowd'; // 6명+ (10명+ 포함)
+  if (n <= 3) return 'solo';
+  if (n <= 8) return 'multi';
+  return 'crowd';
 }
 
 export function faceProfileForMode(mode) {
@@ -1122,6 +1122,27 @@ export class VirtualAvatarManager {
     ctx.restore();
   }
 
+  /**
+   * 원래 내 얼굴: 거울 영상 위에 잔주름만 누르고, 피부를 조금 밝고 부드럽게 올린다.
+   * 딥페이크(swap) 경로와 해상도·프레임은 그대로다.
+   */
+  _drawRealFace(ctx, w, h) {
+    const video = this.rawWebcamVideo;
+    ctx.save();
+    ctx.translate(w, 0);
+    ctx.scale(-1, 1);
+    ctx.drawImage(video, 0, 0, w, h);
+    ctx.filter = 'blur(2.2px) brightness(1.06) saturate(1.04)';
+    ctx.globalAlpha = 0.55;
+    ctx.drawImage(video, 0, 0, w, h);
+    ctx.filter = 'none';
+    ctx.globalCompositeOperation = 'soft-light';
+    ctx.globalAlpha = 0.22;
+    ctx.fillStyle = '#fff3e4';
+    ctx.fillRect(0, 0, w, h);
+    ctx.restore();
+  }
+
   _renderFrame() {
     if (this._idle) return;   // 대기 모드: 송출/딥페이크가 멈춘 동안 렌더링도 중단(CPU 절약)
     const ctx = this.ctx;
@@ -1163,12 +1184,7 @@ export class VirtualAvatarManager {
         return;
       }
       if (this.rawWebcamVideo.readyState >= 2) {
-        ctx.save();
-        // 거울 반사 효과
-        ctx.translate(w, 0);
-        ctx.scale(-1, 1);
-        ctx.drawImage(this.rawWebcamVideo, 0, 0, w, h);
-        ctx.restore();
+        this._drawRealFace(ctx, w, h);
       } else {
         ctx.fillStyle = '#0f172a';
         ctx.fillRect(0, 0, w, h);

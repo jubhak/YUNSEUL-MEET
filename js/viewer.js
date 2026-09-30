@@ -9,7 +9,7 @@ import {
   setSelectedBroadcaster,
 } from './viewers-panel.js?v=20260930a';
 import { WebrtcSignaling } from './webrtc/signaling.js?v=20260715j';
-import { ViewerSubscriber } from './webrtc/viewer-subscriber.js?v=20260930e';
+import { ViewerSubscriber } from './webrtc/viewer-subscriber.js?v=20260930k';
 import { setupViewerZoom } from './viewer-zoom.js?v=20260930a';
 import { setupChatPanel } from './chat-panel.js?v=20260918fix2';
 import { CamFocusManager } from './cam-focus-manager.js?v=20260930a';
@@ -17,7 +17,7 @@ import { MicController } from './mic-controller.js?v=20260930a';
 import { speakingIndicator } from './speaking-indicator.js?v=20260930a';
 import { showToast } from './ui-toast.js?v=20260930a';
 import { RemoteControlViewer } from './remote-control.js?v=20260930a';
-import { TarotLoungeManager } from './tarot-lounge-manager.js?v=20260930h';
+import { TarotLoungeManager } from './tarot-lounge-manager.js?v=20260930j';
 import { DrawCanvas } from './draw-canvas.js?v=20260918pen2';
 import { attachVideoFreezeWatchdog } from './webrtc/video-freeze-watchdog.js?v=20260930a';
 

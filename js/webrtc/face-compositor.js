@@ -1,11 +1,11 @@
-import { createWorkerTicker } from '../virtual-avatar-manager.js?v=20260930e';
+import { createWorkerTicker } from '../virtual-avatar-manager.js?v=20260930k';
 
 /**
- * 호스트 참가자 타일을 호스트 그리드와 같은 16:9 카드로 합성해 보낸다.
- * 2명일 때도 화면을 반반으로 늘리지 않고, 한 줄 3칸 기준 카드 크기로 묶어 정중앙에 둔다.
+ * 호스트 참가자 타일을 16:9 카드로 합성해 보낸다.
+ * 인원 수에 맞춰 가로를 채운다(2명이면 반반). 빈 3칸 기준으로 줄이지 않는다.
  */
 export class FaceCompositor {
-  constructor({ getTiles, width = 1280, height = 720, fps = 30 } = {}) {
+  constructor({ getTiles, width = 1920, height = 1080, fps = 30 } = {}) {
     this.getTiles = typeof getTiles === 'function' ? getTiles : () => [];
     this.width = width;
     this.height = height;
@@ -49,6 +49,7 @@ export class FaceCompositor {
 
   _cols(n) {
     if (n <= 1) return 1;
+    if (n === 2 || n === 4) return 2;
     if (n >= 10) return 5;
     return 3;
   }

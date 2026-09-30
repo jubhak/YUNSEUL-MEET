@@ -10,14 +10,14 @@ import {
   getLatestViewers,
 } from './viewers-panel.js?v=20260930a';
 import { WebrtcSignaling } from './webrtc/signaling.js?v=20260715j';
-import { HostPublisher } from './webrtc/host-publisher.js?v=20260930g';
+import { HostPublisher } from './webrtc/host-publisher.js?v=20260930k';
 import { setupChatPanel } from './chat-panel.js?v=20260918fix2';
 import { CamFocusManager } from './cam-focus-manager.js?v=20260930a';
 import { MicController } from './mic-controller.js?v=20260930a';
 import { speakingIndicator } from './speaking-indicator.js?v=20260930a';
 import { showToast } from './ui-toast.js?v=20260930a';
 import { RemoteControlHost } from './remote-control.js?v=20260930a';
-import { TarotLoungeManager } from './tarot-lounge-manager.js?v=20260930h';
+import { TarotLoungeManager } from './tarot-lounge-manager.js?v=20260930j';
 import { attachVideoFreezeWatchdog } from './webrtc/video-freeze-watchdog.js?v=20260930a';
 import { FaceFeedClient } from './face-feed-client.js?v=20260930c';
 
@@ -540,6 +540,7 @@ class HostParticipantsGridManager {
     this.gridEl.querySelectorAll('.participant-card-empty').forEach((el) => el.remove());
     const n = list.length;
     this.gridEl.classList.toggle('solo-1', n === 1);
+    this.gridEl.classList.toggle('pair-2', n === 2);
     this.gridEl.classList.toggle('grid-5-col', n >= 10);
     this._scheduleOverflowCheck();
   }

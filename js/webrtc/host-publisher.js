@@ -1,7 +1,7 @@
 import { TRACK_KIND } from './config.js';
 import { SfuClient } from './sfu-client.js?v=20260930e';
-import { VirtualAvatarManager, openWebcamFlexible, faceModeForRoomCount } from '../virtual-avatar-manager.js?v=20260930e';
-import { FaceCompositor } from './face-compositor.js?v=20260930g';
+import { VirtualAvatarManager, openWebcamFlexible, faceModeForRoomCount } from '../virtual-avatar-manager.js?v=20260930k';
+import { FaceCompositor } from './face-compositor.js?v=20260930k';
 
 /**
  * Host -> SFU display share (+ optional tab audio / mic).
@@ -255,11 +255,12 @@ export class HostPublisher {
     this.shareMode = 'face';
     this.tabAudioWanted = false;
     this._audioShareMissing = false;
-    if (!this._compositor) {
+    if (!this._compositor || this._compositor.width !== 1920 || this._compositor.height !== 1080) {
+      try { this._compositor?.stop?.(); } catch { /* ignore */ }
       this._compositor = new FaceCompositor({
         getTiles: () => (typeof this.getFaceTiles === 'function' ? this.getFaceTiles() : []),
-        width: 1280,
-        height: 720,
+        width: 1920,
+        height: 1080,
         fps: 30,
       });
     }
@@ -683,8 +684,8 @@ export class HostPublisher {
 
   /**
    * 방 인원 수에 따라 얼굴 송출 화질 자동 전환
-   * 1명: 640×360 @ ~28fps / 2~5명: 256×144 @ 15fps / 6명+: 160×90 @ 10fps
-   * (얼굴은 호스트만 수신 — 클라이언트 디코드 없음)
+   * 1~3명: 솔로 화질 유지 / 4~8명: 중간 / 9명+: 다인 절약
+   * (레이아웃만 바꿨을 때 2명 화질이 떨어지지 않게)
    */
   async setFaceQualityByRoomSize(totalPeople = 1) {
     const count = Math.max(1, Number(totalPeople) || 1);

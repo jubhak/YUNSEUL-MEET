@@ -32,6 +32,24 @@ function escapeHtml(s) {
   }[m]));
 }
 
+/** 가로는 채우고, 인원이 늘면 2/3/4줄(N/2, N/3, N/4). 2장은 항상 한 줄. */
+function tarotGridShape(n) {
+  const total = Math.max(0, Number(n) || 0);
+  if (total <= 1) return { cols: 1, rows: 1 };
+  if (total === 2) return { cols: 2, rows: 1 };
+  if (total === 3) return { cols: 3, rows: 1 };
+  if (total <= 8) {
+    const rows = 2;
+    return { cols: Math.ceil(total / rows), rows };
+  }
+  if (total <= 12) {
+    const rows = 3;
+    return { cols: Math.ceil(total / rows), rows };
+  }
+  const rows = 4;
+  return { cols: Math.ceil(total / rows), rows };
+}
+
 /**
  * 방 안의 접속자들에게 타로카드 이미지 배정:
  * - 카드 수(180장) 이내의 인원은 100% 중복 없이 서로 다른 고유 카드 배정
@@ -143,12 +161,13 @@ export class TarotLoungeManager {
     });
 
     const total = unique.length;
+    const { cols, rows } = tarotGridShape(total);
     this.grid.className = 'tarot-card-grid';
-    if (total <= 4) {
-      this.grid.classList.add('grid-single-row');
-    } else {
-      this.grid.classList.add('grid-double-row');
-    }
+    this.grid.style.setProperty('--tarot-cols', String(cols));
+    this.grid.dataset.cols = String(cols);
+    this.grid.dataset.rows = String(rows);
+    if (rows <= 1) this.grid.classList.add('grid-single-row');
+    else this.grid.classList.add('grid-double-row');
 
     this.grid.innerHTML = '';
 

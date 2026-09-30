@@ -3378,6 +3378,7 @@ body.is-fullscreen.fs-chrome-open .tarot-lounge-header {
 }
 
 .tarot-card-grid {
+  --tarot-cols: 4;
   display: grid;
   gap: 0.85rem;
   justify-content: center;
@@ -3694,28 +3695,58 @@ body.is-fullscreen.fs-chrome-open .tarot-lounge-header {
 
 /* 모바일 반응형 대응 */
 @media (max-width: 720px) {
-  .tarot-lounge-title {
-    font-size: 1.8rem;
+  .tarot-waiting-lounge {
+    padding: max(0.45rem, env(safe-area-inset-top, 0px)) 0.7rem 0.8rem;
   }
-  .tarot-card-grid.grid-double-row {
-    grid-template-columns: repeat(2, 140px);
+  .tarot-lounge-header {
+    margin-top: 0.15rem;
+    margin-bottom: 0.45rem;
+    padding: 0;
+    position: relative;
+    z-index: 4;
+  }
+  .tarot-lounge-title {
+    font-size: 1.28rem;
+    letter-spacing: 0.06em;
+    margin-bottom: 0.2rem;
+  }
+  .tarot-lounge-subtitle {
+    font-size: 0.78rem;
+    line-height: 1.35;
+  }
+  .tarot-lounge-host-actions {
+    margin-top: 0.45rem;
   }
   .tarot-body-area,
   .tarot-card-container {
-    align-items: center;
+    align-items: flex-start;
     justify-content: center;
+    min-height: 0;
+    width: 100%;
+    max-width: 100%;
+    padding: 0;
   }
   .tarot-card-grid,
-  .tarot-card-grid.grid-single-row {
+  .tarot-card-grid.grid-single-row,
+  .tarot-card-grid.grid-double-row {
     width: max-content;
     max-width: 100%;
     margin: 0 auto;
+    display: grid;
+    grid-template-columns: repeat(var(--tarot-cols, 2), 135px);
+    column-gap: 10px;
+    row-gap: 20px;
     justify-content: center;
     justify-items: center;
+    align-content: start;
+  }
+  .tarot-card-item {
+    width: 135px;
+    animation: tarotEntrance 0.5s cubic-bezier(0.16, 1, 0.3, 1) backwards;
   }
   .tarot-card {
     width: 135px;
-    height: 215px;
+    height: 183px;
   }
   .tarot-countdown-number {
     font-size: 6rem;
@@ -3773,6 +3804,12 @@ body.is-fullscreen.fs-chrome-open .tarot-lounge-header {
   flex: 0 0 calc((100% - 2 * 1.25rem) / 3);
   max-width: calc((100% - 2 * 1.25rem) / 3);
   box-sizing: border-box;
+}
+
+.host-participants-grid.pair-2 .participant-card {
+  width: calc((100% - 1.25rem) / 2);
+  flex: 0 0 calc((100% - 1.25rem) / 2);
+  max-width: calc((100% - 1.25rem) / 2);
 }
 
 /* 1명 단독 접속 시: 현재 기본 카드 크기 대비 약 3배 대형 화면 배치 (스포트라이트 단독 뷰) */
@@ -3906,6 +3943,11 @@ body.is-presenting .host-participants-view.is-overflowing .host-participants-gri
     width: calc((100% - 2 * 0.5rem) / 3);
     flex: 0 0 calc((100% - 2 * 0.5rem) / 3);
     max-width: calc((100% - 2 * 0.5rem) / 3);
+  }
+  .host-participants-grid.pair-2 .participant-card {
+    width: calc((100% - 0.5rem) / 2);
+    flex: 0 0 calc((100% - 0.5rem) / 2);
+    max-width: calc((100% - 0.5rem) / 2);
   }
   .host-participants-grid.grid-5-col .participant-card {
     width: calc((100% - 4 * 0.5rem) / 5);
