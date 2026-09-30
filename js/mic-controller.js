@@ -85,18 +85,31 @@ export class MicController {
 
   /** 세션 내내 유지되는 하나의 producer 를 (필요할 때) 만든다 */
   async _ensureProducer() {
+    const rawTrack = this.raw?.getAudioTracks?.()[0];
+    if (!rawTrack || rawTrack.readyState !== 'live') {
+      throw new Error('마이크 입력 트랙이 없습니다.');
+    }
+    rawTrack.enabled = true;
+    try { rawTrack.contentHint = 'speech'; } catch { /* ignore */ }
+
     if (this._published) {
       const sfu = await this.o.getSfu();
       const p = sfu?.producers?.get(`${this.source}:audio`);
-      if (p && !p.closed) return true;
+      if (p && !p.closed) {
+        try {
+          if (p.track !== rawTrack) await p.replaceTrack({ track: rawTrack });
+          return true;
+        } catch { /* ignore and republish */ }
+      }
       this._published = false;
     }
-    const pipeline = await this._ensurePipeline();
+    // 로컬 VU 미터/발화 인디케이터용 파이프라인 준비
+    await this._ensurePipeline().catch(() => {});
     let lastErr = null;
     for (let attempt = 0; attempt < 3; attempt += 1) {
       try {
         const sfu = await this.o.getSfu();
-        await sfu.publishStream(new MediaStream([pipeline.outTrack]), {
+        await sfu.publishStream(new MediaStream([rawTrack]), {
           source: this.source,
           trackKind: 'mic',
         });
@@ -248,9 +261,12 @@ export class MicController {
       try { this.o.onForced?.(); } catch { /* ignore */ }
       return false;
     }
+    const track = this.raw?.getAudioTracks?.()[0];
+    if (track) track.enabled = false;
     this.pipeline?.detachInput();
     this._releaseRaw();
     this.state = 'off';
+    this._published = false;
     try { this.o.onTrack?.(null); } catch { /* ignore */ }
     this._emit();
     return true;

@@ -340,8 +340,8 @@ export class SfuClient {
           produceOpts.codecOptions = {
             opusStereo: source !== 'mic' && source !== 'viewer-mic',
             opusFec: true,
-            // 마이크는 DTX(무음 구간 전송 생략): 꺼진/조용한 마이크가 대역폭·디코드를 쓰지 않게 함
-            opusDtx: source === 'mic' || source === 'viewer-mic',
+            // 마이크 첫마디 씹힘/단절 방지: 연속 음성 패킷 전송
+            opusDtx: false,
             opusMaxAverageBitrate: (source === 'mic' || source === 'viewer-mic') ? 64000 : 128000,
           };
         }
@@ -745,35 +745,37 @@ export class SfuClient {
         }
       } catch { /* ignore */ }
       this.remoteStream.addTrack(consumer.track);
-      await this.request('sfu-resume-consumer', { consumerId: consumer.id });
+      // 서버 및 로컬 consumer 즉시 활성화
+      this.request('sfu-resume-consumer', { consumerId: consumer.id }).catch(() => {});
+      try { await consumer.resume(); } catch { /* ignore */ }
+
       // 모든 비디오 수신 직후 키프레임 요청 — 화면(display) 및 카메라 첫 프레임 공백/무한 대기 방지
       if (res.kind === 'video') {
         try { await this.requestKeyFrame(consumer.id); } catch { /* ignore */ }
       }
-      try {
-        await this.waitTransportConnected(this.recvTransport, '수신', 15000);
-      } catch (err) {
-        console.warn('[sfu] recv ICE', err);
-        throw err;
+
+      // 수신 트랜스포트 연결 대기 (블로킹하지 않고 백그라운드에서 확인하여 오디오 연결 지연/체인 중단 방지)
+      if (this.recvTransport?.connectionState !== 'connected') {
+        this.waitTransportConnected(this.recvTransport, '수신', 8000).then(() => {
+          if (res.kind === 'video' && !consumer.closed) {
+            this.requestKeyFrame(consumer.id).catch(() => {});
+          }
+        }).catch((err) => {
+          console.warn('[sfu] recv transport wait:', err?.message || err);
+        });
       }
-      // 수신 트랜스포트 연결 확립 후 즉시 핵심 키프레임 보장 (호스트 화면 정지/지연 시 즉시 첫 프레임 수신)
+
       if (res.kind === 'video') {
-        try { await this.requestKeyFrame(consumer.id); } catch { /* ignore */ }
         setTimeout(() => {
           if (!consumer.closed) {
             this.requestKeyFrame(consumer.id).catch(() => {});
           }
         }, 600);
       }
-      if (consumer.paused) {
-        try {
-          await this.request('sfu-resume-consumer', { consumerId: consumer.id });
-          await consumer.resume();
-        } catch { /* ignore */ }
-      }
+
       const meta = this.consumerMeta.get(info.producerId);
-      this.onConsumed?.(meta, consumer);
-      this.onRemoteStream?.(this.remoteStream);
+      try { this.onConsumed?.(meta, consumer); } catch (e) { console.warn('[sfu] onConsumed err', e); }
+      try { this.onRemoteStream?.(this.remoteStream); } catch (e) { console.warn('[sfu] onRemoteStream err', e); }
       return consumer;
     };
 

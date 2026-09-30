@@ -148,8 +148,9 @@ export class ViewerSubscriber {
           try { consumer.close(); } catch { /* ignore */ }
           return;
         }
-        if (source === 'mic' || source === 'viewer-mic') {
+        if (source === 'mic' || source === 'viewer-mic' || source === 'tab-audio') {
           if (consumer.track) {
+            this._syncRemoteAudio(this.sfu?.remoteStream || new MediaStream([consumer.track])).catch(() => {});
             this.onRemoteAudioTrack?.({
               clientId,
               role: info?.role || (source === 'mic' ? 'host' : 'viewer'),
@@ -165,11 +166,19 @@ export class ViewerSubscriber {
       sfu.onRemoteStream = (stream) => this._attachRemote(stream);
       sfu.onProducerClosed = (msg) => {
         const clientId = msg?.clientId;
+        const source = msg?.source || '';
+        const kind = msg?.kind || '';
         if (clientId) {
           this.onRemoteCameraClosed?.(clientId);
           this.onRemoteAudioTrackClosed?.(clientId);
         }
-        if (!this.hasLiveVideo()) this._notifyIfStreamDead();
+        // 마이크/카메라 토글 등 개별 프로듀서 종료로 인해 시청자 화면이
+        // 갑작스럽게 '대기중'으로 바뀌는 현상 차단:
+        // 오직 호스트의 display(화면공유) 비디오 프로듀서 종료 시에만 검사
+        const isHostDisplay = (source === 'display' || (!source && kind === 'video' && (!clientId || clientId === this.hostPeerId)));
+        if (isHostDisplay && !this.hasLiveVideo()) {
+          this._notifyIfStreamDead();
+        }
       };
       await sfu.init();
       sfu.startSenderMonitor();
@@ -511,6 +520,9 @@ export class ViewerSubscriber {
 
   _attachRemote(stream) {
     this.remoteStream = stream;
+    this._syncRemoteAudio(stream).catch((err) => {
+      console.warn('[ViewerSubscriber] sync audio', err);
+    });
     const video = this.videoEl;
     if (!video) return;
 
@@ -540,18 +552,14 @@ export class ViewerSubscriber {
       video.play().catch(() => {});
     } else if (hasAudio) {
       this.onStatus({
-        streamActive: true,
+        streamActive: this._streamActive,
         hasRemoteAudio: true,
         needUnmute: this.speakerOn && !this._audioUnlocked,
       });
     }
-
-    this._syncRemoteAudio(stream).catch((err) => {
-      console.warn('[ViewerSubscriber] sync audio', err);
-    });
   }
 
-  clearRemote() {
+  clearRemote({ videoOnly = false } = {}) {
     if (this._levelTimer) {
       clearInterval(this._levelTimer);
       this._levelTimer = null;
@@ -564,7 +572,9 @@ export class ViewerSubscriber {
       try { this._playMix.master?.disconnect(); } catch { /* ignore */ }
       this._playMix = null;
     }
-    if (this._remoteAudioEls) {
+    // 양방향 방에서는 화면 송출이 중단되어도 음성(마이크) 재생을 유지한다
+    const shouldClearAudio = !videoOnly && this.interactionMode === 'unidirectional';
+    if (shouldClearAudio && this._remoteAudioEls) {
       for (const el of this._remoteAudioEls.values()) {
         try { el.pause(); } catch { /* ignore */ }
         el.srcObject = null;
@@ -572,21 +582,20 @@ export class ViewerSubscriber {
       }
       this._remoteAudioEls.clear();
     }
-    if (this._remoteAudioEl) {
+    if (shouldClearAudio && this._remoteAudioEl) {
       try { this._remoteAudioEl.pause(); } catch { /* ignore */ }
       this._remoteAudioEl.srcObject = null;
       try { this._remoteAudioEl.remove(); } catch { /* ignore */ }
       this._remoteAudioEl = null;
     }
-    this._remoteAudioStream = null;
-    if (this.sfu) {
+    if (shouldClearAudio) this._remoteAudioStream = null;
+    if (this.sfu && shouldClearAudio) {
       try {
         for (const track of [...(this.sfu.remoteStream?.getTracks?.() || [])]) {
           try { this.sfu.remoteStream.removeTrack(track); } catch { /* ignore */ }
         }
       } catch { /* ignore */ }
     }
-    this.remoteStream = null;
     this._watching = false;
     if (this.videoEl) {
       try { this.videoEl.pause(); } catch { /* ignore */ }

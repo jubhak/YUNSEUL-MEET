@@ -1119,7 +1119,7 @@ function handleEvent(type, data) {
         streamOfflineTimer = setTimeout(() => {
           streamOfflineTimer = null;
           subscriber?.setStreamActive?.(false);
-          subscriber?.clearRemote();
+          subscriber?.clearRemote?.({ videoOnly: interactionMode === 'bidirectional' });
           if (isMeetingStarted) {
             liveStage?.classList.add('hidden');
             waitingPanel?.classList.remove('hidden');
@@ -1264,7 +1264,7 @@ sync.start()
           } else if (!tarotLounge._isCountingDown) {
             showTarotLounge();
           }
-        } else if (s.streamActive && !liveVideo?.srcObject) {
+        } else if (cachedStreamActive && s.streamActive && !liveVideo?.srcObject) {
           if (subscriber?.hasLiveVideo?.()) {
             return;
           }
@@ -1396,6 +1396,11 @@ sync.start()
         waitingPanel?.classList.remove('hidden');
         setWaiting('호스트 화면 송출 대기', '호스트가 「송출」을 누르면 실시간으로 발표 화면이 보입니다.');
         syncStatus.textContent = '송출 대기';
+        if (interactionMode === 'bidirectional') {
+          subscriber.ensureReceiving?.().catch((err) => {
+            console.warn('[viewer] ensureReceiving error:', err);
+          });
+        }
       }
     } else {
       showTarotLounge();

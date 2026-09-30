@@ -1295,7 +1295,10 @@ function setupHostMic() {
     onForced: () => showToast('마이크 사용이 필수인 모임입니다. 마이크를 끌 수 없습니다.', 'warn', 4200),
     onNotice: (msg, kind) => showToast(msg, kind === 'error' ? 'error' : 'warn', 5200),
     onLeave: () => { window.location.href = './'; },
-    onTrack: (track) => { try { webrtcPublisher.avatarManager?.attachMicTrack(track || null); } catch { /* ignore */ } },
+    onTrack: (track) => {
+      try { webrtcPublisher?.avatarManager?.attachMicTrack(track || null); } catch { /* ignore */ }
+      try { webrtcPublisher?.onMicTrack?.(track || null); } catch { /* ignore */ }
+    },
   });
   sync.socket.on?.('connect', () => emitMicStatus());
   micCtl._emit(); // 초기 상태(off / ready=false) 통지 → 아이콘은 비활성으로 시작
