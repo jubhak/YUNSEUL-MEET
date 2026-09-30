@@ -117,6 +117,7 @@ function defaultRoom(code, hostToken, interactionMode = 'bidirectional', require
     ended: false,
     endedAt: 0,
     meetingStarted: false,
+    displayMode: 'face',
     createdAt: Date.now(),
     hostLastSeen: 0,
     lastActivity: Date.now(),
@@ -369,6 +370,8 @@ function publicState(room) {
     requireMic: normMode === 'bidirectional' && !!room.requireMic,
     allowClientCamera: room.allowClientCamera !== false,
     allowClientDeepfake: room.allowClientCamera !== false && room.allowClientDeepfake !== false,
+    // 호스트가 지금 시청자에게 보여주는 것: 'face'(참가자 얼굴 화면) | 'screen'(호스트 PC 화면)
+    displayMode: room.displayMode === 'screen' ? 'screen' : 'face',
   };
 }
 
@@ -1608,6 +1611,13 @@ io.on('connection', (socket) => {
           broadcastBroadcaster(io, room);
           broadcastViewerCount(io, room);
           return;
+        }
+        case 'display-mode': {
+          // 얼굴 화면 ↔ PC 화면 전환. 참가자는 'screen' 동안 딥페이크/얼굴 송출을 멈춘다(목소리는 그대로).
+          // 늦게 들어온 참가자도 publicState 로 현재 모드를 받는다.
+          room.displayMode = payload.mode === 'screen' ? 'screen' : 'face';
+          payload.mode = room.displayMode;
+          break;
         }
         case 'set-broadcaster': {
           const nextId = String(payload.clientId || room.hostClientId || '');

@@ -29,6 +29,8 @@ export class SfuClient {
     this._pendingProducers = [];
     this._produceChain = Promise.resolve();
     this._consumeChain = Promise.resolve();
+    /** 송출을 일시정지(인코딩·전송 중단)해 둔 source 목록 — 새 producer 가 만들어져도 다시 적용된다 */
+    this._inactiveSources = new Set();
     /** @type {((stream: MediaStream) => void)|null} */
     this.onRemoteStream = null;
     /** @type {((info: object, consumer: object) => void)|null} */
@@ -329,17 +331,18 @@ export class SfuClient {
               videoGoogleMinBitrate: Math.max(40, Math.round(maxBitrate / 4000)),
             };
           } else {
-            // 화면 공유(Display Share / PPT / 문서): 텍스트 가독성을 위해 해상도 보존('detail') 설정
-            try { track.contentHint = 'detail'; } catch { /* ignore */ }
+            // 화면 공유(Display Share / PPT / 문서): 텍스트 가독성을 위해 해상도 보존('detail') 설정.
+            // 단, 화면에 참가자 영상 타일이 움직이는 동안(_displayMotion)에는 'motion'(프레임 우선)으로 보낸다.
+            try { track.contentHint = this._displayMotion ? 'motion' : 'detail'; } catch { /* ignore */ }
             produceOpts.codecOptions = {
               videoGoogleStartBitrate: 1500,
             };
             // 호스트 화면은 시청자 N명에게 그대로 복제돼 나가는 유일한 대용량 스트림(서버 상향 대역폭의 대부분).
-            // 인원 수에 따른 비트레이트 상한(_displayMaxBitrate)이 있으면 처음부터 적용하고,
-            // 시간계층(L1T3)을 켜서 SFU 가 느린 시청자에게는 프레임만 솎아 보내게 한다(전체가 같이 느려지지 않도록).
+            // 인원 수에 따른 비트레이트 상한(_displayMaxBitrate)이 있으면 처음부터 적용한다.
+            // 시간계층(L1T3)은 측정 결과 화질/끊김이 오히려 나빠져(freeze ↑, 해상도 ↓) 기본 끔 — _useTemporalLayers 로만 켠다.
             const enc = { scaleResolutionDownBy: 1 };
             if (this._displayMaxBitrate) enc.maxBitrate = this._displayMaxBitrate;
-            if (source === 'display' && !this._noTemporalLayers) enc.scalabilityMode = 'L1T3';
+            if (source === 'display' && this._useTemporalLayers) enc.scalabilityMode = 'L1T3';
             produceOpts.encodings = [enc];
           }
         } else if (track.kind === 'audio') {
@@ -359,7 +362,7 @@ export class SfuClient {
           // L1T3 를 못 받아들이는 환경(브라우저/코덱)이면 단일 계층으로 폴백 — 화면 송출이 실패하면 안 된다.
           if (produceOpts.encodings?.[0]?.scalabilityMode) {
             console.warn('[SFU] scalabilityMode L1T3 실패 → 단일 계층 폴백:', err?.message || err);
-            this._noTemporalLayers = true;
+            this._useTemporalLayers = false;
             delete produceOpts.encodings[0].scalabilityMode;
             producer = await transport.produce(produceOpts);
           } else {
@@ -372,7 +375,7 @@ export class SfuClient {
             if (params) {
               const isCam = source === 'camera' || source === 'viewer-camera';
               // 화면공유는 maintain-resolution, 카메라는 maintain-framerate
-              params.degradationPreference = isCam ? 'maintain-framerate' : 'maintain-resolution';
+              params.degradationPreference = (isCam || (source === 'display' && this._displayMotion)) ? 'maintain-framerate' : 'maintain-resolution';
               if (isCam && Array.isArray(params.encodings) && params.encodings.length) {
                 const enc0 = produceOpts.encodings?.[0] || {};
                 params.encodings = params.encodings.map((enc) => ({
@@ -387,6 +390,9 @@ export class SfuClient {
         }
         this.producers.set(key, producer);
         produced.push(producer);
+        if (track.kind === 'video' && this._inactiveSources.has(source)) {
+          this._applySenderActive(producer, false).catch(() => {});
+        }
         track.addEventListener('ended', () => {
           try { producer.close(); } catch { /* ignore */ }
           this.producers.delete(key);
@@ -458,6 +464,56 @@ export class SfuClient {
         });
         await sender.setParameters(params);
       } catch { /* ignore */ }
+    }
+  }
+
+  /**
+   * 호스트 화면에 움직이는 영상(참가자 타일)이 있을 때는 프레임 우선('motion' + maintain-framerate),
+   * 없으면(PPT/문서) 글씨 우선('detail' + maintain-resolution).
+   * 측정(1920x1080, 20타일 움직이는 화면): detail → 약 4fps 로 끊김, motion → 23~30fps (해상도는 대역폭에 맞춰 자동 축소).
+   */
+  async setDisplayMotion(on, force = false) {
+    const next = !!on;
+    if (next === !!this._displayMotion && !force) return;
+    this._displayMotion = next;
+    for (const [key, producer] of this.producers.entries()) {
+      if (!key.startsWith('display:') || producer.closed || producer.kind !== 'video') continue;
+      try { if (producer.track) producer.track.contentHint = next ? 'motion' : 'detail'; } catch { /* ignore */ }
+      try {
+        const sender = producer.rtpSender;
+        const params = sender?.getParameters();
+        if (!params) continue;
+        params.degradationPreference = next ? 'maintain-framerate' : 'maintain-resolution';
+        await sender.setParameters(params);
+      } catch { /* ignore */ }
+    }
+  }
+
+  async _applySenderActive(producer, active) {
+    const sender = producer?.rtpSender;
+    if (!sender) return;
+    const params = sender.getParameters();
+    if (!params?.encodings?.length) return;
+    let changed = false;
+    params.encodings = params.encodings.map((enc) => {
+      if (enc.active === active) return enc;
+      changed = true;
+      return { ...enc, active };
+    });
+    if (changed) await sender.setParameters(params);
+  }
+
+  /**
+   * source 의 영상 송출을 켜고 끈다(인코딩·전송 자체를 멈춤 — 트랙/producer 는 유지되어 재개가 즉시 된다).
+   * 마이크 등 오디오에는 영향이 없다. producer 가 재생성되어도 상태가 유지된다.
+   * 모드 전환(얼굴 화면 ↔ PC 화면) 때 "지금 안 보이는 쪽" 업로드를 0 으로 만드는 용도.
+   */
+  async setVideoSourceActive(source, active) {
+    if (active) this._inactiveSources.delete(source); else this._inactiveSources.add(source);
+    const prefix = `${source}:`;
+    for (const [key, producer] of this.producers.entries()) {
+      if (!key.startsWith(prefix) || producer.closed || producer.kind !== 'video') continue;
+      try { await this._applySenderActive(producer, !!active); } catch { /* ignore */ }
     }
   }
 
@@ -558,6 +614,8 @@ export class SfuClient {
         continue;
       }
       if (!monitored.has(source)) continue;
+      // 일부러 멈춰 둔(모드 전환) 송출은 "정지"가 아니므로 복구 대상에서 제외
+      if (this._inactiveSources.has(source)) { this._senderState.delete(key); continue; }
       const track = producer.track;
       if (!track || track.readyState !== 'live' || producer.paused) { this._senderState.delete(key); continue; }
       if (producer.kind === 'audio' && track.enabled === false) { this._senderState.delete(key); continue; }
@@ -634,6 +692,8 @@ export class SfuClient {
 
   async _receiverTick(onStalled, onRecovered) {
     if (this._closed || this._rxBusy) return;
+    // 참가자 카메라 송출을 일부러 멈춰 둔 동안(PC 화면 모드)에는 "정지"가 정상 → 복구 시도(PLI/재-consume) 금지
+    if (this.receiverSuspended) { this._rxState?.clear(); return; }
     if (typeof document !== 'undefined' && document.visibilityState === 'hidden') {
       // 백그라운드 탭은 디코딩이 스로틀되므로 판정 보류
       this._rxState.forEach((st) => { st.changedAt = performance.now(); st.stage = 0; });

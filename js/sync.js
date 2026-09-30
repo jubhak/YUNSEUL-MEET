@@ -142,6 +142,7 @@ export class RoomSync {
       'stop-screen-share',
       'broadcaster-changed',
       'screen-share-ended',
+      'display-mode',
     ];
     types.forEach((type) => {
       this.socket.on(type, (payload) => {

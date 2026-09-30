@@ -1,5 +1,5 @@
-import { SfuClient } from './sfu-client.js?v=20260930a';
-import { VirtualAvatarManager, openWebcamFlexible, faceModeForRoomCount } from '../virtual-avatar-manager.js?v=20260930c';
+import { SfuClient } from './sfu-client.js?v=20260930d';
+import { VirtualAvatarManager, openWebcamFlexible, faceModeForRoomCount } from '../virtual-avatar-manager.js?v=20260930d';
 
 /**
  * 참가자: SFU에서 호스트 display 수신 + (선택) 마이크/화면 업링크
@@ -125,6 +125,8 @@ export class ViewerSubscriber {
         clientId: this.signaling.localClientId,
         role: 'viewer',
       });
+      // 호스트가 PC 화면을 보여주는 중이면 새로 만드는 카메라 송출도 멈춘 채로 시작
+      if (this._cameraIdle) sfu._inactiveSources.add('viewer-camera');
       sfu.consumeFilter = (info) => {
         const source = info?.appData?.source || '';
         const kind = info?.kind;
@@ -1053,6 +1055,19 @@ export class ViewerSubscriber {
 
   async toggleCamera() {
     return await this.setCameraEnabled(!this.cameraEnabled);
+  }
+
+  /**
+   * 호스트가 "PC 화면"을 보여주는 동안(on=true) 얼굴 송출을 통째로 멈춘다.
+   *  - 딥페이크 프레임 업로드 + GPU 처리 중단 (서버 연결/자리는 예약 유지)
+   *  - SFU 카메라 영상 업로드 중단 (인코딩 자체를 멈춤)
+   * 마이크(viewer-mic)는 건드리지 않으므로 목소리는 그대로 전달된다. 해제하면 즉시 재개.
+   */
+  setCameraIdle(on) {
+    const next = !!on;
+    this._cameraIdle = next;
+    try { this.avatarManager?.setIdle?.(next); } catch { /* ignore */ }
+    this.sfu?.setVideoSourceActive?.('viewer-camera', !next)?.catch?.(() => {});
   }
 
   destroy() {

@@ -1,6 +1,7 @@
 import { TRACK_KIND } from './config.js';
-import { SfuClient } from './sfu-client.js?v=20260930a';
-import { VirtualAvatarManager, openWebcamFlexible, faceModeForRoomCount } from '../virtual-avatar-manager.js?v=20260930c';
+import { SfuClient } from './sfu-client.js?v=20260930e';
+import { VirtualAvatarManager, openWebcamFlexible, faceModeForRoomCount } from '../virtual-avatar-manager.js?v=20260930e';
+import { FaceCompositor } from './face-compositor.js?v=20260930g';
 
 /**
  * Host -> SFU display share (+ optional tab audio / mic).
@@ -65,6 +66,14 @@ export class HostPublisher {
     this.onRemoteAudioTrackClosed = null;
     /** @type {((data: { pingMs: number, lossRate: number, quality: string }) => void)|null} */
     this.onNetworkQuality = null;
+
+    /** 'face' | 'screen' | null — 시청자에게 보내는 화면 종류. 목소리는 모드와 무관하게 유지 */
+    this.shareMode = null;
+    /** 얼굴 화면 합성용 타일 목록 제공. host.js 가 그리드 video 를 넘긴다 */
+    this.getFaceTiles = null;
+    /** @type {((mode: 'face'|'screen'|null) => void)|null} */
+    this.onShareModeChange = null;
+    this._compositor = null;
 
     this._unsubLeft = signaling.onPeerLeft((msg) => this._onPeerLeft(msg));
   }
@@ -214,15 +223,75 @@ export class HostPublisher {
   }
 
   /**
+   * 디스플레이 영상만 내린다. 카메라·마이크·오디오 재생은 그대로 둔다.
+   * (모드 전환 때 목소리가 끊기지 않게)
+   */
+  _stopDisplayVideoOnly() {
+    this._compositor?.stop();
+    this._compositor = null;
+    const displayStream = this._ownStream || this.localStream;
+    if (displayStream && displayStream !== this.cameraStream && displayStream !== this.rawCameraStream) {
+      displayStream.getVideoTracks().forEach((t) => {
+        try { t.stop(); } catch { /* ignore */ }
+      });
+    }
+    this._tabAudioTracks.forEach((t) => {
+      try { t.stop(); } catch { /* ignore */ }
+    });
+    this._tabAudioTracks = [];
+    this._ownStream = null;
+    this._relayStream = null;
+    this._relayPeerId = null;
+    if (this.sfu) {
+      try { this.sfu.stopPublishing({ source: 'tab-audio' }); } catch { /* ignore */ }
+    }
+  }
+
+  /**
+   * 참가자 얼굴 타일을 캔버스로 합성해 송출한다. PC 화면 캡처가 필요 없다.
+   */
+  async startFaceShare() {
+    this._stopDisplayVideoOnly();
+    this.shareMode = 'face';
+    this.tabAudioWanted = false;
+    this._audioShareMissing = false;
+    if (!this._compositor) {
+      this._compositor = new FaceCompositor({
+        getTiles: () => (typeof this.getFaceTiles === 'function' ? this.getFaceTiles() : []),
+        width: 1280,
+        height: 720,
+        fps: 30,
+      });
+    }
+    const stream = this._compositor.start();
+    const vt = stream.getVideoTracks()[0];
+    if (!vt || vt.readyState !== 'live') {
+      throw new Error('얼굴 화면을 만들 수 없습니다.');
+    }
+    this._ownStream = stream;
+    this.localStream = this._buildOutboundStream();
+    if (!this.localStream.getVideoTracks().length) this.localStream = stream;
+    this.kinds = [TRACK_KIND.DISPLAY];
+    if (this.hasMic) this.kinds.push(TRACK_KIND.MIC);
+    this.active = true;
+    await this._publishToSfu();
+    await this.sfu?.setDisplayMotion?.(true);
+    this._ensureSfuRecv().catch((err) => {
+      console.warn('[HostPublisher] sfu recv', err);
+    });
+    this._startAutoRepair();
+    this._emitStatus();
+    this.onShareModeChange?.('face');
+    return stream;
+  }
+
+  /**
    * @param {{ withMic?: boolean, withTabAudio?: boolean }} opts
    */
   async startDisplayCapture({ withMic = false, withTabAudio = true } = {}) {
-    if (this.localStream) this.stopCaptureOnly();
-
+    // 캡처 창이 뜨기 전에는 기존 송출(얼굴 화면·마이크)을 유지한다. 취소해도 목소리가 끊기지 않는다.
     this.tabAudioWanted = !!withTabAudio;
-    this.micWanted = !!withMic;
-    this._tabAudioTracks = [];
-    this._micTracks = [];
+    this.micWanted = this.micWanted || !!withMic;
     this._audioShareMissing = false;
 
     const stream = await navigator.mediaDevices.getDisplayMedia({
@@ -251,7 +320,11 @@ export class HostPublisher {
       systemAudio: withTabAudio ? 'include' : 'exclude',
     });
 
+    this._stopDisplayVideoOnly();
+
+    this.shareMode = 'screen';
     this.kinds = [TRACK_KIND.DISPLAY];
+    if (this.hasMic) this.kinds.push(TRACK_KIND.MIC);
     this._tabAudioTracks = stream.getAudioTracks().slice();
     if (this._tabAudioTracks.length) {
       this.kinds.push('tab-audio');
@@ -270,10 +343,10 @@ export class HostPublisher {
     this._relayStream = null;
     this._relayPeerId = null;
     this.active = true;
+    this.localStream = this._buildOutboundStream();
 
     const vt = stream.getVideoTracks()[0];
     if (vt) {
-      // 화면 공유(PPT/문서)는 글씨 가독성을 위해 해상도 보존('detail')을 최우선으로 설정
       try { vt.contentHint = 'detail'; } catch { /* ignore */ }
     }
     const surface = vt?.getSettings?.()?.displaySurface || '';
@@ -289,16 +362,22 @@ export class HostPublisher {
 
     if (vt) {
       vt.addEventListener('ended', () => {
-        this.stop();
+        // 브라우저 공유 중지 → 얼굴 화면으로 복귀 (목소리는 유지)
+        this.startFaceShare().catch((err) => {
+          console.warn('[HostPublisher] face fallback', err);
+          this.stop();
+        });
       });
     }
 
     await this._publishToSfu();
+    await this.sfu?.setDisplayMotion?.(false);
     this._ensureSfuRecv().catch((err) => {
       console.warn('[HostPublisher] sfu recv', err);
     });
     this._startAutoRepair();
     this._emitStatus();
+    this.onShareModeChange?.('screen');
     return stream;
   }
 
@@ -573,8 +652,28 @@ export class HostPublisher {
    * DISPLAY_EGRESS_BUDGET 로 잡고, 인원이 많을 때만 1인당 상한을 낮춘다(8명 이하는 브라우저 기본 = 상한 없음).
    * (호스트 자신의 딥페이크 수신·참가자 오디오 등을 위한 여유를 남긴다.)
    */
+  /**
+   * 호스트 화면에 참가자 영상 타일이 있는지에 따라 인코딩 우선순위를 바꾼다.
+   * 타일이 있으면 프레임 우선(끊김 방지), 없으면 글씨 우선. 켤 때는 즉시, 끌 때는 15초 지연(깜빡임 방지).
+   */
+  setDisplayMotionMode(on) {
+    if (on) {
+      clearTimeout(this._motionOffTimer);
+      this._motionOffTimer = null;
+      if (this._displayMotionOn) return;
+      this._displayMotionOn = true;
+      this.sfu?.setDisplayMotion?.(true)?.catch?.(() => {});
+    } else if (this._displayMotionOn && !this._motionOffTimer) {
+      this._motionOffTimer = setTimeout(() => {
+        this._motionOffTimer = null;
+        this._displayMotionOn = false;
+        this.sfu?.setDisplayMotion?.(false)?.catch?.(() => {});
+      }, 15000);
+    }
+  }
+
   _applyDisplayBudget(count) {
-    const EGRESS_BUDGET = 36_000_000; // bps
+    const EGRESS_BUDGET = 50_000_000; // bps (회선 상향 약 80Mbps 중 화면 송출 몫)
     const MIN_PER_VIEWER = 800_000;
     const MAX_PER_VIEWER = 3_000_000;
     let cap = 0;
@@ -1045,6 +1144,10 @@ export class HostPublisher {
   }
 
   stopCaptureOnly() {
+    this._compositor?.stop();
+    this._compositor = null;
+    this.shareMode = null;
+    this.onShareModeChange?.(null);
     this.stopCamera();
     if (this._autoRepairTimer) {
       clearInterval(this._autoRepairTimer);

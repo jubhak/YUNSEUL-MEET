@@ -3700,6 +3700,19 @@ body.is-fullscreen.fs-chrome-open .tarot-lounge-header {
   .tarot-card-grid.grid-double-row {
     grid-template-columns: repeat(2, 140px);
   }
+  .tarot-body-area,
+  .tarot-card-container {
+    align-items: center;
+    justify-content: center;
+  }
+  .tarot-card-grid,
+  .tarot-card-grid.grid-single-row {
+    width: max-content;
+    max-width: 100%;
+    margin: 0 auto;
+    justify-content: center;
+    justify-items: center;
+  }
   .tarot-card {
     width: 135px;
     height: 215px;

@@ -253,7 +253,7 @@ body.rc-controlling #btn-rc-request { display: none !important; }
 .rc-viewer-dot { width: 10px; height: 10px; border-radius: 50%; background: #f87171; animation: rc-pulse 1.4s infinite; }
 .rc-viewer-stop { border: 0; border-radius: 8px; padding: 5px 10px; background: #fff; color: #7f1d1d; font-weight: 700; cursor: pointer; }
 
-/* ---------- 타로 대기실: 모바일 가로(landscape) — 카드를 작게, 더 많이 ---------- */
+/* ---------- 타로 대기실: 모바일 가로(landscape) — 카드 묶음을 화면 정중앙 ---------- */
 @media (orientation: landscape) and (max-height: 520px) {
   .tarot-waiting-lounge {
     padding: max(0.3rem, env(safe-area-inset-top, 0px)) max(0.6rem, env(safe-area-inset-right, 0px)) 0.6rem max(0.6rem, env(safe-area-inset-left, 0px));
@@ -262,17 +262,36 @@ body.rc-controlling #btn-rc-request { display: none !important; }
   .tarot-lounge-title { font-size: 1.05rem; margin-bottom: 0.1rem; letter-spacing: 0.04em; }
   .tarot-lounge-subtitle { display: none; }
   .tarot-lounge-host-actions { margin-top: 0.3rem; gap: 0.4rem; }
-  .tarot-body-area { min-height: 0; align-items: flex-start; }
-  .tarot-card-container { max-width: 100%; min-height: 0; padding: 0 0.25rem; align-items: flex-start; }
+  .tarot-body-area {
+    flex: 1 1 auto;
+    min-height: 0;
+    width: 100%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .tarot-card-container {
+    width: auto;
+    max-width: 100%;
+    min-height: 0;
+    padding: 0 0.25rem;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
   .tarot-card-grid,
   .tarot-card-grid.grid-single-row,
   .tarot-card-grid.grid-double-row {
     --tc-h: clamp(76px, 34vh, 136px);
     --tc-w: calc(var(--tc-h) * 0.58);
-    grid-template-columns: repeat(auto-fill, var(--tc-w));
+    width: max-content;
+    max-width: 100%;
+    margin: 0 auto;
+    grid-template-columns: repeat(auto-fit, var(--tc-w));
     gap: 0.3rem 0.4rem;
     justify-content: center;
-    align-content: start;
+    justify-items: center;
+    align-content: center;
   }
   .tarot-card-item { width: var(--tc-w); animation: tarotEntrance 0.5s cubic-bezier(0.16, 1, 0.3, 1) backwards; }
   .tarot-card { width: var(--tc-w); height: var(--tc-h); border-radius: 6px; box-shadow: 0 4px 10px rgba(0, 0, 0, 0.7); }
@@ -282,10 +301,36 @@ body.rc-controlling #btn-rc-request { display: none !important; }
   .tarot-user-crown { font-size: 0.6rem; }
   .tarot-countdown-number { font-size: 3.6rem; }
 }
-/* 모바일 세로: 카드도 조금 작게 해서 한 화면에 더 많이 */
+/* 모바일 세로: 카드 묶음을 남는 영역의 가로·세로 정중앙 */
 @media (orientation: portrait) and (max-width: 520px) {
+  .tarot-body-area {
+    flex: 1 1 auto;
+    min-height: 0;
+    width: 100%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .tarot-card-container {
+    width: auto;
+    max-width: 100%;
+    min-height: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .tarot-card-grid,
   .tarot-card-grid.grid-single-row,
-  .tarot-card-grid.grid-double-row { grid-template-columns: repeat(auto-fill, 96px); gap: 0.5rem; }
+  .tarot-card-grid.grid-double-row {
+    width: max-content;
+    max-width: 100%;
+    margin: 0 auto;
+    grid-template-columns: repeat(auto-fit, 96px);
+    gap: 0.5rem;
+    justify-content: center;
+    justify-items: center;
+    align-content: center;
+  }
   .tarot-card-item { width: 96px; }
   .tarot-card { width: 96px; height: 166px; }
   .tarot-card-user-badge { font-size: 0.68rem; }

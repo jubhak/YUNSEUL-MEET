@@ -10,7 +10,7 @@ import {
   getLatestViewers,
 } from './viewers-panel.js?v=20260930a';
 import { WebrtcSignaling } from './webrtc/signaling.js?v=20260715j';
-import { HostPublisher } from './webrtc/host-publisher.js?v=20260930c';
+import { HostPublisher } from './webrtc/host-publisher.js?v=20260930g';
 import { setupChatPanel } from './chat-panel.js?v=20260918fix2';
 import { CamFocusManager } from './cam-focus-manager.js?v=20260930a';
 import { MicController } from './mic-controller.js?v=20260930a';
@@ -75,6 +75,10 @@ let preferMic = requireMic || sessionStorage.getItem(MIC_PREF_KEY) === '1';
 let chatPanel = null;
 let isMeetingStarted = false;
 let hostParticipantsGrid = null;
+const sfuCameraStreams = new Map();
+const shownCameraSource = new Map();
+/** @type {import('./face-feed-client.js').FaceFeedClient|null} */
+let faceFeed = null;
 /** @type {import('./mic-controller.js').MicController|null} */
 let micCtl = null;
 /** @type {import('./remote-control.js').RemoteControlHost|null} */
@@ -296,13 +300,13 @@ btnModalCancel?.addEventListener('click', () => {
 });
 
 btnModalStart?.addEventListener('click', async () => {
-  // 1. 화면 공유가 아직 설정되지 않은 경우, 화면 공유 창부터 먼저 띄워 설정 완료
+  // 송출이 없으면 얼굴 화면으로 시작한다(PC 캡처 창이 필요 없음 → 시작이 빨라진다).
   if (!webrtcPublisher?.isActive) {
     meetingStartModal?.classList.add('hidden');
-    const ok = await startScreenShare();
+    const ok = await startFaceShare();
     updateTarotShareButton();
     if (!ok) {
-      alert('화면 공유가 설정되지 않았습니다.\n공유할 윈도우 창 또는 전체 화면을 선택한 후 미팅을 시작해 주세요.');
+      alert('얼굴 화면 송출을 시작하지 못했습니다. 다시 시도해 주세요.');
       return;
     }
   }
@@ -632,6 +636,7 @@ class HostParticipantsGridManager {
                 label: `grid-${pid}`,
                 mode: 'face',
                 onRequestKeyFrame: () => {
+                  if (webrtcPublisher?.shareMode === 'screen') return; // PC 화면 모드: 참가자 얼굴 송출이 꺼진 상태가 정상
                   const cid = webrtcPublisher?.sfu?.findConsumerIdForClient?.(pid, 'viewer-camera')
                     || webrtcPublisher?.sfu?.findConsumerIdForClient?.(pid);
                   if (cid) webrtcPublisher?.sfu?.requestKeyFrame?.(cid);
@@ -665,6 +670,23 @@ class HostParticipantsGridManager {
     this._overflowRaf = requestAnimationFrame(() => {
       this._overflowRaf = 0;
       this.checkOverflow();
+    });
+  }
+
+  getTiles() {
+    return this._participantList().map((p) => {
+      const pid = p.id || p.clientId;
+      const card = this.gridEl?.querySelector(`.participant-card[data-participant-id="${pid}"]`);
+      const video = card?.querySelector('video') || null;
+      const stream = this._resolveStream(pid, p);
+      const hasCam = !!stream && stream.getVideoTracks().some((t) => t && t.readyState === 'live' && t.enabled !== false);
+      return {
+        id: pid,
+        name: p.name || (p.role === 'host' || pid === 'local' ? '호스트' : '참가자'),
+        isHost: p.role === 'host' || pid === 'local',
+        video: hasCam ? video : null,
+        hasCam,
+      };
     });
   }
 
@@ -1136,6 +1158,74 @@ function closeStreamOptions() {
   streamOptionsGate?.classList.add('hidden');
 }
 
+function emitDisplayMode(mode) {
+  try {
+    sync?.socket?.emit('host-event', { type: 'display-mode', payload: { mode } });
+  } catch (err) {
+    console.warn('[host] display-mode', err);
+  }
+}
+
+function updateShareModeUi(mode) {
+  const wrap = document.getElementById('share-mode-toggle');
+  const faceBtn = document.getElementById('btn-share-face');
+  const pcBtn = document.getElementById('btn-share-pc');
+  const on = mode === 'face' || mode === 'screen';
+  if (wrap) wrap.hidden = !on;
+  faceBtn?.classList.toggle('is-active', mode === 'face');
+  pcBtn?.classList.toggle('is-active', mode === 'screen');
+  if (faceBtn) faceBtn.setAttribute('aria-pressed', mode === 'face' ? 'true' : 'false');
+  if (pcBtn) pcBtn.setAttribute('aria-pressed', mode === 'screen' ? 'true' : 'false');
+}
+
+function applyShareMode(mode) {
+  const screen = mode === 'screen';
+  try { webrtcPublisher?.avatarManager?.setIdle?.(screen); } catch { /* ignore */ }
+  webrtcPublisher?.sfu?.setVideoSourceActive?.('camera', !screen)?.catch?.(() => {});
+  for (const id of sfuCameraStreams.keys()) {
+    if (screen) webrtcPublisher?.pauseRemoteCamera?.(id);
+    else webrtcPublisher?.resumeRemoteCamera?.(id);
+  }
+  if (screen) faceFeed?.reportLive?.([]);
+  updateShareModeUi(mode);
+  emitDisplayMode(mode === 'screen' ? 'screen' : 'face');
+}
+
+async function startFaceShare() {
+  if (!sync?.socket || !webrtcPublisher) {
+    alert('방에 아직 연결되지 않았습니다.');
+    return false;
+  }
+  closeStreamOptions();
+  if (btnStream) {
+    btnStream.disabled = true;
+    btnStream.textContent = '얼굴 화면 준비…';
+  }
+  try {
+    webrtcPublisher.getFaceTiles = () => hostParticipantsGrid?.getTiles?.() || [];
+    await webrtcPublisher.startFaceShare();
+    updateStreamUi(true, !!micCtl?.enabled);
+    hideSharePrompt();
+    drawCanvas?.resize();
+    const ids = [...knownViewerIds];
+    if (ids.length) await webrtcPublisher.publishTo(ids);
+    applyShareMode('face');
+    showToast('얼굴 화면을 송출합니다. PC 화면이 필요하면 「PC 화면」을 누르세요.', 'info', 4200);
+    return true;
+  } catch (err) {
+    console.warn('[face-share]', err);
+    updateStreamUi(!!webrtcPublisher?.isActive, !!micCtl?.enabled);
+    showToast(err?.message || '얼굴 화면을 시작할 수 없습니다.', 'error', 4200);
+    return false;
+  } finally {
+    if (btnStream) {
+      btnStream.disabled = false;
+      btnStream.textContent = webrtcPublisher?.isActive ? '정지' : '송출';
+    }
+    syncAvButtons();
+  }
+}
+
 async function startScreenShare() {
   if (!sync?.socket || !webrtcPublisher) {
     alert('방에 아직 연결되지 않았습니다.');
@@ -1167,26 +1257,33 @@ async function startScreenShare() {
     const ids = [...knownViewerIds];
     // SFU 단일 경로: produce 재확인
     if (ids.length) await webrtcPublisher.publishTo(ids);
+    applyShareMode('screen');
+    showToast('PC 화면을 송출합니다. 참가자 얼굴은 잠시 멈추고, 목소리는 그대로입니다.', 'info', 4200);
     return true;
   } catch (err) {
     console.warn('[stream]', err);
-    updateStreamUi(false);
+    const stillOn = !!webrtcPublisher?.isActive;
+    updateStreamUi(stillOn, !!micCtl?.enabled);
+    if (stillOn && webrtcPublisher?.shareMode === 'face') applyShareMode('face');
     const cancelled = /Permission|NotAllowed|Abort|cancel/i.test(String(err?.name || '') + String(err?.message || ''));
     const unsupported = /NotSupported|undefined|getDisplayMedia/i.test(String(err?.name || '') + String(err?.message || ''));
-    showSharePrompt(cancelled
-      ? '화면 공유가 취소되었습니다. 아래 버튼으로 다시 시작해 주세요.'
-      : (unsupported
-        ? '이 기기에서는 화면 공유가 어렵습니다. 「카메라로 송출」을 사용해 주세요.'
-        : (err?.message || '화면 송출을 시작할 수 없습니다.')));
-    // 모바일/자동 팝업 차단은 alert로 흐름을 끊지 않음
-    if (!cancelled && !isMobileHostEnv() && !unsupported) {
+    if (!stillOn) {
+      showSharePrompt(cancelled
+        ? '화면 공유가 취소되었습니다. 아래 버튼으로 다시 시작해 주세요.'
+        : (unsupported
+          ? '이 기기에서는 화면 공유가 어렵습니다. 「카메라로 송출」을 사용해 주세요.'
+          : (err?.message || '화면 송출을 시작할 수 없습니다.')));
+    } else if (cancelled) {
+      showToast('PC 화면 선택이 취소되어 얼굴 화면을 유지합니다.', 'warn', 3200);
+    }
+    if (!stillOn && !cancelled && !isMobileHostEnv() && !unsupported) {
       alert(`화면 송출을 시작할 수 없습니다.\n${err?.message || ''}`);
     }
     return false;
   } finally {
-    if (btnStream && !webrtcPublisher?.isActive) {
+    if (btnStream) {
       btnStream.disabled = false;
-      btnStream.textContent = '송출';
+      btnStream.textContent = webrtcPublisher?.isActive ? '정지' : '송출';
     }
     if (shareBtn) {
       shareBtn.disabled = false;
@@ -1318,12 +1415,20 @@ document.getElementById('btn-av-mic-device')?.addEventListener('click', async ()
 btnStream?.addEventListener('click', () => {
   if (webrtcPublisher?.isActive) stopScreenShare();
   else if (isMobileHostEnv() || !canDisplayCapture()) showSharePrompt('');
-  else startScreenShare();
+  else startFaceShare();
 });
 
 btnStreamCancel?.addEventListener('click', () => closeStreamOptions());
-btnStreamStart?.addEventListener('click', () => startScreenShare());
+btnStreamStart?.addEventListener('click', () => startFaceShare());
 document.getElementById('btn-share-now')?.addEventListener('click', () => startScreenShare());
+document.getElementById('btn-share-face')?.addEventListener('click', () => {
+  if (webrtcPublisher?.shareMode === 'face' && webrtcPublisher?.isActive) return;
+  startFaceShare();
+});
+document.getElementById('btn-share-pc')?.addEventListener('click', () => {
+  if (webrtcPublisher?.shareMode === 'screen' && webrtcPublisher?.isActive) return;
+  startScreenShare();
+});
 document.getElementById('btn-camera-share')?.addEventListener('click', () => startCameraShare());
 
 optStreamMic?.addEventListener('change', async () => {
@@ -1752,6 +1857,11 @@ sync.start()
       },
     });
     webrtcPublisher.interactionMode = interactionMode;
+    webrtcPublisher.getFaceTiles = () => hostParticipantsGrid?.getTiles?.() || [];
+    webrtcPublisher.onShareModeChange = (mode) => {
+      if (!mode) { updateShareModeUi(null); return; }
+      applyShareMode(mode);
+    };
     webrtcPublisher.setFaceQualityByRoomSize?.(data.state?.viewerCount ?? 1).catch?.(() => {});
     if (webrtcPublisher.avatarManager) {
       webrtcPublisher.avatarManager.onAvatarChange = () => updateAvatarUi();
@@ -1771,10 +1881,8 @@ sync.start()
     // ── 참가자 카메라 표시: 딥페이크 직송(faceFeed)이 살아 있으면 그것을, 아니면 SFU 스트림을 사용 ──
     // 직송 경로: 참가자 JPEG → GPU 워커 → 서버 → 호스트 canvas (stress_test.html 과 같은 경로/속도)
     // SFU 경로는 항상 유지되므로, 직송이 끊기거나 딥페이크가 꺼지면 자동으로 SFU 영상으로 돌아온다.
-    const sfuCameraStreams = new Map();   // clientId -> SFU MediaStream
-    const shownCameraSource = new Map();  // clientId -> 'feed' | 'sfu'
     const feedDisabled = params.get('feed') === '0' || localStorage.getItem('ym_face_feed') === '0';
-    const faceFeed = feedDisabled ? null : new FaceFeedClient({
+    faceFeed = feedDisabled ? null : new FaceFeedClient({
       roomCode,
       hostToken,
       onFirstLive: (id) => showRemoteCamera(id),
@@ -1817,8 +1925,10 @@ sync.start()
         // 서버에 "직송을 실제로 화면에 그리고 있는 참가자" 보고 → 서버는 그 참가자에게 결과 JPEG 를 돌려주지 않고,
         // 참가자의 SFU 카메라 송출(VP8)을 저fps 로 낮춘다. 보고가 끊기거나 목록에서 빠지면 자동 복원된다.
         const liveIds = [];
-        for (const clientId of sfuCameraStreams.keys()) {
-          if (shownCameraSource.get(clientId) === 'feed' && faceFeed.isLive(clientId)) liveIds.push(clientId);
+        if (webrtcPublisher?.shareMode !== 'screen') {
+          for (const clientId of sfuCameraStreams.keys()) {
+            if (shownCameraSource.get(clientId) === 'feed' && faceFeed.isLive(clientId)) liveIds.push(clientId);
+          }
         }
         faceFeed.reportLive(liveIds);
       }, 400);
@@ -1829,6 +1939,10 @@ sync.start()
         publisher: { configurable: true, get: () => webrtcPublisher },
       });
     }
+    window.__ymDebug = window.__ymDebug || {};
+    try {
+      Object.defineProperty(window.__ymDebug, 'publisher', { configurable: true, get: () => webrtcPublisher });
+    } catch { /* already defined */ }
     webrtcPublisher.onMicTrack = (track) => {
       if (track) {
         vadMonitor.attach('local', track);
@@ -1926,16 +2040,11 @@ sync.start()
         showSharePrompt('');
       } else {
         setTimeout(() => {
-          if (!webrtcPublisher?.isActive) startScreenShare();
+          if (!webrtcPublisher?.isActive) startFaceShare();
         }, 120);
       }
     } else {
       updateTarotShareButton();
-      if (!isMobileHostEnv() && canDisplayCapture() && !webrtcPublisher?.isActive) {
-        setTimeout(() => {
-          screenShareSetupModal?.classList.remove('hidden');
-        }, 350);
-      }
     }
   })
   .catch((err) => {

@@ -691,8 +691,43 @@ export class VirtualAvatarManager {
     return Math.min(base, this._uploadLimits().fps);
   }
 
+  /**
+   * 대기(idle) 모드 — 호스트가 "PC 화면"을 보여주는 동안 참가자 얼굴은 아무도 보지 않으므로
+   * 딥페이크 프레임 전송(업로드)·GPU 처리·로컬 렌더링을 모두 멈춘다.
+   * 서버 연결과 "자리"는 유지(서버가 대기 중인 자리를 예약)하므로 재개 때 입장 제어에 다시 걸리지 않는다.
+   * 웹캠·마이크는 건드리지 않는다(목소리는 그대로 전달).
+   */
+  setIdle(on) {
+    const next = !!on;
+    if (!!this._idle === next) return;
+    this._idle = next;
+    this._sendIdleState();
+    if (next) {
+      this._stopSwapPump();
+      this._resetSwapPipeline();
+      try { this.onFeedState?.(false); } catch { /* ignore */ }
+    } else {
+      try { this._renderFrame(); } catch { /* ignore */ }
+      if (this.mode === 'swap' && !this._swapRejected) {
+        this._initSwapWebSocket();
+        this._startSwapPump();
+      }
+    }
+  }
+
+  get isIdle() {
+    return !!this._idle;
+  }
+
+  _sendIdleState() {
+    if (this._ws && this._ws.readyState === WebSocket.OPEN) {
+      try { this._ws.send(JSON.stringify({ type: 'idle', on: !!this._idle })); } catch { /* ignore */ }
+    }
+  }
+
   _startSwapPump() {
     this._stopSwapPump();
+    if (this._idle) return;
     const tick = () => {
       if (this.mode !== 'swap') return;
       this._requestFaceSwapFrame();
@@ -1088,6 +1123,7 @@ export class VirtualAvatarManager {
   }
 
   _renderFrame() {
+    if (this._idle) return;   // 대기 모드: 송출/딥페이크가 멈춘 동안 렌더링도 중단(CPU 절약)
     const ctx = this.ctx;
     const w = this.width;
     const h = this.height;
@@ -1684,6 +1720,7 @@ export class VirtualAvatarManager {
             ws.send(JSON.stringify({ type: 'set_source', source: this.activeSwapFace }));
           } catch { /* ignore */ }
         }
+        if (this._idle) this._sendIdleState();
         this._kickSwap();
       };
       ws.onmessage = (event) => { this._onSwapMessage(event); };
@@ -1977,6 +2014,7 @@ export class VirtualAvatarManager {
   }
 
   _requestFaceSwapFrame() {
+    if (this._idle) return;
     const video = this.rawWebcamVideo;
     if (!video || video.readyState < 2) return;
     const now = performance.now();

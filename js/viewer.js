@@ -9,7 +9,7 @@ import {
   setSelectedBroadcaster,
 } from './viewers-panel.js?v=20260930a';
 import { WebrtcSignaling } from './webrtc/signaling.js?v=20260715j';
-import { ViewerSubscriber } from './webrtc/viewer-subscriber.js?v=20260930c';
+import { ViewerSubscriber } from './webrtc/viewer-subscriber.js?v=20260930e';
 import { setupViewerZoom } from './viewer-zoom.js?v=20260930a';
 import { setupChatPanel } from './chat-panel.js?v=20260918fix2';
 import { CamFocusManager } from './cam-focus-manager.js?v=20260930a';
@@ -82,6 +82,13 @@ let activeHostLink = null; // { url, title }
 let isMeetingStarted = false;
 let currentViewers = [];
 let cachedStreamActive = false;
+let currentDisplayMode = 'face';
+
+function applyDisplayMode(mode) {
+  const next = mode === 'screen' ? 'screen' : 'face';
+  currentDisplayMode = next;
+  subscriber?.setCameraIdle?.(next === 'screen');
+}
 
 function applyRoomPermissions(state) {
   if (!state) return;
@@ -1058,6 +1065,9 @@ function handleEvent(type, data) {
       syncStatus.textContent = '호스트 화면 연결 중…';
       subscriber?.watch?.().catch((err) => { console.warn('[viewer] watch', err); });
       break;
+    case 'display-mode':
+      applyDisplayMode(data.mode);
+      break;
     case 'draw-start':
       viewerDrawCanvas?.handleRemoteStrokeStart(data);
       break;
@@ -1149,6 +1159,7 @@ sync = new RoomSync({
       if (data.state.meetingStarted) {
         isMeetingStarted = true;
       }
+      if (data.state.displayMode) applyDisplayMode(data.state.displayMode);
       if (data.state.streamActive && isMeetingStarted) {
         if (!tarotLounge._isCountingDown) tarotLounge.hide();
         showLive();
@@ -1459,6 +1470,7 @@ sync.start()
       activeBroadcasterId: data.state?.activeBroadcasterId,
     });
     subscriber?.setFaceQualityByRoomSize?.(data.state?.viewerCount ?? 1).catch?.(() => {});
+    applyDisplayMode(data.state?.displayMode || 'face');
     viewerZoom?.setFaceCount?.(
       (Array.isArray(data.state?.viewers)
         ? data.state.viewers.filter((v) => v.admitted !== false).length

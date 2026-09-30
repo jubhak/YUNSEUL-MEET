@@ -8,8 +8,8 @@
   <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
   <meta http-equiv="Pragma" content="no-cache">
   <title>호스트 - YUNSEUL MEET</title>
-  <link rel="stylesheet" href="css/style.css?v=20260930a">
-  <link rel="stylesheet" href="css/av-extras.css?v=20260930a">
+  <link rel="stylesheet" href="css/style.css?v=20260930f">
+  <link rel="stylesheet" href="css/av-extras.css?v=20260930f">
   <style>
     /* 툴바 강제 · 아이콘 가시성 강제 (캐시된 CSS 이겨내기) */
     #main-toolbar.toolbar {
@@ -137,6 +137,17 @@
     #main-toolbar .hidden {
       display: none !important;
     }
+    #main-toolbar .share-mode-toggle {
+      display: inline-flex;
+      gap: 4px;
+      margin-left: 4px;
+    }
+    #main-toolbar .share-mode-toggle[hidden] { display: none !important; }
+    #main-toolbar .share-mode-toggle .btn.is-active {
+      background: #0284c7;
+      color: #fff;
+      border-color: #38bdf8;
+    }
     #main-toolbar #btn-pen.is-active {
       background: #3d6aef !important;
       border-color: #355fd4 !important;
@@ -235,6 +246,10 @@
       <div class="tb-group tb-group-session">
         <button type="button" id="btn-meeting-wait" class="btn btn-sm btn-meeting-wait" title="미팅 준비 대기 중 (클릭 시 미팅 시작)">⏳ 대기중</button>
         <button type="button" id="btn-stream" class="btn btn-sm btn-primary" title="참가자에게 화면 송출">송출</button>
+        <span class="share-mode-toggle" id="share-mode-toggle" hidden>
+          <button type="button" id="btn-share-face" class="btn btn-sm is-active" title="참가자 얼굴만 송출 (PC 화면 캡처 없음)">얼굴 화면</button>
+          <button type="button" id="btn-share-pc" class="btn btn-sm" title="호스트 PC 화면 송출 (얼굴은 잠시 멈춤, 목소리는 유지)">PC 화면</button>
+        </span>
         <button type="button" id="btn-fullscreen" class="btn btn-sm" title="전체화면 (F)">전체화면</button>
         <button type="button" id="btn-chat" class="btn btn-icon btn-chat" title="채팅 열기" aria-pressed="false" aria-label="채팅">
           <span class="ico chat-ico" aria-hidden="true"><span class="chat-ico-bubble">···</span></span>
@@ -516,7 +531,7 @@
   <script type="module" src="js/load-progress.js?v=20260715w"></script>
   <script type="module" src="js/deps.js?v=20260826a"></script>
   <script type="module" src="js/host-ppt-loader.js?v=20260826local1"></script>
-  <script type="module" src="js/host.js?v=20260930c"></script>
+  <script type="module" src="js/host.js?v=20260930g"></script>
   <script type="module">
     import { setupDisplayMode } from './js/display-mode.js?v=20260826fs1';
     setupDisplayMode({ autoPromptMobile: true });

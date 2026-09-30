@@ -497,6 +497,18 @@ _ACTIVE_TS: dict = {}           # client_key -> 마지막 활동 시각
 ADMIT_REJECTED_TOTAL = 0
 ADMIT_ACCEPTED_TOTAL = 0
 
+# ── 대기(idle) 예약 ──
+# 호스트가 "PC 화면"을 보여주는 동안 참가자는 딥페이크 프레임 전송을 멈추고(idle) 연결만 유지한다.
+# 이 참가자들은 GPU 를 쓰지 않으므로 throttle/처리 해상도 계산에서는 빼고,
+# 입장 제어에서는 "자리 예약"으로 센다(재개 때 다른 사람에게 자리를 뺏겨 못 켜는 일 방지).
+IDLE_WS: set = set()            # idle 상태인 WebSocket 객체
+_IDLE_KEYS: set = set()         # idle 상태인 client_key
+
+
+def effective_clients() -> int:
+    """GPU 를 실제로 쓰는(= idle 이 아닌) 연결 수."""
+    return sum(1 for w in CONNECTED_WS if w not in IDLE_WS)
+
 
 def note_active(client_key: str):
     _ACTIVE_TS[client_key] = time.time()
@@ -516,7 +528,7 @@ def capacity_estimate_fps() -> float:
 def admission_decision(client_key: str, prio: str = ""):
     """(허용 여부, 정보 dict). 허용 시 활성 목록에 등록한다."""
     global ADMIT_REJECTED_TOTAL, ADMIT_ACCEPTED_TOTAL
-    active = active_clients()
+    active = active_clients() | _IDLE_KEYS      # idle(예약) 참가자도 자리를 차지한다
     cap = capacity_estimate_fps()
     n_after = len(active | {client_key})
     per = (cap * 0.9) / n_after
@@ -555,7 +567,7 @@ _LAST_BROADCAST_N = -1
 async def broadcast_throttle():
     """현재 접속자 수에 맞는 fps 캡을 모든 클라이언트에게 알려준다."""
     global _LAST_BROADCAST_N
-    n = len(CONNECTED_WS)
+    n = effective_clients()
     profile = get_adaptive_profile(n)
     if n != _LAST_BROADCAST_N:
         _LAST_BROADCAST_N = n
@@ -1168,7 +1180,7 @@ async def submit_frame(source_name: str, frame_bytes: bytes, n_clients: int,
     아니면 이 프로세스의 스레드풀로 보낸다. 어느 쪽이든 호출부 입장에서는
     동일하게 await 가능한 인터페이스다."""
     if timeout is None:
-        prof = get_adaptive_profile(len(CONNECTED_WS))
+        prof = get_adaptive_profile(effective_clients())
         # 첫 프레임 및 고부하 상황에서 타임아웃으로 인한 스킵을 원천 방지 (최소 4.5초)
         timeout = max(4.5, min(12.0, (1000.0 / max(4, prof["fps"])) * 4 / 1000.0))
 
@@ -1216,7 +1228,7 @@ async def handle_ping(request):
 
 async def handle_stats(request):
     """워커 수 / 참가자 수 / 실측 지연 / 현재 백프레셔 프로파일."""
-    n = len(CONNECTED_WS)
+    n = effective_clients()
     return web.json_response({
         "status": "ok",
         "workers": max(1, WORKER_COUNT_EFFECTIVE or WORKER_COUNT),
@@ -1240,6 +1252,7 @@ async def handle_stats(request):
         "admission": {
             "enabled": _ADMIT_ENABLED, "min_fps": _ADMIT_MIN_FPS, "max_clients_cfg": _ADMIT_MAX_CLIENTS,
             "capacity_fps": round(capacity_estimate_fps(), 1), "active": len(active_clients()),
+            "idle": len(_IDLE_KEYS), "effective_clients": effective_clients(),
             "accepted": ADMIT_ACCEPTED_TOTAL, "rejected": ADMIT_REJECTED_TOTAL,
         },
         "gpu": await asyncio.to_thread(gpu_snapshot),
@@ -1281,7 +1294,7 @@ async def handle_swap_frame(request):
         return web.Response(status=400, text="Empty frame body")
 
     client_key = request.headers.get("X-Client-Id") or "http"
-    swapped = await submit_frame(source_name, body, len(CONNECTED_WS), client_key)
+    swapped = await submit_frame(source_name, body, effective_clients(), client_key)
     return web.Response(body=swapped, content_type="image/jpeg", headers={
         "Access-Control-Allow-Origin": "*",
         "X-Source-Face": source_name,
@@ -1320,6 +1333,7 @@ async def handle_websocket(request):
     # 참가자당 "최신 프레임 1장" 슬롯. 새 프레임이 오면 아직 시작 못 한 이전 프레임은 폐기하고
     # (v2 클라이언트에는 drop 알림) 항상 가장 최근 프레임만 GPU 에 올린다 → 지연 누적/고속재생 방지.
     rejected = False        # set_source 시점 입장 제어에서 거절된 연결
+    idle_key = None         # idle 로 예약해 둔 client_key (hello 로 키가 바뀌어도 정리하기 위함)
     latest_pending = None   # (src_name, frame_bytes, seq|None, recv_ts)
     processing_event = asyncio.Event()
     is_closed = False
@@ -1346,11 +1360,11 @@ async def handle_websocket(request):
                 latest_pending = None
                 try:
                     if POOL_ENABLED:
-                        swapped = await submit_frame(src_name, frame_bytes, len(CONNECTED_WS), client_key)
+                        swapped = await submit_frame(src_name, frame_bytes, effective_clients(), client_key)
                         waited, proc = 0.0, 0.0
                     else:
                         swapped, waited, proc = await run_inproc(
-                            src_name, frame_bytes, len(CONNECTED_WS), client_key)
+                            src_name, frame_bytes, effective_clients(), client_key)
                     if ws.closed:
                         break
                     if not swapped:
@@ -1417,6 +1431,23 @@ async def handle_websocket(request):
                             client_key = cid
                         await ws.send_json({"type": "hello_ack", "clientId": client_key})
 
+                    elif mtype == "idle":
+                        # 호스트가 PC 화면을 보여주는 동안 참가자가 프레임 전송을 멈춤(on=true) / 재개(on=false).
+                        # idle 동안은 GPU 를 쓰지 않으므로 인원 계산에서 빼고, 자리는 예약해 둔다.
+                        if payload.get("on"):
+                            IDLE_WS.add(ws)
+                            _IDLE_KEYS.add(client_key)
+                            idle_key = client_key
+                            _ACTIVE_TS.pop(client_key, None)
+                        else:
+                            IDLE_WS.discard(ws)
+                            _IDLE_KEYS.discard(client_key)
+                            if idle_key:
+                                _IDLE_KEYS.discard(idle_key)
+                            idle_key = None
+                            note_active(client_key)
+                        await broadcast_throttle()
+
                     elif mtype == "set_source":
                         # 얼굴을 (다시) 고를 때마다 입장 제어를 다시 확인 — 한동안 쉬었다가(활성 목록에서 빠짐) 재적용하는 경우
                         ok_now, info_now = admission_decision(client_key, prio)
@@ -1441,7 +1472,7 @@ async def handle_websocket(request):
                             img_b64 = img_b64.split(",", 1)[1]
                         import base64
                         raw_bytes = base64.b64decode(img_b64)
-                        swapped = await submit_frame(src_name, raw_bytes, len(CONNECTED_WS), client_key)
+                        swapped = await submit_frame(src_name, raw_bytes, effective_clients(), client_key)
                         out_b64 = "data:image/jpeg;base64," + base64.b64encode(swapped).decode("ascii")
                         await ws.send_json({
                             "type": "swapped_base64",
@@ -1459,6 +1490,10 @@ async def handle_websocket(request):
         processing_event.set()
         worker_task.cancel()
         CONNECTED_WS.discard(ws)
+        IDLE_WS.discard(ws)
+        _IDLE_KEYS.discard(client_key)
+        if idle_key:
+            _IDLE_KEYS.discard(idle_key)
         _ACTIVE_TS.pop(client_key, None)
         _TRACK_CACHE.pop(client_key, None)
         CLIENT_WORKER.pop(client_key, None)
@@ -1534,8 +1569,8 @@ async def start_server():
             await asyncio.sleep(2.0)
             try:
                 update_peak_throughput()
-                update_aimd(len(CONNECTED_WS))
-                if len(CONNECTED_WS) > 0:
+                update_aimd(effective_clients())
+                if effective_clients() > 0:
                     await broadcast_throttle()
             except Exception:
                 logger.exception("[throttle_loop] error")
