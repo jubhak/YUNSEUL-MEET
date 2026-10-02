@@ -377,7 +377,7 @@ async function createWebRtcTransport(room) {
   const router = room.router;
   const server = (room.webRtcServer && !room.webRtcServer.closed)
     ? room.webRtcServer
-    : await getWebRtcServer();
+    : (room.entry?.webRtcServer && !room.entry.webRtcServer.closed ? room.entry.webRtcServer : null);
   const transportOpts = {
     enableUdp: true,
     enableTcp: true,
@@ -390,13 +390,18 @@ async function createWebRtcTransport(room) {
     maxIncomingBitrate: 10_000_000,
     enableSctp: false,
   };
+  let transport;
   if (server && !server.closed) {
-    transportOpts.webRtcServer = server;
+    try {
+      transport = await router.createWebRtcTransport({ ...transportOpts, webRtcServer: server });
+    } catch (err) {
+      console.warn('[sfu] WebRtcServer transport failed, falling back to listenInfos:', err.message);
+      transport = await router.createWebRtcTransport({ ...transportOpts, listenInfos: buildListenInfos(0) });
+    }
   } else {
     // WebRtcServer 포트 충돌이나 부재 시에도 단독 listenInfos로 즉시 폴백하여 중단 방지
-    transportOpts.listenInfos = buildListenInfos(0);
+    transport = await router.createWebRtcTransport({ ...transportOpts, listenInfos: buildListenInfos(0) });
   }
-  const transport = await router.createWebRtcTransport(transportOpts);
   return {
     transport,
     params: {
