@@ -1,5 +1,5 @@
-import { SfuClient } from './sfu-client.js?v=20260930d';
-import { VirtualAvatarManager, openWebcamFlexible, faceModeForRoomCount } from '../virtual-avatar-manager.js?v=20260930m';
+import { SfuClient } from './sfu-client.js?v=20261002a';
+import { VirtualAvatarManager, openWebcamFlexible, faceModeForRoomCount } from '../virtual-avatar-manager.js?v=20261002a';
 
 /**
  * 참가자: SFU에서 호스트 display 수신 + (선택) 마이크/화면 업링크
@@ -860,6 +860,7 @@ export class ViewerSubscriber {
 
   /**
    * 방 인원 수에 따라 얼굴 송출 화질 자동 전환
+   * 2~6명 960×540 / 7~12명 640×360 / 13~20명 512×288 / 21~30명 384×216 / 31명+ 320×180
    * (클라이언트는 업로드만 — 타인 얼굴 수신/디코드 없음)
    */
   async setFaceQualityByRoomSize(totalPeople = 1) {
@@ -867,17 +868,18 @@ export class ViewerSubscriber {
     this._faceRoomCount = count;
     if (!this.avatarManager) return;
     const mode = faceModeForRoomCount(count);
-    const profile = this._currentFaceProfile();
     // 카메라가 비활성 상태(사용자가 켜지 않음)일 때는 canvas 출력 스트림을 생성/재할당하지 않음
     if (!this.cameraWanted || !this.cameraStream) {
       this.avatarManager.setFaceMode(mode);
+      const idleProfile = this._currentFaceProfile();
       if (this.sfu) {
-        await this.sfu.updateCameraEncodings?.('viewer-camera', profile).catch(() => {});
+        await this.sfu.updateCameraEncodings?.('viewer-camera', idleProfile).catch(() => {});
       }
       return;
     }
     const prevTrack = this.cameraStream?.getVideoTracks?.()[0] || null;
     const recreated = this.avatarManager.setFaceMode(mode);
+    const profile = this._currentFaceProfile();
     const outgoing = this.avatarManager.getOutputStream();
     this.cameraStream = outgoing;
     const nextTrack = outgoing?.getVideoTracks?.()[0] || null;

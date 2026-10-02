@@ -103,6 +103,13 @@ class SpeakingIndicatorManager {
     return !!this.sources.get(id)?.speaking;
   }
 
+  /** 합성 화면·오버레이용 현재 발화 상태 */
+  getVisual(id) {
+    const s = this.sources.get(id);
+    if (!s) return { speaking: false, level: 0, bands: null };
+    return this._measure(id, s, performance.now());
+  }
+
   _measure(id, s, now) {
     if (s.type === 'local') {
       const t = s.pipeline.telemetry || {};

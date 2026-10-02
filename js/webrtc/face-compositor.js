@@ -1,4 +1,4 @@
-import { createWorkerTicker } from '../virtual-avatar-manager.js?v=20260930m';
+import { createWorkerTicker } from '../virtual-avatar-manager.js?v=20261002a';
 
 /**
  * 호스트 참가자 타일을 16:9 카드로 합성해 보낸다.
@@ -30,6 +30,15 @@ export class FaceCompositor {
     return this._stream;
   }
 
+  setFps(fps) {
+    const next = Math.max(8, Math.round(Number(fps) || this.fps));
+    if (next === this.fps) return;
+    this.fps = next;
+    if (!this._ticker) return;
+    this.stopTicker();
+    this._ticker = createWorkerTicker(Math.round(1000 / this.fps), () => this._draw());
+  }
+
   stopTicker() {
     try { this._ticker?.stop?.(); } catch { /* ignore */ }
     this._ticker = null;
@@ -50,6 +59,7 @@ export class FaceCompositor {
   _cols(n) {
     if (n <= 1) return 1;
     if (n === 2 || n === 4) return 2;
+    if (n >= 21) return 6;
     if (n >= 10) return 5;
     return 3;
   }
@@ -177,5 +187,44 @@ export class FaceCompositor {
     ctx.lineWidth = 1.5;
     this._roundRect(ctx, x, y, w, h, radius);
     ctx.stroke();
+    this._drawSpeakOverlay(ctx, tile, x, y, w, h, radius);
+  }
+
+  _drawSpeakOverlay(ctx, tile, x, y, w, h, radius) {
+    if (!tile?.speaking) return;
+    ctx.save();
+    ctx.strokeStyle = '#facc15';
+    ctx.lineWidth = Math.max(3, Math.round(w * 0.012));
+    this._roundRect(ctx, x, y, w, h, radius);
+    ctx.stroke();
+
+    const bands = Array.isArray(tile.bands) ? tile.bands : null;
+    const barW = Math.max(18, Math.min(50, w * 0.2));
+    const barH = Math.max(12, Math.min(30, h * 0.14));
+    const bx = x + w - barW - Math.max(4, w * 0.02);
+    const by = y + h - barH - Math.max(4, h * 0.025);
+    ctx.fillStyle = 'rgba(0, 0, 0, 0.42)';
+    if (typeof ctx.roundRect === 'function') {
+      ctx.beginPath();
+      ctx.roundRect(bx, by, barW, barH, 5);
+      ctx.fill();
+    } else {
+      ctx.fillRect(bx, by, barW, barH);
+    }
+    const n = 7;
+    const gap = 2;
+    const padX = 4;
+    const padY = 3;
+    const innerW = barW - padX * 2;
+    const innerH = barH - padY * 2;
+    const iw = (innerW - gap * (n - 1)) / n;
+    const lvl = 0.35 + 0.65 * (Number(tile.level) || 0);
+    ctx.fillStyle = '#facc15';
+    for (let i = 0; i < n; i += 1) {
+      const v = Math.max(0.1, Math.min(1, ((bands && bands[i]) || 0.35) * lvl * 1.15));
+      const bh = innerH * v;
+      ctx.fillRect(bx + padX + i * (iw + gap), by + padY + (innerH - bh), Math.max(1, iw), bh);
+    }
+    ctx.restore();
   }
 }

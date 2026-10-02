@@ -1,7 +1,7 @@
 import { TRACK_KIND } from './config.js';
-import { SfuClient } from './sfu-client.js?v=20260930e';
-import { VirtualAvatarManager, openWebcamFlexible, faceModeForRoomCount } from '../virtual-avatar-manager.js?v=20260930m';
-import { FaceCompositor } from './face-compositor.js?v=20260930m';
+import { SfuClient } from './sfu-client.js?v=20261002a';
+import { VirtualAvatarManager, openWebcamFlexible, faceModeForRoomCount } from '../virtual-avatar-manager.js?v=20261002a';
+import { FaceCompositor } from './face-compositor.js?v=20261002b';
 
 /**
  * Host -> SFU display share (+ optional tab audio / mic).
@@ -283,6 +283,7 @@ export class HostPublisher {
     this._startAutoRepair();
     this._emitStatus();
     this.onShareModeChange?.('face');
+    this._applyDisplayBudget(this._faceRoomCount || 1);
     return stream;
   }
 
@@ -674,18 +675,34 @@ export class HostPublisher {
   }
 
   _applyDisplayBudget(count) {
-    const EGRESS_BUDGET = 50_000_000; // bps (회선 상향 약 80Mbps 중 화면 송출 몫)
-    const MIN_PER_VIEWER = 800_000;
-    const MAX_PER_VIEWER = 3_000_000;
-    let cap = 0;
-    if (count > 8) cap = Math.max(MIN_PER_VIEWER, Math.min(MAX_PER_VIEWER, Math.floor(EGRESS_BUDGET / count)));
-    this.sfu?.setDisplayMaxBitrate?.(cap)?.catch?.(() => {});
+    const n = Math.max(1, Number(count) || 1);
+    const EGRESS_BUDGET = 50_000_000;
+    let maxBitrate = 4_000_000;
+    let startBitrate = 2_500_000;
+    if (n <= 6) {
+      maxBitrate = 4_000_000;
+      startBitrate = 2_500_000;
+    } else if (n <= 12) {
+      maxBitrate = 3_000_000;
+      startBitrate = 1_800_000;
+    } else if (n <= 20) {
+      maxBitrate = Math.max(800_000, Math.min(2_500_000, Math.floor(EGRESS_BUDGET / n)));
+      startBitrate = Math.min(1_500_000, maxBitrate);
+    } else if (n <= 30) {
+      maxBitrate = Math.max(500_000, Math.min(1_700_000, Math.floor(EGRESS_BUDGET / n)));
+      startBitrate = Math.min(900_000, maxBitrate);
+    } else {
+      maxBitrate = Math.max(400_000, Math.min(1_200_000, Math.floor(EGRESS_BUDGET / n)));
+      startBitrate = Math.min(600_000, maxBitrate);
+    }
+    this.sfu?.setDisplayEncodeBudget?.({ maxBitrate, startBitrate })?.catch?.(() => {});
+    const compositorFps = n > 30 ? 15 : (n > 20 ? 20 : 30);
+    this._compositor?.setFps?.(compositorFps);
   }
 
   /**
    * 방 인원 수에 따라 얼굴 송출 화질 자동 전환
-   * 1~3명: 솔로 화질 유지 / 4~8명: 중간 / 9명+: 다인 절약
-   * (레이아웃만 바꿨을 때 2명 화질이 떨어지지 않게)
+   * 2~6명: 960×540 / 7~12명: 640×360 / 13~20명: 512×288 / 21~30명: 384×216 / 31명+: 320×180
    */
   async setFaceQualityByRoomSize(totalPeople = 1) {
     const count = Math.max(1, Number(totalPeople) || 1);
@@ -693,17 +710,18 @@ export class HostPublisher {
     this._applyDisplayBudget(count);
     if (!this.avatarManager) return;
     const mode = faceModeForRoomCount(count);
-    const profile = this.avatarManager.getFaceProfile();
     // 카메라가 비활성 상태(사용자가 켜지 않음)일 때는 canvas 출력 스트림을 생성/재할당하지 않음
     if (!this.cameraWanted || !this.cameraStream) {
       this.avatarManager.setFaceMode(mode);
+      const idleProfile = this.avatarManager.getFaceProfile();
       if (this.sfu) {
-        await this.sfu.updateCameraEncodings?.('camera', profile).catch(() => {});
+        await this.sfu.updateCameraEncodings?.('camera', idleProfile).catch(() => {});
       }
       return;
     }
     const prevTrack = this.cameraStream?.getVideoTracks?.()[0] || null;
     const recreated = this.avatarManager.setFaceMode(mode);
+    const profile = this.avatarManager.getFaceProfile();
     const outgoing = this.avatarManager.getOutputStream();
     this.cameraStream = outgoing;
     const nextTrack = outgoing?.getVideoTracks?.()[0] || null;

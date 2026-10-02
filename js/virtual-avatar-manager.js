@@ -264,25 +264,42 @@ export const FACE_OUT_FPS = 22;
 export const FACE_OUT_W_HD = 640;
 export const FACE_OUT_H_HD = 360;
 export const FACE_OUT_FPS_HD = 28;
+export const FACE_OUT_W_HQ = 960;
+export const FACE_OUT_H_HQ = 540;
+export const FACE_OUT_FPS_HQ = 26;
 export const FACE_OUT_W_CROWD = 512;
 export const FACE_OUT_H_CROWD = 288;
 export const FACE_OUT_FPS_CROWD = 20;
+export const FACE_OUT_W_PACK = 384;
+export const FACE_OUT_H_PACK = 216;
+export const FACE_OUT_FPS_PACK = 14;
+export const FACE_OUT_W_MASS = 320;
+export const FACE_OUT_H_MASS = 180;
+export const FACE_OUT_FPS_MASS = 10;
 
-/** 호스트만 수신하는 구조: 10명 이상 다자간 화상에서도 부드러운 20fps와 무지연 보장 */
+/** 호스트만 개별 얼굴을 받고, 클라이언트는 합성 화면 1장만 받는다. */
+export const FACE_PROFILE_HIGH = { mode: 'high', width: FACE_OUT_W_HQ, height: FACE_OUT_H_HQ, fps: FACE_OUT_FPS_HQ, maxBitrate: 900_000 };
 export const FACE_PROFILE_SOLO = { mode: 'solo', width: FACE_OUT_W_HD, height: FACE_OUT_H_HD, fps: FACE_OUT_FPS_HD, maxBitrate: 350_000 };
 export const FACE_PROFILE_MULTI = { mode: 'multi', width: FACE_OUT_W, height: FACE_OUT_H, fps: FACE_OUT_FPS, maxBitrate: 180_000 };
 export const FACE_PROFILE_CROWD = { mode: 'crowd', width: FACE_OUT_W_CROWD, height: FACE_OUT_H_CROWD, fps: FACE_OUT_FPS_CROWD, maxBitrate: 170_000 };
+export const FACE_PROFILE_PACK = { mode: 'pack', width: FACE_OUT_W_PACK, height: FACE_OUT_H_PACK, fps: FACE_OUT_FPS_PACK, maxBitrate: 110_000 };
+export const FACE_PROFILE_MASS = { mode: 'mass', width: FACE_OUT_W_MASS, height: FACE_OUT_H_MASS, fps: FACE_OUT_FPS_MASS, maxBitrate: 80_000 };
 
 export function faceModeForRoomCount(totalPeople = 1) {
   const n = Math.max(1, Number(totalPeople) || 1);
-  if (n <= 3) return 'solo';
-  if (n <= 8) return 'multi';
-  return 'crowd';
+  if (n <= 6) return 'high';
+  if (n <= 12) return 'solo';
+  if (n <= 20) return 'crowd';
+  if (n <= 30) return 'pack';
+  return 'mass';
 }
 
 export function faceProfileForMode(mode) {
+  if (mode === 'high') return FACE_PROFILE_HIGH;
   if (mode === 'solo') return FACE_PROFILE_SOLO;
   if (mode === 'crowd') return FACE_PROFILE_CROWD;
+  if (mode === 'pack') return FACE_PROFILE_PACK;
+  if (mode === 'mass') return FACE_PROFILE_MASS;
   return FACE_PROFILE_MULTI;
 }
 
@@ -310,6 +327,8 @@ export async function openWebcamFlexible() {
 
   const attempts = [
     // 솔로 품질 선호 (ideal만 — max 하드 리밋 금지)
+    { width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 28 } },
+    { width: { ideal: 960 }, height: { ideal: 540 }, frameRate: { ideal: 26 } },
     { width: { ideal: 640 }, height: { ideal: 360 }, frameRate: { ideal: 28 } },
     { width: { ideal: 640 }, height: { ideal: 480 }, frameRate: { ideal: 24 } },
     { width: { ideal: 320 }, height: { ideal: 240 }, frameRate: { ideal: 24 } },
@@ -360,16 +379,16 @@ export async function openWebcamFlexible() {
 
 export class VirtualAvatarManager {
   constructor({
-    width = FACE_OUT_W_HD,
-    height = FACE_OUT_H_HD,
-    fps = FACE_OUT_FPS_HD,
+    width = FACE_OUT_W_HQ,
+    height = FACE_OUT_H_HQ,
+    fps = FACE_OUT_FPS_HQ,
     lockLowRes = false,
   } = {}) {
     this.width = width;
     this.height = height;
     this.captureFps = fps;
     this.lockLowRes = !!lockLowRes;
-    this.faceMode = 'solo'; // 'solo' | 'multi'
+    this.faceMode = 'high';
     this.isLarge = width >= FACE_OUT_W_HD;
     this.deck = new NonRepeatingDeck(CELEBRITY_AVATARS);
     this._heroImages = new Map();
@@ -472,20 +491,20 @@ export class VirtualAvatarManager {
    */
   setHighRes(isLarge) {
     if (this.lockLowRes) {
-      this.setFaceMode('crowd');
+      this.setFaceMode('mass');
       return;
     }
-    this.setFaceMode(isLarge ? 'solo' : 'multi');
+    this.setFaceMode(isLarge ? 'high' : 'solo');
   }
 
   /**
    * 방 인원 기반 송출 프로파일
-   * - solo: 640×360 @ ~28fps
-   * - multi: 256×144 @ 20fps
+   * - high: 960×540 (2~6명) / solo: 640×360 (7~12명) / crowd: 512×288 (13~20명)
+   * - pack: 384×216 (21~30명) / mass: 320×180 (31명+)
    * @returns {boolean} 출력 트랙이 재생성된 경우 true
    */
   setFaceMode(mode) {
-    if (this.lockLowRes) mode = 'crowd';
+    if (this.lockLowRes) mode = 'mass';
     const profile = faceProfileForMode(mode);
     const nextMode = profile.mode;
     const same = this.faceMode === nextMode
@@ -493,7 +512,7 @@ export class VirtualAvatarManager {
       && this.height === profile.height
       && this.captureFps === profile.fps;
     this.faceMode = nextMode;
-    this.isLarge = nextMode === 'solo';
+    this.isLarge = nextMode === 'high' || nextMode === 'solo';
     this.captureFps = profile.fps;
 
     let recreated = false;
@@ -520,7 +539,7 @@ export class VirtualAvatarManager {
   }
 
   getFaceProfile() {
-    return faceProfileForMode(this.faceMode || 'multi');
+    return faceProfileForMode(this.faceMode || 'high');
   }
 
   _softApplyWebcamConstraints(profile) {
@@ -680,7 +699,12 @@ export class VirtualAvatarManager {
    * 그 값을 넘지 않도록 클램프한다. 참가자가 많아질수록 서버가 캡을 낮춰 보내므로,
    * 클라이언트가 자체 판단으로 계속 26fps를 밀어넣어 서버 GPU 락을 독점하는 상황을 막는다. */
   _swapRequestFps() {
-    const base = this.faceMode === 'crowd' ? 18 : (this.faceMode === 'multi' ? 22 : 28);
+    const base = this.faceMode === 'mass' ? 8
+      : this.faceMode === 'pack' ? 12
+      : this.faceMode === 'crowd' ? 18
+      : this.faceMode === 'multi' ? 22
+      : this.faceMode === 'high' ? 26
+      : 28;
     if (this._serverFpsCap) {
       // 서버가 내려준 fps 캡을 그대로 따른다(서버가 인원 수에 맞춰 이미 충분히 높게 준다: 1인 30, 4명 22 …).
       // 예전에는 여기서 최소 16fps 를 강제해, 20명처럼 서버가 5~8fps 만 소화할 수 있을 때도 16fps 로 밀어 넣어

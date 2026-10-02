@@ -29,6 +29,8 @@ export class SfuClient {
     this._pendingProducers = [];
     this._produceChain = Promise.resolve();
     this._consumeChain = Promise.resolve();
+    this._displayMaxBitrate = 0;
+    this._displayStartBitrate = 0;
     /** 송출을 일시정지(인코딩·전송 중단)해 둔 source 목록 — 새 producer 가 만들어져도 다시 적용된다 */
     this._inactiveSources = new Set();
     /** @type {((stream: MediaStream) => void)|null} */
@@ -313,12 +315,18 @@ export class SfuClient {
             const fps = Math.min(Number(settings.frameRate) || 28, 30);
             let maxBitrate = 350_000;
             let maxFramerate = 28;
-            if (w <= 320 || fps <= 15) {
-              maxBitrate = 120_000;
-              maxFramerate = 18;
+            if (w <= 320 || fps <= 12) {
+              maxBitrate = 80_000;
+              maxFramerate = 10;
+            } else if (w <= 384 || fps <= 15) {
+              maxBitrate = 110_000;
+              maxFramerate = 14;
             } else if (w <= 480 || fps <= 22) {
               maxBitrate = 180_000;
               maxFramerate = 22;
+            } else if (w >= 900) {
+              maxBitrate = 900_000;
+              maxFramerate = 26;
             }
             produceOpts.encodings = [{
               maxBitrate,
@@ -335,7 +343,9 @@ export class SfuClient {
             // 단, 화면에 참가자 영상 타일이 움직이는 동안(_displayMotion)에는 'motion'(프레임 우선)으로 보낸다.
             try { track.contentHint = this._displayMotion ? 'motion' : 'detail'; } catch { /* ignore */ }
             produceOpts.codecOptions = {
-              videoGoogleStartBitrate: 1500,
+              videoGoogleStartBitrate: this._displayStartBitrate
+                ? Math.round(this._displayStartBitrate / 1000)
+                : 1500,
             };
             // 호스트 화면은 시청자 N명에게 그대로 복제돼 나가는 유일한 대용량 스트림(서버 상향 대역폭의 대부분).
             // 인원 수에 따른 비트레이트 상한(_displayMaxBitrate)이 있으면 처음부터 적용한다.
@@ -447,6 +457,11 @@ export class SfuClient {
    * 호스트 화면(display) 송출 비트레이트 상한 설정. bitrate 가 falsy 면 상한 해제.
    * 이후 새로 만들어지는 display producer 에도 적용된다.
    */
+  async setDisplayEncodeBudget({ maxBitrate = 0, startBitrate = 0 } = {}) {
+    this._displayStartBitrate = startBitrate ? Math.round(startBitrate) : 0;
+    await this.setDisplayMaxBitrate(maxBitrate);
+  }
+
   async setDisplayMaxBitrate(bitrate) {
     const next = bitrate ? Math.round(bitrate) : 0;
     if (next === (this._displayMaxBitrate || 0)) return;

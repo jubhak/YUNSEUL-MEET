@@ -9,12 +9,12 @@ import {
   setSelectedBroadcaster,
 } from './viewers-panel.js?v=20260930a';
 import { WebrtcSignaling } from './webrtc/signaling.js?v=20260715j';
-import { ViewerSubscriber } from './webrtc/viewer-subscriber.js?v=20260930m';
-import { setupViewerZoom } from './viewer-zoom.js?v=20260930a';
+import { ViewerSubscriber } from './webrtc/viewer-subscriber.js?v=20261002b';
+import { setupViewerZoom } from './viewer-zoom.js?v=20261002b';
 import { setupChatPanel } from './chat-panel.js?v=20260918fix2';
 import { CamFocusManager } from './cam-focus-manager.js?v=20260930a';
-import { MicController } from './mic-controller.js?v=20260930a';
-import { speakingIndicator } from './speaking-indicator.js?v=20260930a';
+import { MicController } from './mic-controller.js?v=20261002b';
+import { speakingIndicator } from './speaking-indicator.js?v=20261002b';
 import { showToast } from './ui-toast.js?v=20260930a';
 import { RemoteControlViewer } from './remote-control.js?v=20260930a';
 import { TarotLoungeManager } from './tarot-lounge-manager.js?v=20260930j';
@@ -71,8 +71,9 @@ if (liveVideo) {
 }
 window.addEventListener('resize', () => viewerDrawCanvas?.resize());
 
-/** 로컬 핀치 줌 — 호스트 화면 전환과 무관하게 유지 */
+/** 로컬 줌 — PC 화면 공유일 때만 사용. 영상 회의에서는 끈다. */
 const viewerZoom = setupViewerZoom(liveStage);
+viewerZoom?.setEnabled?.(false);
 
 let sync = null;
 let subscriber = null;
@@ -97,8 +98,13 @@ let currentDisplayMode = 'face';
 function applyDisplayMode(mode) {
   const next = mode === 'screen' ? 'screen' : 'face';
   currentDisplayMode = next;
+  document.body.classList.toggle('display-mode-screen', next === 'screen');
+  document.body.classList.toggle('display-mode-face', next === 'face');
+  viewerZoom?.setEnabled?.(next === 'screen');
   subscriber?.setCameraIdle?.(next === 'screen');
 }
+
+applyDisplayMode(currentDisplayMode);
 
 function applyRoomPermissions(state) {
   if (!state) return;
@@ -779,11 +785,19 @@ function updateAvatarUi() {
 
     const pillHd = localBox.querySelector('.pill-hd');
     if (pillHd) {
-      pillHd.classList.toggle('is-active', !!avMgr.isLarge);
-      pillHd.textContent = avMgr.isLarge ? 'HD 720p' : 'SD 저부하';
-      pillHd.title = avMgr.isLarge
-        ? '현재 1280×720 HD 고화질 모드 (클릭 시 360p 저부하 모드로 전환)'
-        : '현재 640×360 저부하 모드 (더블클릭 집중화면 또는 클릭 시 720p HD 전환)';
+      const mode = avMgr.faceMode || (avMgr.isLarge ? 'high' : 'crowd');
+      const pillMap = {
+        high: { label: '540p', title: '2~6명: 960×540 @ ~26fps' },
+        solo: { label: '360p', title: '7~12명: 640×360 @ ~28fps' },
+        multi: { label: '270p', title: '중간: 480×270 @ ~22fps' },
+        crowd: { label: '288p', title: '13~20명: 512×288 @ ~20fps' },
+        pack: { label: '216p', title: '21~30명: 384×216 @ ~14fps' },
+        mass: { label: '180p', title: '31명+: 320×180 @ ~10fps' },
+      };
+      const pill = pillMap[mode] || pillMap.crowd;
+      pillHd.classList.toggle('is-active', mode === 'high' || mode === 'solo');
+      pillHd.textContent = pill.label;
+      pillHd.title = pill.title;
     }
 
     const badge = localBox.querySelector('.cam-pip-badge');

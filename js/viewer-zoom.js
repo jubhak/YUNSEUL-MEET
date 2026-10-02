@@ -1,9 +1,9 @@
 /**
  * 참가자 로컬 줌·팬 (호스트 화면/슬라이드 변경과 무관하게 transform 유지)
  *
- * - 모바일(터치): 기본 배율을 "호스트 화면에 얼굴 약 10명이 폰 화면을 채우는 정도"로 자동 설정하고,
- *   나머지 얼굴은 한 손가락 드래그(팬)로 확인. 두 손가락 핀치로 자유 확대/축소, 더블탭으로 기본 배율 ↔ 확대.
- * - PC(마우스): 휠로 확대/축소, 확대 상태에서는 "초점이 마우스를 따라감"(마우스 위치 = 보는 위치),
+ * - 호스트 PC 화면 공유일 때만 켠다. 영상 회의(얼굴 합성)에서는 끈다.
+ * - 모바일(터치): 두 손가락 핀치로 확대/축소, 더블탭으로 맞춤 ↔ 확대. 확대 중 한 손가락 드래그로 이동.
+ * - PC(마우스): 휠로 확대/축소, 확대 상태에서는 "초점이 마우스를 따라감",
  *   우측 하단 줌 UI(−/+/맞춤/따라가기 토글)로 조작. 따라가기를 끄면 드래그로 이동.
  * - 브라우저 페이지 줌이 아니라 live-stage 안 콘텐츠만 확대
  */
@@ -43,6 +43,7 @@ export function setupViewerZoom(stageEl) {
   const isCoarse = () => window.matchMedia?.('(pointer: coarse)')?.matches ?? ('ontouchstart' in window);
   const isFine = () => window.matchMedia?.('(pointer: fine)')?.matches ?? !isCoarse();
 
+  let enabled = true;
   let scale = 1;
   let tx = 0;
   let ty = 0;
@@ -159,12 +160,33 @@ export function setupViewerZoom(stageEl) {
     });
   }
 
-  /** 기본 배율: 모바일은 얼굴 ~10명이 화면을 채우도록 (얼굴 수가 많을수록 확대) */
+  /** 화면 공유 기본은 맞춤(1배). 영상 회의에서는 확대 자체를 끈다. */
   function computeDefaultScale() {
-    if (!isCoarse()) return 1;
-    const n = faceCount > 0 ? faceCount : DEFAULT_VISIBLE_FACES;
-    // 화면 면적 대비 보이는 비율 = 10/n → 배율 = sqrt(n/10). 화면 공유가 그리드 형태(3열)라는 가정.
-    return clamp(Math.sqrt(n / DEFAULT_VISIBLE_FACES), 1, 3.2);
+    return 1;
+  }
+
+  function setEnabled(on) {
+    const next = !!on;
+    if (next === enabled) {
+      if (ui) ui.style.display = enabled && isFine() ? '' : 'none';
+      stageEl.classList.toggle('zoom-disabled', !enabled);
+      return;
+    }
+    enabled = next;
+    stageEl.classList.toggle('zoom-disabled', !enabled);
+    userAdjusted = false;
+    scale = 1;
+    tx = 0;
+    ty = 0;
+    pinch = null;
+    pan = null;
+    mouseDrag = null;
+    if (ui) ui.style.display = enabled && isFine() ? '' : 'none';
+    if (!enabled) {
+      document.body.classList.remove('is-pinching');
+      stageEl.classList.remove('is-dragging');
+    }
+    apply();
   }
 
   function applyDefault() {
@@ -185,6 +207,7 @@ export function setupViewerZoom(stageEl) {
   }
 
   function setScale(next) {
+    if (!enabled) return;
     const { rect } = contentSize();
     zoomAt(rect.left + rect.width / 2, rect.top + rect.height / 2, next);
   }
@@ -237,6 +260,7 @@ export function setupViewerZoom(stageEl) {
 
   // ── 터치 ──────────────────────────────────────────────────────────────────
   function onTouchStart(e) {
+    if (!enabled) return;
     if (e.touches.length >= 2) {
       setPinching(true);
       pan = null;
@@ -256,6 +280,7 @@ export function setupViewerZoom(stageEl) {
   }
 
   function onTouchMove(e) {
+    if (!enabled) return;
     if (e.touches.length === 2 && pinch) {
       setPinching(true);
       const a = e.touches[0];
@@ -287,6 +312,7 @@ export function setupViewerZoom(stageEl) {
   }
 
   function onTouchEnd(e) {
+    if (!enabled) return;
     if (e.touches.length < 2) {
       pinch = null;
       if (document.body.classList.contains('is-pinching')) setPinching(false);
@@ -323,6 +349,7 @@ export function setupViewerZoom(stageEl) {
 
   // ── PC: 휠 확대/축소 + 마우스 따라가기 + (따라가기 OFF 시) 드래그 이동 ──────────
   function onWheel(e) {
+    if (!enabled) return;
     // 스테이지 위 휠 = 확대/축소 (페이지 스크롤 방지)
     e.preventDefault();
     userAdjusted = true;
@@ -364,6 +391,7 @@ export function setupViewerZoom(stageEl) {
   }
 
   function onMouseMove(e) {
+    if (!enabled) return;
     if (e.pointerType && e.pointerType !== 'mouse') return;
     mouse = { x: e.clientX, y: e.clientY };
     if (mouseDrag) {
@@ -377,6 +405,7 @@ export function setupViewerZoom(stageEl) {
   }
 
   function onMouseDown(e) {
+    if (!enabled) return;
     if (e.pointerType && e.pointerType !== 'mouse') return;
     if (e.button !== 0 || scale <= 1.01 || followMouse) return;
     if (e.target.closest?.('.ym-zoom-ui')) return;
@@ -396,6 +425,7 @@ export function setupViewerZoom(stageEl) {
   }
 
   function onDblClick(e) {
+    if (!enabled) return;
     if (e.target.closest?.('.ym-zoom-ui')) return;
     if (scale > 1.01) {
       setScaleAnimated(1);
@@ -447,6 +477,8 @@ export function setupViewerZoom(stageEl) {
   return {
     reset,
     applyDefault,
+    setEnabled,
+    isEnabled: () => enabled,
     setScale,
     getScale: () => scale,
     /** 호스트 화면에 보이는 전체 얼굴 수(호스트 포함) — 모바일 기본 배율 계산에 사용 */
@@ -454,7 +486,7 @@ export function setupViewerZoom(stageEl) {
       const next = Math.max(0, Number(n) || 0);
       if (next === faceCount) return;
       faceCount = next;
-      // 사용자가 직접 조절하지 않은 경우에만 기본 배율을 갱신
+      if (!enabled) return;
       if (!userAdjusted || Math.abs(scale - defaultScale) < 0.05) {
         applyDefault();
       } else {

@@ -372,3 +372,5 @@ body.rc-controlling #btn-rc-request { display: none !important; }
 .live-stage.is-zoomed { cursor: zoom-out; }
 .live-stage.is-dragging { cursor: grabbing; }
 @media (pointer: coarse) { .ym-zoom-ui { display: none !important; } }
+body.display-mode-face .ym-zoom-ui { display: none !important; }
+body.display-mode-face .live-stage.is-zoomed { cursor: default; }

@@ -271,16 +271,20 @@ async function run() {
     const avMgrContent = fs.readFileSync(avMgrPath, 'utf8');
 
     assert(
-      avMgrContent.includes('FACE_OUT_W_CROWD = 480') && avMgrContent.includes('FACE_OUT_H_CROWD = 270'),
-      '다자간(10명+) 모드에서도 480×270 고화질 표준 유지 (160×90 저하 완전 퇴출)'
+      avMgrContent.includes('FACE_OUT_W_HQ = 960') && avMgrContent.includes("if (n <= 6) return 'high'"),
+      '2~6명은 960×540 고화질'
+    );
+    assert(
+      avMgrContent.includes('FACE_OUT_W_CROWD = 512') && avMgrContent.includes('FACE_OUT_H_CROWD = 288'),
+      '13~20명은 512×288'
     );
     assert(
       avMgrContent.includes('FACE_OUT_FPS_CROWD = 20'),
-      '다자간(10명+) 모드에서도 20 FPS 부드러운 프레임 보장 (3 FPS 슬라이드쇼 완전 퇴출)'
+      '13~20명은 20fps 유지'
     );
     assert(
-      avMgrContent.includes("Math.max(480, this.width || 640)"),
-      'AI 안면 감지기에 최소 480×270 해상도를 공급하여 얼굴 검출 100% 보장'
+      avMgrContent.includes("if (n <= 30) return 'pack'") && avMgrContent.includes('FACE_OUT_W_MASS = 320'),
+      '21~30명은 pack, 31명+는 mass로 더 낮춰 접속 유지'
     );
 
     // 8. Verify CSS GPU Compositing Optimization for Video Elements

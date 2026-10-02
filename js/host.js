@@ -10,11 +10,11 @@ import {
   getLatestViewers,
 } from './viewers-panel.js?v=20260930a';
 import { WebrtcSignaling } from './webrtc/signaling.js?v=20260715j';
-import { HostPublisher } from './webrtc/host-publisher.js?v=20260930m';
+import { HostPublisher } from './webrtc/host-publisher.js?v=20261002b';
 import { setupChatPanel } from './chat-panel.js?v=20260918fix2';
 import { CamFocusManager } from './cam-focus-manager.js?v=20260930a';
-import { MicController } from './mic-controller.js?v=20260930a';
-import { speakingIndicator } from './speaking-indicator.js?v=20260930a';
+import { MicController } from './mic-controller.js?v=20261002b';
+import { speakingIndicator } from './speaking-indicator.js?v=20261002b';
 import { showToast } from './ui-toast.js?v=20260930a';
 import { RemoteControlHost } from './remote-control.js?v=20260930a';
 import { TarotLoungeManager } from './tarot-lounge-manager.js?v=20260930j';
@@ -681,12 +681,16 @@ class HostParticipantsGridManager {
       const video = card?.querySelector('video') || null;
       const stream = this._resolveStream(pid, p);
       const hasCam = !!stream && stream.getVideoTracks().some((t) => t && t.readyState === 'live' && t.enabled !== false);
+      const vis = speakingIndicator.getVisual?.(pid) || {};
       return {
         id: pid,
         name: p.name || (p.role === 'host' || pid === 'local' ? '호스트' : '참가자'),
         isHost: p.role === 'host' || pid === 'local',
         video: hasCam ? video : null,
         hasCam,
+        speaking: !!vis.speaking,
+        level: vis.level || 0,
+        bands: vis.bands || null,
       };
     });
   }
@@ -989,15 +993,20 @@ function updateAvatarUi() {
 
     const pillHd = localBox.querySelector('.pill-hd');
     if (pillHd) {
-      const mode = avMgr.faceMode || (avMgr.isLarge ? 'solo' : 'multi');
+      const mode = avMgr.faceMode || (avMgr.isLarge ? 'high' : 'crowd');
+      const pillMap = {
+        high: { label: '540p', title: '2~6명: 960×540 @ ~26fps' },
+        solo: { label: '360p', title: '7~12명: 640×360 @ ~28fps' },
+        multi: { label: '270p', title: '중간: 480×270 @ ~22fps' },
+        crowd: { label: '288p', title: '13~20명: 512×288 @ ~20fps' },
+        pack: { label: '216p', title: '21~30명: 384×216 @ ~14fps' },
+        mass: { label: '180p', title: '31명+: 320×180 @ ~10fps' },
+      };
+      const pill = pillMap[mode] || pillMap.crowd;
       pillHd.disabled = false;
-      pillHd.classList.toggle('is-active', mode === 'solo');
-      pillHd.textContent = mode === 'solo' ? '360p' : '270p';
-      pillHd.title = mode === 'solo'
-        ? '1명: 640×360 @ ~28fps'
-        : (mode === 'crowd'
-          ? '10명+: 480×270 @ 20fps (호스트 수신, 초고속 렉 없는 화상)'
-          : '2~9명: 480×270 @ 22fps (호스트 수신)');
+      pillHd.classList.toggle('is-active', mode === 'high' || mode === 'solo');
+      pillHd.textContent = pill.label;
+      pillHd.title = pill.title;
     }
 
     const badge = localBox.querySelector('.cam-pip-badge');

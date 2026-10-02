@@ -18,7 +18,7 @@ import {
   openMicStream, runMicCheckDialog, getSavedMicDeviceId, saveMicDeviceId,
   isMicRecentlyVerified, markMicVerified, clearMicVerified, describeMicError,
 } from './mic-check.js?v=20260930a';
-import { speakingIndicator } from './speaking-indicator.js?v=20260930a';
+import { speakingIndicator } from './speaking-indicator.js?v=20261002b';
 
 export class MicController {
   /**
