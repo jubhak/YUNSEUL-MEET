@@ -10,7 +10,7 @@ import {
   getLatestViewers,
 } from './viewers-panel.js?v=20260930a';
 import { WebrtcSignaling } from './webrtc/signaling.js?v=20260715j';
-import { HostPublisher } from './webrtc/host-publisher.js?v=20261002b';
+import { HostPublisher } from './webrtc/host-publisher.js?v=20261007c';
 import { setupChatPanel } from './chat-panel.js?v=20260918fix2';
 import { CamFocusManager } from './cam-focus-manager.js?v=20260930a';
 import { MicController } from './mic-controller.js?v=20261002b';
@@ -837,9 +837,7 @@ function syncPenUi(active) {
 }
 
 function syncAvButtons() {
-  const tabOn = webrtcPublisher?.isActive
-    ? (webrtcPublisher.hasTabAudio ? webrtcPublisher.tabAudioEnabled : preferTabAudio)
-    : preferTabAudio;
+  const speakerOn = webrtcPublisher ? !!webrtcPublisher.speakerOn : true;
   const isReqMic = interactionMode === 'bidirectional' && requireMic;
   // 실제 상태만 표시한다(필수 방이라고 해서 켜진 것처럼 꾸미지 않음).
   // 필수 방에서는 검증·송출이 끝나기 전까지는 비활성 → 끝나면 항상 활성.
@@ -847,11 +845,11 @@ function syncAvButtons() {
   const camOn = !!(webrtcPublisher?.cameraWanted && webrtcPublisher?.hasCamera && webrtcPublisher?.cameraEnabled);
 
   if (btnAvSpeaker) {
-    btnAvSpeaker.classList.toggle('is-active', !!tabOn);
-    btnAvSpeaker.setAttribute('aria-pressed', tabOn ? 'true' : 'false');
-    btnAvSpeaker.title = tabOn
-      ? '탭 소리(PPT·동영상) 켜짐'
-      : '탭 소리(PPT·동영상) 꺼짐';
+    btnAvSpeaker.classList.toggle('is-active', !!speakerOn);
+    btnAvSpeaker.setAttribute('aria-pressed', speakerOn ? 'true' : 'false');
+    btnAvSpeaker.title = speakerOn
+      ? '소리 켜짐 — 클릭하여 끄기'
+      : '소리 꺼짐 — 클릭하여 켜기';
   }
   if (btnAvMic) {
     btnAvMic.classList.toggle('is-active', !!micOn);
@@ -1448,7 +1446,14 @@ optStreamMic?.addEventListener('change', async () => {
   syncAvButtons();
 });
 
-btnAvSpeaker?.addEventListener('click', () => { toggleTabAudio(); });
+btnAvSpeaker?.addEventListener('click', () => {
+  if (!webrtcPublisher) {
+    syncAvButtons();
+    return;
+  }
+  webrtcPublisher.setSpeakerEnabled(!webrtcPublisher.speakerOn);
+  syncAvButtons();
+});
 btnAvMic?.addEventListener('click', () => { toggleMic(); });
 
 streamOptionsGate?.addEventListener('click', (e) => {
@@ -1867,6 +1872,9 @@ sync.start()
       },
     });
     webrtcPublisher.interactionMode = interactionMode;
+    webrtcPublisher.setSpeakerEnabled?.(true);
+    webrtcPublisher.setRoomCode?.(roomCode);
+    webrtcPublisher.avatarManager?.setClientId?.(sync.clientId);
     webrtcPublisher.getFaceTiles = () => hostParticipantsGrid?.getTiles?.() || [];
     webrtcPublisher.onShareModeChange = (mode) => {
       if (!mode) { updateShareModeUi(null); return; }
@@ -2022,6 +2030,10 @@ sync.start()
 
     const unmuteBanner = document.getElementById('unmute-banner');
     webrtcPublisher.onAudioPlaybackState = ({ ok, needUnmute }) => {
+      if (!webrtcPublisher?.speakerOn) {
+        unmuteBanner?.classList.add('hidden');
+        return;
+      }
       if (needUnmute && unmuteBanner) {
         unmuteBanner.classList.remove('hidden');
       } else if (ok && unmuteBanner) {

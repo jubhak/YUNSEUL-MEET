@@ -2,9 +2,9 @@
 <IfModule mod_rewrite.c>
   RewriteEngine On
 
-  # WebSocket
+  # WebSocket (QUERY_STRING 유지 — 떼이면 원격 딥페이크가 403으로 막힘)
   RewriteCond %{HTTP:Upgrade} =websocket [NC]
-  RewriteRule ^ ws://127.0.0.1:3000%{REQUEST_URI} [P,L,QSA,UnsafeAllow3F]
+  RewriteRule ^(.*)$ ws://127.0.0.1:3000/$1 [P,L,QSA,UnsafeAllow3F]
 
   # HTTP → Node
   RewriteCond %{HTTP:Upgrade} !=websocket [NC]

@@ -159,12 +159,30 @@ function createFaceRelay({ rooms, requireHost, getRoom, log = console.log }) {
     return '{"type":"skip"}';
   }
 
+  function swapClientIdFromUrl(req, u) {
+    const pathPart = String(u.pathname || '').replace(/^\/face-swap-ws\/?/, '').split('/')[0];
+    let pathCid = '';
+    try { pathCid = decodeURIComponent(pathPart || ''); } catch { pathCid = pathPart || ''; }
+    return pathCid
+      || String(u.searchParams.get('client') || u.searchParams.get('client_id') || '');
+  }
+
+  function clientInActiveRoom(cid) {
+    const id = String(cid || '');
+    if (!id) return false;
+    for (const room of rooms.values()) {
+      if (!room || room.ended) continue;
+      if (room.hostClientId === id || room.viewers?.has(id)) return true;
+    }
+    return false;
+  }
+
   function onSwapConnection(ws, req) {
     let cid = '';
     let prio = '';
     try {
       const u = new URL(req.url, 'http://localhost');
-      cid = String(u.searchParams.get('client') || '');
+      cid = swapClientIdFromUrl(req, u);
       // 호스트 본인의 딥페이크는 워커 입장 제어(용량 초과 거절)에서 제외한다
       if (u.searchParams.get('prio') === 'host') prio = 'host';
     } catch { /* ignore */ }
@@ -236,6 +254,14 @@ function createFaceRelay({ rooms, requireHost, getRoom, log = console.log }) {
           try {
             const m = JSON.parse(s);
             if (m?.type === 'hello' && m.clientId) cid = String(m.clientId);
+            if (m?.type === 'hello' && m.clientId && prio !== 'host') {
+              for (const room of rooms.values()) {
+                if (room && !room.ended && room.hostClientId === String(m.clientId)) {
+                  prio = 'host';
+                  break;
+                }
+              }
+            }
           } catch { /* ignore */ }
         }
       }
@@ -379,25 +405,11 @@ function createFaceRelay({ rooms, requireHost, getRoom, log = console.log }) {
       return true;
     }
 
-    if (relayEnabled && u.pathname === '/face-swap-ws') {
-      const ip = String(req.socket?.remoteAddress || '').replace(/^::ffff:/, '');
-      const fwd = String(req.headers['cf-connecting-ip'] || req.headers['x-forwarded-for'] || '')
-        .split(',')[0].trim().replace(/^::ffff:/, '');
-      const local = (ip === '127.0.0.1' || ip === '::1')
-        && (!fwd || fwd === '127.0.0.1' || fwd === '::1' || fwd.toLowerCase() === 'localhost');
-      const cid = String(u.searchParams.get('client') || u.searchParams.get('client_id') || '');
-      let inRoom = false;
-      if (cid) {
-        for (const room of rooms.values()) {
-          if (!room || room.ended) continue;
-          if (room.hostClientId === cid || room.viewers?.has(cid)) { inRoom = true; break; }
-        }
-      }
-      if (!local && !inRoom) {
-        log(`[face-swap-ws] 거부: client=${cid.slice(0, 8) || '-'}`);
-        socket.write('HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n');
-        socket.destroy();
-        return true;
+    if (relayEnabled && (u.pathname === '/face-swap-ws' || u.pathname.startsWith('/face-swap-ws/'))) {
+      const cid = swapClientIdFromUrl(req, u);
+      const inRoom = clientInActiveRoom(cid);
+      if (!inRoom) {
+        log(`[face-swap-ws] 핸드셰이크 통과(hello로 확인) client=${(cid || '-').slice(0, 8)}`);
       }
       swapWss.handleUpgrade(req, socket, head, (ws) => onSwapConnection(ws, req));
       return true;

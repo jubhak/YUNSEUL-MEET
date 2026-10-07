@@ -1,7 +1,7 @@
 import { TRACK_KIND } from './config.js';
-import { SfuClient } from './sfu-client.js?v=20261002a';
-import { VirtualAvatarManager, openWebcamFlexible, faceModeForRoomCount } from '../virtual-avatar-manager.js?v=20261002a';
-import { FaceCompositor } from './face-compositor.js?v=20261002b';
+import { SfuClient } from './sfu-client.js?v=20261006a';
+import { VirtualAvatarManager, openWebcamFlexible, faceModeForRoomCount } from '../virtual-avatar-manager.js?v=20261007c';
+import { FaceCompositor } from './face-compositor.js?v=20261007c';
 
 /**
  * Host -> SFU display share (+ optional tab audio / mic).
@@ -40,6 +40,7 @@ export class HostPublisher {
     this._remoteAudioEls = new Map();
     this._viewerAudioUnlockBound = false;
     this.onAudioPlaybackState = null;
+    this.speakerOn = true;
     this._ensureGlobalAudioUnlock();
     /** @type {((info: { peerId: string|null, active: boolean, stream?: MediaStream|null }) => void)|null} */
     this.onRelayChange = null;
@@ -124,8 +125,12 @@ export class HostPublisher {
     this.sfu.consumeFilter = (info) => {
       if (this.interactionMode === 'unidirectional') return false;
       const source = info?.appData?.source || '';
+      const kind = info?.kind || '';
+      const role = info?.role || info?.appData?.role || '';
       // 얼굴/마이크만 기본 수신. viewer-display는 화면공유 릴레이용.
       if (source === 'viewer-camera' || source === 'viewer-mic' || source === 'viewer-display') return true;
+      // appData.source 가 빠져도 참가자 목소리는 받아야 한다 (한 명이라도 놓치면 전원 무음처럼 들림)
+      if (kind === 'audio' && role !== 'host') return true;
       return false;
     };
     this.sfu.onConsumed = (info, consumer) => this._onRemoteConsumed(info, consumer);
@@ -147,6 +152,7 @@ export class HostPublisher {
     }
     // 참가자 얼굴 영상 정지 자동 복구 (PLI → consumer 재동기화 → 재-consume → ICE 재시작)
     sfu.startReceiverMonitor();
+    this._startProducerResync();
     return sfu;
   }
 
@@ -154,10 +160,37 @@ export class HostPublisher {
     return await this._ensureSfuRecv();
   }
 
+  setRoomCode(code) {
+    try { this.avatarManager?.setRoomCode?.(code); } catch { /* ignore */ }
+  }
+
+  /** sfu-new-producer 유실 시 참가자 마이크/카메라가 영구히 안 들림 → 주기적으로 목록을 다시 받아 consume */
+  _startProducerResync() {
+    if (this._resyncTimer) return;
+    this._resyncTimer = setInterval(() => {
+      if (this.interactionMode === 'unidirectional') return;
+      if (!this.sfu || this.sfu._closed) return;
+      this.sfu.consumeExistingProducers?.().catch(() => {});
+    }, 4000);
+  }
+
+  _stopProducerResync() {
+    if (this._resyncTimer) {
+      clearInterval(this._resyncTimer);
+      this._resyncTimer = null;
+    }
+  }
+
   _onRemoteConsumed(info, consumer) {
     const source = info?.appData?.source || '';
     const clientId = info?.clientId || info?.appData?.clientId;
     if (!clientId || clientId === this.signaling.localClientId) return;
+
+    // 목소리는 카메라/화면공유 분기보다 먼저 재생한다. source 누락 시에도 무음이 되면 안 된다.
+    if (consumer?.kind === 'audio' || source === 'viewer-mic') {
+      this._playViewerMic(clientId, consumer.track);
+      if (source === 'viewer-mic' || consumer?.kind === 'audio') return;
+    }
 
     if (source === 'viewer-camera' || info?.appData?.trackKind === 'camera') {
       const ms = new MediaStream([consumer.track]);
@@ -182,11 +215,6 @@ export class HostPublisher {
           console.warn('[HostPublisher] relay', err);
         });
       }
-      return;
-    }
-
-    if (source === 'viewer-mic' || (consumer.kind === 'audio' && info?.role === 'viewer' && source !== 'display')) {
-      this._playViewerMic(clientId, consumer.track);
     }
   }
 
@@ -553,6 +581,26 @@ export class HostPublisher {
       return false;
     }
     try {
+      let hadExisting = false;
+      if (this.rawCameraStream) {
+        this.rawCameraStream.getTracks().forEach((t) => {
+          try { t.stop(); } catch { /* ignore */ }
+        });
+        this.rawCameraStream = null;
+        hadExisting = true;
+      }
+      if (this.cameraStream && this.cameraStream !== this.rawCameraStream) {
+        this.cameraStream.getTracks().forEach((t) => {
+          try { t.stop(); } catch { /* ignore */ }
+        });
+        this.cameraStream = null;
+        hadExisting = true;
+      }
+      if (hadExisting) {
+        // Windows Media Foundation 드라이버가 직전 하드웨어 핸들을 반납할 때까지 100ms 대기
+        await new Promise((r) => setTimeout(r, 100));
+      }
+
       let stream = null;
       try {
         stream = await openWebcamFlexible();
@@ -900,6 +948,19 @@ export class HostPublisher {
     this._emitLocalStatus();
   }
 
+  /** 호스트 스피커(참가자 목소리 청취)만 끄고 켠다. 탭 오디오 송출과는 별개. */
+  setSpeakerEnabled(on) {
+    this.speakerOn = !!on;
+    if (!this._remoteAudioEls) return;
+    for (const el of this._remoteAudioEls.values()) {
+      if (!el) continue;
+      el.muted = !this.speakerOn;
+      if (this.speakerOn && el.paused) {
+        el.play().catch(() => {});
+      }
+    }
+  }
+
   setMicEnabled(on) {
     this.micWanted = !!on;
     this._micTracks.forEach((t) => {
@@ -1040,7 +1101,7 @@ export class HostPublisher {
   }
 
   unlockAudio() {
-    if (!this._remoteAudioEls) return;
+    if (!this._remoteAudioEls || !this.speakerOn) return;
     for (const el of this._remoteAudioEls.values()) {
       if (el) {
         el.muted = false;
@@ -1063,7 +1124,7 @@ export class HostPublisher {
       el.autoplay = true;
       el.setAttribute('playsinline', '');
       el.playsInline = true;
-      el.muted = false;
+      el.muted = !this.speakerOn;
       el.volume = 1;
       el.style.cssText = 'position:fixed;left:0;top:0;width:1px;height:1px;opacity:0.01;pointer-events:none;z-index:-1;';
       el.srcObject = new MediaStream([track]);
@@ -1073,7 +1134,7 @@ export class HostPublisher {
       el.srcObject = new MediaStream([track]);
     }
 
-    el.muted = false;
+    el.muted = !this.speakerOn;
     el.play().then(() => {
       this._viewerMicPlaying = true;
       this._syncTabAudioForFeedback();
@@ -1218,6 +1279,7 @@ export class HostPublisher {
   }
 
   dispose() {
+    this._stopProducerResync();
     this.stop();
     this._unsubLeft?.();
     if (this._remoteAudioEls) {

@@ -1969,8 +1969,11 @@ server.on('upgrade', (req, socket, head) => {
     if (!swapOk) {
       try {
         const u = new URL(req.url, 'http://localhost');
-        const cid = u.searchParams.get('client') || u.searchParams.get('client_id') || '';
-        swapOk = isSwapClientInRoom(cid);
+        const pathPart = String(u.pathname || '').replace(/^\/face-swap-ws\/?/, '').split('/')[0];
+        let pathCid = '';
+        try { pathCid = decodeURIComponent(pathPart || ''); } catch { pathCid = pathPart || ''; }
+        const cid = pathCid || u.searchParams.get('client') || u.searchParams.get('client_id') || '';
+        swapOk = !cid || isSwapClientInRoom(cid);
       } catch { /* ignore */ }
     }
     if (!swapOk) {
@@ -1988,15 +1991,19 @@ server.on('upgrade', (req, socket, head) => {
       // 프레임이 최대 40ms씩 지연 병합되어 "고속 재생/멈칫거림"이 생긴다.
       try { proxySocket.setNoDelay(true); } catch { /* ignore */ }
       try { socket.setNoDelay(true); } catch { /* ignore */ }
-      const targetPath = req.url.replace('/face-swap-ws', '/ws');
+      const targetUrl = new URL(req.url, 'http://localhost');
+      const qs = targetUrl.search || '';
+      const targetPath = `/ws${qs}`;
       const lines = [`${req.method} ${targetPath} HTTP/1.1`];
       for (const [k, v] of Object.entries(req.headers)) {
         lines.push(`${k}: ${v}`);
       }
       // 참가자 식별자 전달 — 워커가 참가자별로 프레임 캐시/얼굴 추적을 분리한다
       try {
-        const u = new URL(req.url, 'http://localhost');
-        const cid = u.searchParams.get('client');
+        const pathPart = String(targetUrl.pathname || '').replace(/^\/face-swap-ws\/?/, '').split('/')[0];
+        let pathCid = '';
+        try { pathCid = decodeURIComponent(pathPart || ''); } catch { pathCid = pathPart || ''; }
+        const cid = pathCid || targetUrl.searchParams.get('client');
         if (cid) lines.push(`X-Client-Id: ${cid}`);
       } catch { /* ignore */ }
       lines.push('\r\n');

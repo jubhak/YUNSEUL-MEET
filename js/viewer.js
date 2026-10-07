@@ -9,7 +9,7 @@ import {
   setSelectedBroadcaster,
 } from './viewers-panel.js?v=20260930a';
 import { WebrtcSignaling } from './webrtc/signaling.js?v=20260715j';
-import { ViewerSubscriber } from './webrtc/viewer-subscriber.js?v=20261002b';
+import { ViewerSubscriber } from './webrtc/viewer-subscriber.js?v=20261007c';
 import { setupViewerZoom } from './viewer-zoom.js?v=20261002b';
 import { setupChatPanel } from './chat-panel.js?v=20260918fix2';
 import { CamFocusManager } from './cam-focus-manager.js?v=20260930a';
@@ -1377,6 +1377,8 @@ sync.start()
     // 기본: 소리 ON — 별도 <audio>로 재생 (첫 클릭 시 unlock)
     subscriber.speakerOn = true;
     subscriber.interactionMode = interactionMode;
+    subscriber.setRoomCode?.(roomCode);
+    subscriber.avatarManager?.setClientId?.(sync.clientId);
     if (subscriber.avatarManager) {
       subscriber.avatarManager.onAvatarChange = () => updateAvatarUi();
       subscriber.avatarManager.onModeChange = () => updateAvatarUi();

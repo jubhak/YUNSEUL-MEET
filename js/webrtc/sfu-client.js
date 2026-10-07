@@ -909,6 +909,34 @@ export class SfuClient {
     }
   }
 
+  async consumeExistingProducers() {
+    const pending = this._pendingProducers || [];
+    this._pendingProducers = [];
+    let live = [];
+    try {
+      live = (await this.request('sfu-get-producers')).producers || [];
+    } catch (err) {
+      console.warn('[sfu] get-producers failed', err);
+      live = pending;
+    }
+    const byId = new Map();
+    for (const p of [...pending, ...live]) {
+      if (p?.producerId) byId.set(p.producerId, p);
+    }
+    const list = [...byId.values()];
+    const audios = list.filter((p) => p.kind === 'audio');
+    const videos = list.filter((p) => p.kind !== 'audio');
+    // 목소리는 영상 consume 큐 뒤에 서지 않게 먼저·병렬로 붙인다
+    await Promise.all(audios.map((p) => this.consumeProducer(p).catch((err) => {
+      console.warn('[sfu] consume audio failed', p.producerId, err);
+    })));
+    for (const p of videos) {
+      try { await this.consumeProducer(p); } catch (err) {
+        console.warn('[sfu] consume failed', p.producerId, err);
+      }
+    }
+  }
+
   async resumeAllConsumers() {
     for (const consumer of this.consumers.values()) {
       if (!consumer || consumer.closed || !consumer.paused) continue;
@@ -970,24 +998,6 @@ export class SfuClient {
       return consumer.id;
     }
     return null;
-  }
-
-  async consumeExistingProducers() {
-    const list = this._pendingProducers?.length
-      ? this._pendingProducers
-      : (await this.request('sfu-get-producers')).producers || [];
-    this._pendingProducers = [];
-    // 영상 먼저 — 오디오만 붙고 영상 대기하다 타임아웃/레이스 나는 것 방지
-    const ordered = [...list].sort((a, b) => {
-      const av = a.kind === 'video' ? 0 : 1;
-      const bv = b.kind === 'video' ? 0 : 1;
-      return av - bv;
-    });
-    for (const p of ordered) {
-      try { await this.consumeProducer(p); } catch (err) {
-        console.warn('[sfu] consume failed', p.producerId, err);
-      }
-    }
   }
 
   async _onNewProducer(msg) {

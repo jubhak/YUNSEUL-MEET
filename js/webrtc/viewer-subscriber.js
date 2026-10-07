@@ -1,5 +1,5 @@
-import { SfuClient } from './sfu-client.js?v=20261002a';
-import { VirtualAvatarManager, openWebcamFlexible, faceModeForRoomCount } from '../virtual-avatar-manager.js?v=20261002a';
+import { SfuClient } from './sfu-client.js?v=20261006a';
+import { VirtualAvatarManager, openWebcamFlexible, faceModeForRoomCount } from '../virtual-avatar-manager.js?v=20261007c';
 
 /**
  * 참가자: SFU에서 호스트 display 수신 + (선택) 마이크/화면 업링크
@@ -140,8 +140,9 @@ export class ViewerSubscriber {
           if (source === 'viewer-mic') {
             return this.interactionMode !== 'unidirectional';
           }
-          if (info?.role === 'host') return true;
-          if (info?.role === 'viewer') {
+          const role = info?.role || info?.appData?.role || '';
+          if (role === 'host' || source === 'display') return true;
+          if (role === 'viewer' || !role) {
             return this.interactionMode !== 'unidirectional';
           }
         }
@@ -155,7 +156,7 @@ export class ViewerSubscriber {
           try { consumer.close(); } catch { /* ignore */ }
           return;
         }
-        if (source === 'mic' || source === 'viewer-mic' || source === 'tab-audio') {
+        if (consumer.kind === 'audio' || source === 'mic' || source === 'viewer-mic' || source === 'tab-audio') {
           if (consumer.track) {
             this._playRemoteAudioTrack(consumer.track, clientId, source);
             this.onRemoteAudioTrack?.({
@@ -210,7 +211,28 @@ export class ViewerSubscriber {
     const sfu = await this._ensureSfu();
     await sfu.ensureRecvTransport();
     await sfu.consumeExistingProducers();
+    this._startProducerResync();
     return sfu;
+  }
+
+  _startProducerResync() {
+    if (this._resyncTimer) return;
+    this._resyncTimer = setInterval(() => {
+      if (this.interactionMode === 'unidirectional') return;
+      if (!this.sfu || this.sfu._closed) return;
+      this.sfu.consumeExistingProducers?.().catch(() => {});
+    }, 4000);
+  }
+
+  _stopProducerResync() {
+    if (this._resyncTimer) {
+      clearInterval(this._resyncTimer);
+      this._resyncTimer = null;
+    }
+  }
+
+  setRoomCode(code) {
+    try { this.avatarManager?.setRoomCode?.(code); } catch { /* ignore */ }
   }
 
   _resetRecvOnly() {
@@ -920,17 +942,24 @@ export class ViewerSubscriber {
     }
     try {
       // 기존 트랙이 열려 있다면 새 스트림을 요청하기 전에 먼저 정리 (하드웨어 락 해제)
+      let hadExisting = false;
       if (this.rawCameraStream) {
         this.rawCameraStream.getTracks().forEach((t) => {
           try { t.stop(); } catch { /* ignore */ }
         });
         this.rawCameraStream = null;
+        hadExisting = true;
       }
       if (this.cameraStream && this.cameraStream !== this.rawCameraStream) {
         this.cameraStream.getTracks().forEach((t) => {
           try { t.stop(); } catch { /* ignore */ }
         });
         this.cameraStream = null;
+        hadExisting = true;
+      }
+      if (hadExisting) {
+        // Windows Media Foundation 드라이버가 직전 하드웨어 핸들을 반납할 때까지 100ms 대기
+        await new Promise((r) => setTimeout(r, 100));
       }
 
       let stream = null;
@@ -1073,6 +1102,7 @@ export class ViewerSubscriber {
   }
 
   destroy() {
+    this._stopProducerResync();
     if (this._freezeWatchdogTimer) {
       clearInterval(this._freezeWatchdogTimer);
       this._freezeWatchdogTimer = null;

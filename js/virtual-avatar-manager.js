@@ -303,75 +303,145 @@ export function faceProfileForMode(mode) {
   return FACE_PROFILE_MULTI;
 }
 
+function _isDeniedCameraError(err) {
+  const n = err?.name || '';
+  return n === 'NotAllowedError' || n === 'PermissionDeniedError' || n === 'SecurityError';
+}
+
+function _isSkipCameraLabel(label = '') {
+  return /ir\b|infrared|mapir|hello|depth|rgb-?d/i.test(label);
+}
+
+async function _preferHigherRes(stream) {
+  const track = stream?.getVideoTracks?.()[0];
+  if (!track?.applyConstraints) return;
+  const settings = track.getSettings?.() || {};
+  if (settings.width && settings.width >= 1280 && settings.height && settings.height >= 720) {
+    return;
+  }
+  const tries = [
+    { width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 30 } },
+    { width: { ideal: 960 }, height: { ideal: 540 }, frameRate: { ideal: 30 } },
+    { width: { ideal: 640 }, height: { ideal: 360 }, frameRate: { ideal: 30 } },
+  ];
+  for (const c of tries) {
+    try {
+      await track.applyConstraints(c);
+      return;
+    } catch { /* 장치가 거부하면 다음 단계. 이미 열린 스트림은 유지 */ }
+  }
+}
+
 /**
- * OverconstrainedError 방지: max 하드 리밋 없이 ideal만 사용.
- * 장비가 256을 지원하지 않으면 장치 기본/최소 해상도로 열고, 송출은 캔버스에서 다운스케일.
+ * 실물 웹캠 스트림을 유연하고 강력하게 오픈.
+ * 
+ * 1. Windows 노트북 웹캠 센서는 대다수 16:9 (720p/1080p) 네이티브이며,
+ *    Windows 기본 카메라 앱은 1280x720(16:9)로 센서를 초기화합니다.
+ *    Chrome에서 unconstrained(video: true)를 호출하면 640x480(4:3)을 요청하여
+ *    절전/초기 상태의 Media Foundation 드라이버가 MF_E_INVALIDMEDIATYPE을 반환하고
+ *    Chromium은 이를 "Requested device not found"로 변환합니다.
+ *    따라서 16:9 HD(1280x720) ideal을 최우선으로 시도합니다.
+ * 
+ * 2. 기본 장치 실패 시 enumerateDevices()로 실제 비디오 장치들을 조회하고,
+ *    Windows Hello / IR 적외선 센서를 후순위로 넘긴 후 { exact: dev.deviceId }로
+ *    1280x720 및 해상도별 단계적 오픈을 시도합니다.
+ * 
+ * 3. 절전 모드 센서 하드웨어 웜업 대기(250ms) 후 최종 재시도합니다.
  */
 export async function openWebcamFlexible() {
   if (!navigator.mediaDevices?.getUserMedia) {
-    throw new Error('getUserMedia 미지원');
+    throw new Error('getUserMedia 미지원 브라우저 환경입니다.');
   }
 
+  const gum = (video) => navigator.mediaDevices.getUserMedia({ video, audio: false });
+  let lastError = null;
+
+  const isPhone = /Android|iPhone|iPad|iPod/i.test(navigator.userAgent || '');
+
+  // 1단계: 16:9 HD 우선 해상도 목록 (Windows 카메라 앱과 동일한 16:9 네이티브 초기화)
+  const candidateConstraints = [
+    { width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 30 } },
+    { width: { ideal: 960 }, height: { ideal: 540 }, frameRate: { ideal: 30 } },
+    { width: { ideal: 640 }, height: { ideal: 360 }, frameRate: { ideal: 30 } },
+    { width: { ideal: 640 }, height: { ideal: 480 }, frameRate: { ideal: 30 } },
+    true,
+  ];
+
+  const baseTries = candidateConstraints.map((c) => {
+    if (isPhone && typeof c === 'object') {
+      return { ...c, facingMode: { ideal: 'user' } };
+    }
+    return c;
+  });
+
+  for (const c of baseTries) {
+    try {
+      const stream = await gum(c);
+      await _preferHigherRes(stream);
+      return stream;
+    } catch (err) {
+      lastError = err;
+      if (_isDeniedCameraError(err)) throw err;
+    }
+  }
+
+  // 2단계: 장치 열거 후 개별 장치(exact deviceId)로 16:9 및 표준 해상도 시도
   let videoDevices = [];
   try {
     const devs = await navigator.mediaDevices.enumerateDevices();
-    videoDevices = devs.filter((d) => d.kind === 'videoinput');
-    if (videoDevices.length === 0) {
-      const noDevErr = new Error('연결된 카메라(웹캠) 장치를 찾을 수 없습니다.');
-      noDevErr.name = 'NotFoundError';
-      throw noDevErr;
-    }
-  } catch (e) {
-    if (e.name === 'NotFoundError') throw e;
-  }
+    videoDevices = devs.filter((d) => d.kind === 'videoinput' && d.deviceId);
+  } catch { /* ignore */ }
 
-  const attempts = [
-    // 솔로 품질 선호 (ideal만 — max 하드 리밋 금지)
-    { width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 28 } },
-    { width: { ideal: 960 }, height: { ideal: 540 }, frameRate: { ideal: 26 } },
-    { width: { ideal: 640 }, height: { ideal: 360 }, frameRate: { ideal: 28 } },
-    { width: { ideal: 640 }, height: { ideal: 480 }, frameRate: { ideal: 24 } },
-    { width: { ideal: 320 }, height: { ideal: 240 }, frameRate: { ideal: 24 } },
-    true, // 장치 기본
-  ];
+  if (videoDevices.length > 0) {
+    // IR/적외선/Windows Hello 장치는 뒤로 밀고 일반 웹캠을 앞으로 정렬
+    videoDevices.sort((a, b) => {
+      const aSkip = _isSkipCameraLabel(a.label || '');
+      const bSkip = _isSkipCameraLabel(b.label || '');
+      if (aSkip !== bSkip) return aSkip ? 1 : -1;
+      return 0;
+    });
 
-  let lastError = null;
-  for (const video of attempts) {
-    try {
-      return await navigator.mediaDevices.getUserMedia({
-        video: video === true ? true : video,
-        audio: false,
-      });
-    } catch (err) {
-      lastError = err;
-      if (err?.name === 'NotAllowedError' || err?.name === 'PermissionDeniedError') throw err;
-    }
-  }
-
-  if (videoDevices.length > 1) {
     for (const dev of videoDevices) {
-      if (!dev.deviceId) continue;
-      try {
-        return await navigator.mediaDevices.getUserMedia({
-          video: { deviceId: { exact: dev.deviceId } },
-          audio: false,
-        });
-      } catch (err) {
-        lastError = err;
+      if (_isSkipCameraLabel(dev.label || '')) continue;
+      const devTries = [
+        { deviceId: { exact: dev.deviceId }, width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 30 } },
+        { deviceId: { exact: dev.deviceId }, width: { ideal: 640 }, height: { ideal: 360 } },
+        { deviceId: { exact: dev.deviceId } },
+        { deviceId: { ideal: dev.deviceId }, width: { ideal: 1280 }, height: { ideal: 720 } },
+        { deviceId: { ideal: dev.deviceId } },
+      ];
+      for (const dc of devTries) {
+        try {
+          const stream = await gum(dc);
+          await _preferHigherRes(stream);
+          return stream;
+        } catch (err) {
+          lastError = err;
+          if (_isDeniedCameraError(err)) throw err;
+        }
       }
     }
   }
 
-  const isTouchDevice = ('ontouchstart' in window) || (navigator.maxTouchPoints > 0);
-  if (isTouchDevice) {
-    try {
-      return await navigator.mediaDevices.getUserMedia({
-        video: { facingMode: 'user' },
-        audio: false,
-      });
-    } catch (err) {
-      lastError = err;
-    }
+  // 3단계: 절전 중인 카메라 센서(MIPI / USB) 하드웨어 웜업 대기 (250ms) 후 재시도
+  await new Promise((r) => setTimeout(r, 250));
+
+  try {
+    const stream = await gum({ width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 30 } });
+    await _preferHigherRes(stream);
+    return stream;
+  } catch (err) {
+    lastError = err;
+    if (_isDeniedCameraError(err)) throw err;
+  }
+
+  try {
+    const stream = await gum(true);
+    await _preferHigherRes(stream);
+    return stream;
+  } catch (err) {
+    lastError = err;
+    if (_isDeniedCameraError(err)) throw err;
   }
 
   throw lastError || new Error('카메라 스트림을 시작할 수 없습니다.');
@@ -469,6 +539,8 @@ export class VirtualAvatarManager {
 
     /** 'host' 이면 서버 입장 제어(용량 초과 거절)에서 제외 — host-publisher 가 설정 */
     this.swapRole = 'viewer';
+    this.clientId = null;
+    this.roomCode = null;
     /** 서버가 용량 초과로 딥페이크 적용을 거절했을 때 호출: ({ active, capacity_fps, per_client_fps, min_fps, max_clients }) => void */
     this.onSwapRejected = null;
     this._swapRejected = false;
@@ -849,8 +921,12 @@ export class VirtualAvatarManager {
   setClientId(id) {
     this.clientId = id || null;
     if (this._ws && this._ws.readyState === WebSocket.OPEN) {
-      try { this._ws.send(JSON.stringify({ type: 'hello', clientId: this.clientId })); } catch { /* ignore */ }
+      try { this._ws.send(JSON.stringify({ type: 'hello', clientId: this.clientId, room: this.roomCode || null })); } catch { /* ignore */ }
     }
+  }
+
+  setRoomCode(code) {
+    this.roomCode = code || null;
   }
 
   toggleMode() {
@@ -1854,9 +1930,13 @@ export class VirtualAvatarManager {
       const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
       const qs = [];
       if (this.clientId) qs.push(`client=${encodeURIComponent(this.clientId)}`);
+      if (this.roomCode) qs.push(`room=${encodeURIComponent(this.roomCode)}`);
       if (this.swapRole === 'host') qs.push('prio=host');
       const q = qs.length ? `?${qs.join('&')}` : '';
-      const wsUrl = `${proto}//${host}/face-swap-ws${q}`;
+      // 경로에도 clientId를 넣는다. Apache/프록시가 쿼리스트링을 떼면
+      // 원격 참가자만 403 거절되어 호스트만 딥페이크가 되는 사고가 났다.
+      const idSeg = this.clientId ? `/${encodeURIComponent(this.clientId)}` : '';
+      const wsUrl = `${proto}//${host}/face-swap-ws${idSeg}${q}`;
       const ws = new WebSocket(wsUrl);
       this._ws = ws;
       ws.binaryType = 'arraybuffer';
@@ -1864,9 +1944,9 @@ export class VirtualAvatarManager {
         this._wsRetryDelay = 500;
         this._wsRetryAt = 0;
         this._resetSwapPipeline();
-        try {
-          ws.send(JSON.stringify({ type: 'hello', clientId: this.clientId || null }));
-        } catch { /* ignore */ }
+          try {
+            ws.send(JSON.stringify({ type: 'hello', clientId: this.clientId || null, room: this.roomCode || null }));
+          } catch { /* ignore */ }
         if (this.activeSwapFace) {
           try {
             ws.send(JSON.stringify({ type: 'set_source', source: this.activeSwapFace }));
