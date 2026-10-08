@@ -589,6 +589,49 @@
   </div>
 
 
+  <!-- 카메라 연결 문제 해결 가이드 모달 (Windows FrameServer 절전 / 장치 미감지 대응) -->
+  <div id="cam-troubleshoot-gate" class="cam-troubleshoot-gate hidden" aria-live="polite">
+    <div class="cam-troubleshoot-box">
+      <div class="cam-troubleshoot-icon">📷</div>
+      <h2>카메라 장치를 감지하지 못했습니다</h2>
+      <p class="cam-troubleshoot-desc">
+        노트북의 <strong>Windows 카메라 절전 기능(FrameServer)</strong>으로 인해 브라우저(Chrome/Edge)에서 카메라 센서가 아직 깨어나지 않았습니다.
+      </p>
+
+      <div class="cam-troubleshoot-actions">
+        <button type="button" id="btn-cam-use-avatar" class="btn btn-primary btn-avatar-fallback">
+          <span>🎭</span> <strong>가상 얼굴(아바타)로 바로 참여</strong>
+        </button>
+        <button type="button" id="btn-cam-retry-wake" class="btn btn-secondary">
+          <span>🔄</span> <strong>카메라 다시 깨우기</strong>
+        </button>
+      </div>
+
+      <div class="cam-troubleshoot-guide">
+        <details>
+          <summary>💡 이 노트북에서 100% 영구 해결 방법 (30초)</summary>
+          <div class="guide-content">
+            <ol>
+              <li><strong>Windows 서비스 영구 자동화 (추천):</strong><br>
+                <code>Win + R</code> 키 누름 → <code>services.msc</code> 입력 후 엔터 → <strong>Windows 카메라 프레임 서버 (FrameServer)</strong> 더블클릭 → 시작 유형을 <strong>[자동]</strong>으로 변경하고 [시작] 클릭.
+              </li>
+              <li><strong>브라우저 플래그 설정 (DirectShow 우회):</strong><br>
+                브라우저 주소창에 <code>chrome://flags</code> 또는 <code>edge://flags</code> 입력 → <code>MediaFoundation Video Capture</code> 검색 → <strong>[Disabled]</strong>로 변경 후 브라우저 재시작.
+              </li>
+              <li><strong>간단 임시 방법:</strong><br>
+                Windows 기본 <strong>'카메라'</strong> 앱을 1회 실행해 두면 센서가 깨어납니다.
+              </li>
+            </ol>
+          </div>
+        </details>
+      </div>
+
+      <div class="cam-troubleshoot-footer">
+        <button type="button" id="btn-cam-troubleshoot-close" class="btn btn-ghost btn-sm">닫기</button>
+      </div>
+    </div>
+  </div>
+
   <!-- Deep-Live-Cam 실시간 얼굴 바꾸기 (사진 선택) 모달 -->
   <div id="deep-live-cam-modal" class="deep-live-cam-modal hidden">
     <div class="deep-live-cam-card">
@@ -637,7 +680,7 @@
   <script src="js/progress-bar.js?v=20260715d"></script>
   <script type="module" src="js/load-progress.js?v=20260715d"></script>
   <script type="module" src="js/deps.js?v=20260715d"></script>
-  <script type="module" src="js/viewer.js?v=20261007c"></script>
+  <script type="module" src="js/viewer.js?v=20261007d"></script>
   <script type="module">
     import { setupDisplayMode } from './js/display-mode.js?v=20260819e';
     setupDisplayMode({ autoPromptMobile: false });

@@ -1,7 +1,7 @@
 import { TRACK_KIND } from './config.js';
 import { SfuClient } from './sfu-client.js?v=20261006a';
-import { VirtualAvatarManager, openWebcamFlexible, faceModeForRoomCount } from '../virtual-avatar-manager.js?v=20261007c';
-import { FaceCompositor } from './face-compositor.js?v=20261007c';
+import { VirtualAvatarManager, openWebcamFlexible, faceModeForRoomCount } from '../virtual-avatar-manager.js?v=20261007d';
+import { FaceCompositor } from './face-compositor.js?v=20261007d';
 
 /**
  * Host -> SFU display share (+ optional tab audio / mic).

@@ -435,6 +435,45 @@ export async function openWebcamFlexible() {
     if (_isDeniedCameraError(err)) throw err;
   }
 
+  // 4단계: USB Composite Bus Wake-up (노트북 웹캠/마이크 통합 컨트롤러 절전 해제)
+  // Windows 10/11의 절전 기능(D3 Cold)이나 FrameServer 지연으로 인해 videoinput 단독 쿼리가
+  // "Requested device not found"를 반환하는 경우, WASAPI 마이크(audio: true)를 복합 요청하면
+  // 상위 USB 루트 허브 / 오디오 컨트롤러 전원이 D0로 깨어나면서 카메라 센서가 함께 켜집니다.
+  try {
+    const compositeStream = await navigator.mediaDevices.getUserMedia({
+      video: { width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 30 } },
+      audio: true,
+    });
+    // 마이크 트랙은 즉시 안전하게 중지 및 분리 (비디오만 취함)
+    compositeStream.getAudioTracks().forEach((t) => {
+      try { t.stop(); } catch { /* ignore */ }
+    });
+    const videoTracks = compositeStream.getVideoTracks();
+    if (videoTracks && videoTracks.length > 0) {
+      const pureStream = new MediaStream([videoTracks[0]]);
+      await _preferHigherRes(pureStream);
+      return pureStream;
+    }
+  } catch (err) {
+    lastError = err;
+    if (_isDeniedCameraError(err)) throw err;
+  }
+
+  // 5단계: 버스 깨우기 후 센서 하드웨어 등록 지연(350ms) 대기 후 최종 장치 조회
+  await new Promise((r) => setTimeout(r, 350));
+  try {
+    const devsAfter = await navigator.mediaDevices.enumerateDevices().catch(() => []);
+    const availableDevs = devsAfter.filter((d) => d.kind === 'videoinput' && d.deviceId && !_isSkipCameraLabel(d.label || ''));
+    if (availableDevs.length > 0) {
+      const stream = await gum({ deviceId: { exact: availableDevs[0].deviceId } });
+      await _preferHigherRes(stream);
+      return stream;
+    }
+  } catch (err) {
+    lastError = err;
+    if (_isDeniedCameraError(err)) throw err;
+  }
+
   try {
     const stream = await gum(true);
     await _preferHigherRes(stream);
@@ -444,6 +483,12 @@ export async function openWebcamFlexible() {
     if (_isDeniedCameraError(err)) throw err;
   }
 
+  if (lastError) {
+    const msg = String(lastError.message || lastError.name || '').toLowerCase();
+    if (lastError.name === 'NotFoundError' || msg.includes('requested device not found')) {
+      lastError.isDeviceNotFound = true;
+    }
+  }
   throw lastError || new Error('카메라 스트림을 시작할 수 없습니다.');
 }
 

@@ -9,7 +9,7 @@ import {
   setSelectedBroadcaster,
 } from './viewers-panel.js?v=20260930a';
 import { WebrtcSignaling } from './webrtc/signaling.js?v=20260715j';
-import { ViewerSubscriber } from './webrtc/viewer-subscriber.js?v=20261007c';
+import { ViewerSubscriber } from './webrtc/viewer-subscriber.js?v=20261007d';
 import { setupViewerZoom } from './viewer-zoom.js?v=20261002b';
 import { setupChatPanel } from './chat-panel.js?v=20260918fix2';
 import { CamFocusManager } from './cam-focus-manager.js?v=20260930a';
@@ -474,6 +474,59 @@ const btnAvCam = document.getElementById('btn-av-cam');
 const deepLiveCamModal = document.getElementById('deep-live-cam-modal');
 const btnDlcClose = document.getElementById('btn-dlc-close');
 const btnLaunchDlc = document.getElementById('btn-launch-dlc');
+
+const camTroubleshootGate = document.getElementById('cam-troubleshoot-gate');
+const btnCamUseAvatar = document.getElementById('btn-cam-use-avatar');
+const btnCamRetryWake = document.getElementById('btn-cam-retry-wake');
+const btnCamTroubleshootClose = document.getElementById('btn-cam-troubleshoot-close');
+
+let _pendingCamRetryFn = null;
+
+function showCameraTroubleshootModal(err, onRetry) {
+  _pendingCamRetryFn = typeof onRetry === 'function' ? onRetry : null;
+  if (camTroubleshootGate) {
+    camTroubleshootGate.classList.remove('hidden');
+  } else {
+    alert(`카메라를 켤 수 없습니다: ${err?.message || '장치 권한 및 상태를 확인해 주세요.'}`);
+  }
+}
+
+function hideCameraTroubleshootModal() {
+  _pendingCamRetryFn = null;
+  camTroubleshootGate?.classList.add('hidden');
+}
+
+btnCamTroubleshootClose?.addEventListener('click', hideCameraTroubleshootModal);
+
+btnCamRetryWake?.addEventListener('click', async () => {
+  const retryFn = _pendingCamRetryFn;
+  hideCameraTroubleshootModal();
+  if (retryFn) {
+    showAvToast('카메라 다시 연결 시도 중...');
+    await retryFn();
+  }
+});
+
+btnCamUseAvatar?.addEventListener('click', async () => {
+  hideCameraTroubleshootModal();
+  closeDeepLiveCamModal();
+  if (!subscriber) return;
+  try {
+    btnAvCam.disabled = true;
+    const ok = await subscriber.startVirtualCamera();
+    if (ok) {
+      showAvToast('가상 얼굴(아바타)로 참여');
+      updateAvatarUi();
+    } else {
+      alert('가상 아바타 송출을 시작할 수 없습니다.');
+    }
+  } catch (err) {
+    alert(`가상 아바타 송출 오류: ${err?.message || err}`);
+  } finally {
+    btnAvCam.disabled = false;
+    syncAvButtons();
+  }
+});
 const camOverlayContainer = document.getElementById('cam-overlay-container');
 const camFocusManager = new CamFocusManager({ containerId: 'cam-overlay-container' });
 camFocusManager.onFocusChange = (focusedId) => {
@@ -681,7 +734,7 @@ async function applyFaceAndStartCamera(faceApplyFn) {
       const ok = await subscriber.setCameraEnabled(true);
       if (!ok) {
         const err = subscriber._lastCameraError;
-        alert(`카메라를 켤 수 없습니다: ${err?.message || '장치 권한 및 상태를 확인해 주세요.'}`);
+        showCameraTroubleshootModal(err, () => applyFaceAndStartCamera(faceApplyFn));
         return;
       }
       if (avMgr && typeof faceApplyFn === 'function') {
@@ -893,7 +946,9 @@ btnAvCam?.addEventListener('click', async () => {
       const ok = await subscriber.setCameraEnabled(true);
       if (!ok) {
         const err = subscriber._lastCameraError;
-        alert(`카메라를 켤 수 없습니다: ${err?.message || '장치 권한 및 상태를 확인해 주세요.'}`);
+        showCameraTroubleshootModal(err, () => {
+          btnAvCam?.click();
+        });
       } else {
         showAvToast('카메라 켜기');
       }

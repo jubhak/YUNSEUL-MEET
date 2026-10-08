@@ -3117,6 +3117,144 @@ body.viewer-page.is-unidirectional #btn-av-cam {
   width: 100%;
 }
 
+/* —— 카메라 트러블슈팅 모달 (Windows 절전 / FrameServer / 장치 미감지 대응) —— */
+.cam-troubleshoot-gate {
+  position: fixed;
+  inset: 0;
+  z-index: 9950;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1.25rem;
+  background: rgba(8, 10, 18, 0.88);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  pointer-events: auto;
+}
+
+.cam-troubleshoot-gate.hidden {
+  display: none !important;
+}
+
+.cam-troubleshoot-box {
+  position: relative;
+  width: min(480px, 94vw);
+  max-height: 90vh;
+  overflow-y: auto;
+  padding: 1.8rem 1.6rem;
+  border-radius: 16px;
+  background: #151822;
+  border: 1px solid #2e354a;
+  color: #e8eaef;
+  box-shadow: 0 20px 50px rgba(0, 0, 0, 0.65);
+  text-align: center;
+}
+
+.cam-troubleshoot-icon {
+  font-size: 2.8rem;
+  margin-bottom: 0.75rem;
+  display: block;
+}
+
+.cam-troubleshoot-box h2 {
+  margin: 0 0 0.65rem;
+  font-size: 1.28rem;
+  font-weight: 700;
+  color: #f8fafc;
+}
+
+.cam-troubleshoot-desc {
+  margin: 0 0 1.3rem;
+  font-size: 0.92rem;
+  color: #94a3b8;
+  line-height: 1.55;
+  word-break: keep-all;
+}
+
+.cam-troubleshoot-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 0.65rem;
+  margin-bottom: 1.2rem;
+}
+
+.cam-troubleshoot-actions .btn {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  padding: 0.75rem 1rem;
+  font-size: 0.96rem;
+  font-weight: 600;
+  border-radius: 10px;
+}
+
+.btn-avatar-fallback {
+  background: linear-gradient(135deg, #2563eb, #7c3aed) !important;
+  color: #ffffff !important;
+  border: none !important;
+  box-shadow: 0 4px 14px rgba(37, 99, 235, 0.4) !important;
+}
+
+.btn-avatar-fallback:hover {
+  filter: brightness(1.12);
+}
+
+.cam-troubleshoot-guide {
+  text-align: left;
+  background: rgba(30, 41, 59, 0.55);
+  border: 1px solid rgba(51, 65, 85, 0.7);
+  border-radius: 10px;
+  padding: 0.85rem 1rem;
+  margin-bottom: 1.1rem;
+  font-size: 0.86rem;
+  color: #cbd5e1;
+}
+
+.cam-troubleshoot-guide summary {
+  cursor: pointer;
+  font-weight: 600;
+  color: #38bdf8;
+  outline: none;
+  user-select: none;
+}
+
+.cam-troubleshoot-guide summary:hover {
+  color: #7dd3fc;
+}
+
+.cam-troubleshoot-guide .guide-content {
+  margin-top: 0.75rem;
+  padding-top: 0.75rem;
+  border-top: 1px dashed rgba(71, 85, 105, 0.6);
+  line-height: 1.6;
+}
+
+.cam-troubleshoot-guide ol {
+  margin: 0;
+  padding-left: 1.25rem;
+}
+
+.cam-troubleshoot-guide li {
+  margin-bottom: 0.55rem;
+}
+
+.cam-troubleshoot-guide code {
+  background: #0f172a;
+  color: #a5f3fc;
+  padding: 0.15rem 0.35rem;
+  border-radius: 4px;
+  font-size: 0.82rem;
+  font-family: Consolas, monospace;
+}
+
+.cam-troubleshoot-footer {
+  display: flex;
+  justify-content: center;
+}
+
+
 /* ========================================================
    미팅 준비중 타로카드 대기실 (Tarot Waiting Lounge)
    ======================================================== */
