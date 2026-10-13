@@ -62,11 +62,31 @@ export function setupChatPanel(opts) {
   const sendBtn = root.querySelector('.chat-panel-send');
   const closeBtn = root.querySelector('.chat-panel-close');
   const statusEl = root.querySelector('.chat-panel-status');
-  const unreadEl = toggleBtn?.querySelector('.chat-unread');
 
-  if (toggleBtn) {
-    toggleBtn.title = '채팅';
-    toggleBtn.setAttribute('aria-label', '채팅');
+  const getToggleBtn = () => toggleBtn || (typeof document !== 'undefined' ? document.getElementById('btn-chat') : null);
+
+  function ensureUnreadEl() {
+    const btn = getToggleBtn();
+    if (!btn) return null;
+    let el = btn.querySelector('.chat-unread');
+    if (!el) {
+      el = document.createElement('span');
+      el.className = 'chat-unread hidden';
+      el.setAttribute('aria-hidden', 'true');
+      btn.appendChild(el);
+    }
+    return el;
+  }
+
+  const initialBtn = getToggleBtn();
+  if (initialBtn) {
+    initialBtn.title = '채팅 열기';
+    initialBtn.setAttribute('aria-label', '채팅');
+    ensureUnreadEl();
+  }
+
+  function getMyClientId() {
+    return opts.getClientId?.() || opts.clientId || clientId || '';
   }
 
   function currentSocket() {
@@ -88,6 +108,8 @@ export function setupChatPanel(opts) {
       boundSocket.off('chat-history', onHistory);
     }
     boundSocket = s;
+    s.off('chat-message', onMessage);
+    s.off('chat-history', onHistory);
     s.on('chat-message', onMessage);
     s.on('chat-history', onHistory);
     try { s.emit('chat-request-history'); } catch { /* ignore */ }
@@ -110,6 +132,7 @@ export function setupChatPanel(opts) {
   function onMessage(msg) {
     if (!msg?.text) return;
     if (composeOnly) return;
+    const myId = getMyClientId();
     // 낙관적 로컬 메시지와 서버 echo 병합
     const localIdx = buffer.findIndex(
       (m) => m && m._local && m.clientId === msg.clientId && m.text === msg.text
@@ -121,10 +144,13 @@ export function setupChatPanel(opts) {
     }
     if (msg.id && buffer.some((m) => m && m.id === msg.id)) return;
     pushBuffer(msg);
+
+    const isMine = !!(myId && msg.clientId && String(msg.clientId) === String(myId));
+
     if (open) {
       appendRow(msg, true);
-    } else if (!msg.clientId || msg.clientId !== clientId) {
-      // 채팅창 닫힘: 다른 사람 새 글 수 배지
+    } else if (!isMine) {
+      // 채팅창 닫힘: 다른 사람 새 글 수 배지 표시
       unread += 1;
       syncUnread();
     }
@@ -136,37 +162,47 @@ export function setupChatPanel(opts) {
   }
 
   function syncUnread() {
-    if (composeOnly || !unreadEl) return;
+    if (composeOnly) return;
+    const badge = ensureUnreadEl();
+    const btn = getToggleBtn();
+    if (!badge) return;
+
     if (unread > 0 && !open) {
       const label = unread > 99 ? '99+' : String(unread);
-      unreadEl.textContent = label;
-      unreadEl.classList.remove('hidden');
-      unreadEl.setAttribute('aria-hidden', 'false');
-      unreadEl.setAttribute('aria-label', `새 채팅 ${label}개`);
-      if (toggleBtn) {
-        toggleBtn.setAttribute('data-unread', label);
-        toggleBtn.title = `채팅 열기 (새 메시지 ${label})`;
+      badge.textContent = label;
+      badge.classList.remove('hidden');
+      badge.setAttribute('aria-hidden', 'false');
+      badge.setAttribute('aria-label', `새 채팅 ${label}개`);
+      if (btn) {
+        btn.setAttribute('data-unread', label);
+        btn.title = `채팅 열기 (새 메시지 ${label})`;
       }
     } else {
-      unreadEl.textContent = '';
-      unreadEl.classList.add('hidden');
-      unreadEl.setAttribute('aria-hidden', 'true');
-      unreadEl.removeAttribute('aria-label');
-      if (toggleBtn) {
-        toggleBtn.removeAttribute('data-unread');
-        if (!open) toggleBtn.title = '채팅 열기';
+      badge.textContent = '';
+      badge.classList.add('hidden');
+      badge.setAttribute('aria-hidden', 'true');
+      badge.removeAttribute('aria-label');
+      if (btn) {
+        btn.removeAttribute('data-unread');
+        if (!open) btn.title = '채팅 열기';
       }
     }
   }
 
   function syncToggleBtn() {
-    if (!toggleBtn) return;
-    toggleBtn.classList.toggle('is-active', open);
-    toggleBtn.setAttribute('aria-pressed', open ? 'true' : 'false');
+    const btn = getToggleBtn();
+    if (!btn) return;
+    btn.classList.toggle('is-active', open);
+    btn.setAttribute('aria-pressed', open ? 'true' : 'false');
     if (composeOnly) {
-      toggleBtn.title = open ? '메시지 닫기' : '메시지 보내기';
+      btn.title = open ? '메시지 닫기' : '메시지 보내기';
+    } else if (open) {
+      btn.title = '채팅 닫기';
+    } else if (unread > 0) {
+      const label = unread > 99 ? '99+' : String(unread);
+      btn.title = `채팅 열기 (새 메시지 ${label})`;
     } else {
-      toggleBtn.title = open ? '채팅 닫기' : '채팅 열기';
+      btn.title = '채팅 열기';
     }
   }
 
@@ -187,6 +223,7 @@ export function setupChatPanel(opts) {
     } else {
       if (listEl) listEl.innerHTML = '';
       setStatus('');
+      syncUnread();
     }
     syncToggleBtn();
     window.dispatchEvent(new Event('resize'));
@@ -338,11 +375,12 @@ export function setupChatPanel(opts) {
     setOpen(false);
   });
 
-  toggleBtn?.addEventListener('click', (e) => {
+  getToggleBtn()?.addEventListener('click', (e) => {
     e.preventDefault();
     setOpen(!open);
   });
 
+  bindSocket();
   // 소켓이 나중에 붙는 경우 대비
   const poll = setInterval(() => {
     if (currentSocket()) {
@@ -353,6 +391,7 @@ export function setupChatPanel(opts) {
   setTimeout(() => clearInterval(poll), 20000);
 
   setOpen(false);
+  syncUnread();
 
   return {
     open: () => setOpen(true),
