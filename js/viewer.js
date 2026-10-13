@@ -8,10 +8,10 @@ import {
   setupViewersPanel,
   setSelectedBroadcaster,
   setSpotlightSpeaker,
-} from './viewers-panel.js?v=20261013a';
-import { FloatingSpeakerManager } from './floating-speaker-manager.js?v=20261013a';
+} from './viewers-panel.js?v=20261013b';
+import { FloatingSpeakerManager } from './floating-speaker-manager.js?v=20261013b';
 import { WebrtcSignaling } from './webrtc/signaling.js?v=20260715j';
-import { ViewerSubscriber } from './webrtc/viewer-subscriber.js?v=20261007e';
+import { ViewerSubscriber } from './webrtc/viewer-subscriber.js?v=20261013b';
 import { setupViewerZoom } from './viewer-zoom.js?v=20261002b';
 import { setupChatPanel } from './chat-panel.js?v=20260918fix2';
 import { CamFocusManager } from './cam-focus-manager.js?v=20260930a';
@@ -127,6 +127,8 @@ function handleSpotlightSpeakerEvent(data) {
   let stream = null;
   if (isLocalMe) {
     stream = subscriber?.cameraStream || null;
+  } else if (subscriber) {
+    stream = subscriber.getSpotlightStream?.() || null;
   }
 
   floatingSpeakerManager?.setSpeaker({
@@ -1347,14 +1349,6 @@ sync.start()
     isMeetingStarted = !!data.state?.meetingStarted;
     currentViewers = data.state?.viewers || [];
 
-    if (data.state?.spotlightSpeakerId) {
-      handleSpotlightSpeakerEvent({
-        clientId: data.state.spotlightSpeakerId,
-        name: data.state.spotlightSpeakerName,
-        role: data.state.spotlightSpeakerRole,
-      });
-    }
-
     // 접속 시 전체화면 시청 여부 확인 팝업
     initFullscreenPrompt();
 
@@ -1364,6 +1358,7 @@ sync.start()
       signaling,
       videoEl: liveVideo,
       streamActive: isStreamActive,
+      hostPeerId: data.state?.hostClientId || null,
       onStatus: (s) => {
         // needUnmute는 자동 배너로 쓰지 않음 — 스피커 토글 토스트만 사용
         if (s.sharingScreen) {
@@ -1567,6 +1562,16 @@ sync.start()
     if (data.state?.hostClientId) {
       subscriber.hostPeerId = data.state.hostClientId;
     }
+
+    const initialSpotlightId = data.state?.spotlightSpeakerId || data.state?.hostClientId || null;
+    const initialSpotlightName = data.state?.spotlightSpeakerName || data.state?.hostName || '호스트';
+    const initialSpotlightRole = data.state?.spotlightSpeakerRole || 'host';
+
+    handleSpotlightSpeakerEvent({
+      clientId: initialSpotlightId,
+      name: initialSpotlightName,
+      role: initialSpotlightRole,
+    });
     applyInteractionMode(data.state?.interactionMode || interactionMode, !!data.state?.requireMic);
     setupViewerMic();
     if (sync?.socket && interactionMode === 'bidirectional') {

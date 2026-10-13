@@ -283,19 +283,29 @@ function getPeer(room, clientId) {
   return peer;
 }
 
-function isHostOnlyFaceSource(source = '') {
-  return source === 'camera' || source === 'viewer-camera';
+function isHostOnlyFaceSource(source = '', producerClientId = null, spotlightSpeakerId = null) {
+  // 호스트 카메라는 뷰어도 플로팅 PIP로 수신 가능
+  if (source === 'camera') return false;
+  // 참가자 카메라는 스포트라이트 화자로 지정된 경우에만 뷰어 수신 허용
+  if (source === 'viewer-camera') {
+    if (spotlightSpeakerId && producerClientId && producerClientId === spotlightSpeakerId) {
+      return false;
+    }
+    return true;
+  }
+  return false;
 }
 
 function listProducers(room, { excludeClientId, forRole } = {}) {
   const list = [];
+  const spotlightId = room?.spotlightSpeakerId || null;
   for (const peer of room.peers.values()) {
     if (excludeClientId && peer.clientId === excludeClientId) continue;
     for (const producer of peer.producers.values()) {
       if (producer.closed) continue;
       const source = producer.appData?.source || '';
-      // 얼굴 영상은 호스트만 수신 — 뷰어 목록/consume 대상에서 제외
-      if (forRole === 'viewer' && isHostOnlyFaceSource(source)) continue;
+      // viewer-camera는 스포트라이트 화자가 아닌 한 뷰어에게 숨김 (호스트만 수신)
+      if (forRole === 'viewer' && isHostOnlyFaceSource(source, peer.clientId, spotlightId)) continue;
       list.push({
         producerId: producer.id,
         clientId: peer.clientId,
@@ -320,12 +330,15 @@ function emitToHostPeers(io, room, event, payload) {
 
 /**
  * 프로듀서 이벤트 브로드캐스트.
- * 얼굴 영상(camera / viewer-camera)은 호스트만 consume 하므로 호스트에게만 보낸다
- * (참가자 수백 명에게 의미 없는 이벤트가 퍼지는 것을 방지).
+ * 호스트 카메라는 뷰어 플로팅 PIP를 위해 방 전체에 전달하며,
+ * 비-스포트라이트 참가자 웹캠만 호스트에게 한정 전달한다.
  */
 function emitProducerEvent(io, room, roomCode, event, payload, appData = {}) {
   try {
-    if (isHostOnlyFaceSource(appData?.source || '')) {
+    const source = appData?.source || '';
+    const spotlightId = room?.spotlightSpeakerId || null;
+    const cid = payload?.clientId || appData?.clientId || null;
+    if (isHostOnlyFaceSource(source, cid, spotlightId)) {
       emitToHostPeers(io, room, event, payload);
       return;
     }
@@ -821,13 +834,15 @@ function attachSfuHandlers(socket, ctx) {
         }
       }
 
-      // 얼굴 영상은 호스트만 consume 허용 (클라이언트끼리/클라이언트가 얼굴 수신 차단)
+      // 얼굴 영상 검사 (호스트 카메라는 뷰어도 허용, 참가자 카메라는 스포트라이트 화자만 뷰어 허용)
       const src = targetProducer?.appData?.source || '';
       const role = ctx.getRole() || peer.role || 'viewer';
       peer.role = role;
       peer.socketId = socket.id;
       const isHost = role === 'host' || room.hostClientId === clientId || room.hostSocketId === socket.id;
-      if (!isHost && isHostOnlyFaceSource(src)) {
+      const targetCid = targetProducer?.appData?.clientId || '';
+      const spotlightId = room.spotlightSpeakerId || (typeof ctx.getSpotlightSpeakerId === 'function' ? ctx.getSpotlightSpeakerId() : null);
+      if (!isHost && isHostOnlyFaceSource(src, targetCid, spotlightId)) {
         console.warn(`[sfu] face-consume-denied room=${code} peer=${String(clientId).slice(0, 8)} role=${role} source=${src}`);
         return cb?.({ error: 'face-host-only' });
       }
@@ -1015,10 +1030,18 @@ function disposeSfuRoom(roomCode) {
   sfuRooms.delete(roomCode);
 }
 
+function setSfuSpotlightSpeaker(roomCode, speakerId) {
+  const room = sfuRooms.get(roomCode);
+  if (room) {
+    room.spotlightSpeakerId = speakerId || null;
+  }
+}
+
 module.exports = {
   attachSfuHandlers,
   cleanupSocketPeer,
   disposeSfuRoom,
+  setSfuSpotlightSpeaker,
   getOrCreateRoom,
   listProducers,
   getSfuSnapshot,

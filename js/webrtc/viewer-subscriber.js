@@ -12,14 +12,15 @@ export class ViewerSubscriber {
    *   onStatus?: (s: object) => void,
    * }} opts
    */
-  constructor({ signaling, videoEl, onStatus, streamActive = false }) {
+  constructor({ signaling, videoEl, onStatus, streamActive = false, hostPeerId = null }) {
     this.signaling = signaling;
     this.videoEl = videoEl;
     this.onStatus = onStatus || (() => {});
     /** @type {MediaStream|null} */
     this.remoteStream = null;
     this._watching = false;
-    this.hostPeerId = null;
+    this.hostPeerId = hostPeerId || null;
+    this._spotlightTrackId = null;
     /** @type {SfuClient|null} */
     this.sfu = null;
     this._sfuReady = null;
@@ -142,14 +143,12 @@ export class ViewerSubscriber {
           // 화면 공유 모드 시 호스트 display는 기본 수신
           if (info?.role === 'host' && (source === 'display' || !source)) return true;
           // 스포트라이트 화자 비디오: 현재 스포트라이트 지정된 화자의 카메라 track만 선택적 수신!
-          if (this._spotlightSpeakerId) {
+          const isSpotlightHost = (!this._spotlightSpeakerId || this._spotlightSpeakerRole === 'host' || (this.hostPeerId && this._spotlightSpeakerId === this.hostPeerId));
+          if (isSpotlightHost) {
+            if (source === 'camera') return true;
+          } else {
             const cid = info?.clientId || info?.appData?.clientId;
-            const isSpotlightHost = (this._spotlightSpeakerRole === 'host' || this._spotlightSpeakerId === this.hostPeerId);
-            if (isSpotlightHost) {
-              if (info?.role === 'host' && source === 'camera') return true;
-            } else {
-              if (cid === this._spotlightSpeakerId && source === 'viewer-camera') return true;
-            }
+            if (cid === this._spotlightSpeakerId && source === 'viewer-camera') return true;
           }
           return false;
         }
@@ -170,19 +169,21 @@ export class ViewerSubscriber {
         const source = info?.appData?.source || '';
         const clientId = info?.clientId || info?.appData?.clientId;
         if (source === 'camera' || source === 'viewer-camera') {
-          const isSpotlightHost = (this._spotlightSpeakerRole === 'host' || this._spotlightSpeakerId === this.hostPeerId);
+          const isSpotlightHost = (!this._spotlightSpeakerId || this._spotlightSpeakerRole === 'host' || (this.hostPeerId && this._spotlightSpeakerId === this.hostPeerId));
           const isTarget = isSpotlightHost
-            ? (info?.role === 'host' && source === 'camera')
+            ? (source === 'camera')
             : (clientId === this._spotlightSpeakerId && source === 'viewer-camera');
           if (isTarget && consumer.track) {
             if (this._spotlightConsumer && this._spotlightConsumer !== consumer) {
               try { this._spotlightConsumer.close(); } catch { /* ignore */ }
             }
             this._spotlightConsumer = consumer;
+            this._spotlightTrackId = consumer.track.id;
             const spotlightStream = new MediaStream([consumer.track]);
             consumer.track.addEventListener('ended', () => {
               if (this._spotlightConsumer === consumer) {
                 this._spotlightConsumer = null;
+                this._spotlightTrackId = null;
                 this.onSpotlightStream?.({
                   clientId: this._spotlightSpeakerId,
                   name: this._spotlightSpeakerName,
@@ -192,9 +193,9 @@ export class ViewerSubscriber {
               }
             }, { once: true });
             this.onSpotlightStream?.({
-              clientId: this._spotlightSpeakerId,
-              name: this._spotlightSpeakerName,
-              role: this._spotlightSpeakerRole,
+              clientId: this._spotlightSpeakerId || this.hostPeerId,
+              name: this._spotlightSpeakerName || '호스트',
+              role: this._spotlightSpeakerRole || 'host',
               stream: spotlightStream,
             });
             return;
@@ -640,6 +641,7 @@ export class ViewerSubscriber {
     const vtracks = (stream.getVideoTracks() || []).filter((t) => {
       if (!t || t.readyState === 'ended') return false;
       if (this._cameraTrackIds.has(t.id)) return false;
+      if (this._spotlightTrackId && t.id === this._spotlightTrackId) return false;
       return true;
     });
     const hasAudio = (stream.getAudioTracks() || []).some((t) => t && t.readyState !== 'ended');
@@ -1186,14 +1188,22 @@ export class ViewerSubscriber {
       this.setCameraIdle(true);
     }
 
-    if (this._spotlightConsumer) {
+    if (prevId !== this._spotlightSpeakerId && this._spotlightConsumer) {
       try { this._spotlightConsumer.close(); } catch { /* ignore */ }
       this._spotlightConsumer = null;
+      this._spotlightTrackId = null;
     }
 
     if (this.sfu && !this.sfu._closed) {
       this.sfu.consumeExistingProducers().catch(() => {});
     }
+  }
+
+  getSpotlightStream() {
+    if (this._spotlightConsumer && this._spotlightConsumer.track && this._spotlightConsumer.track.readyState === 'live') {
+      return new MediaStream([this._spotlightConsumer.track]);
+    }
+    return null;
   }
 
   destroy() {

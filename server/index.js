@@ -33,7 +33,7 @@ const multer = require('multer');
 const { Server } = require('socket.io');
 const { createRemoteControl } = require('./remote-control');
 const { createFaceRelay } = require('./face-relay');
-const { attachSfuHandlers, cleanupSocketPeer, disposeSfuRoom, detectAnnouncedIp, getListenIps, getRtcPort, getSfuSnapshot, getWorker, getWorkerCount } = require('./sfu');
+const { attachSfuHandlers, cleanupSocketPeer, disposeSfuRoom, setSfuSpotlightSpeaker, detectAnnouncedIp, getListenIps, getRtcPort, getSfuSnapshot, getWorker, getWorkerCount } = require('./sfu');
 
 const ROOT = path.join(__dirname, '..');
 const DATA_DIR = path.join(ROOT, 'data');
@@ -625,6 +625,7 @@ function schedulePeerDisconnectGrace(io, room, clientId, role) {
               name: room.spotlightSpeakerName,
               role: 'host',
             });
+            try { setSfuSpotlightSpeaker(room.code, room.spotlightSpeakerId); } catch { /* ignore */ }
           }
           if (room.hostSocketId) {
             io.to(room.hostSocketId).emit('peer-left', { clientId, role: 'viewer' });
@@ -1407,6 +1408,10 @@ io.on('connection', (socket) => {
         requireMic: !!room?.requireMic,
       };
     },
+    getSpotlightSpeakerId: () => {
+      const room = getRoom(socket.data.roomCode);
+      return room?.spotlightSpeakerId || room?.hostClientId || null;
+    },
   });
   attachRemoteControlSocket(socket);
 
@@ -1846,6 +1851,7 @@ io.on('connection', (socket) => {
           payload.clientId = room.spotlightSpeakerId;
           payload.name = room.spotlightSpeakerName;
           payload.role = room.spotlightSpeakerRole;
+          try { setSfuSpotlightSpeaker(code, room.spotlightSpeakerId); } catch { /* ignore */ }
           io.to(code).emit('spotlight-speaker', payload);
           persistRoom(room);
           return;

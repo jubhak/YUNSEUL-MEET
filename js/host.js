@@ -9,8 +9,8 @@ import {
   setSelectedBroadcaster,
   setSpotlightSpeaker,
   getLatestViewers,
-} from './viewers-panel.js?v=20261013a';
-import { FloatingSpeakerManager } from './floating-speaker-manager.js?v=20261013a';
+} from './viewers-panel.js?v=20261013b';
+import { FloatingSpeakerManager } from './floating-speaker-manager.js?v=20261013b';
 import { WebrtcSignaling } from './webrtc/signaling.js?v=20260715j';
 import { HostPublisher } from './webrtc/host-publisher.js?v=20261007e';
 import { setupChatPanel } from './chat-panel.js?v=20260918fix2';
