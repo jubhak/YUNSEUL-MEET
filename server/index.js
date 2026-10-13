@@ -475,6 +475,9 @@ function viewersPayload(room) {
         ? room.hostMicState
         : 'off',
       micReady: room.requireMic ? !!room.hostMicReady : true,
+      camState: room.hostCamState === 'on' || room.hostCamState === 'none'
+        ? room.hostCamState
+        : 'off',
       admitted: true,
     });
   }
@@ -482,6 +485,7 @@ function viewersPayload(room) {
     const micState = v.micState === 'on' || v.micState === 'none' ? v.micState : 'off';
     // 마이크 필수 방: 검증된(작동 확인된) 마이크가 없는 참가자는 "입장 대기" 상태로 표시
     const micReady = room.requireMic ? !!v.micReady : true;
+    const camState = v.camState === 'on' || v.camState === 'none' ? v.camState : 'off';
     list.push({
       id,
       name: v.name || '참가자',
@@ -489,6 +493,7 @@ function viewersPayload(room) {
       lastSeen: v.lastSeen || 0,
       micState,
       micReady,
+      camState,
       admitted: micReady,
     });
   }
@@ -1452,12 +1457,16 @@ io.on('connection', (socket) => {
         room.hostName = name || room.hostName || '호스트';
         room.hostLastSeen = Date.now();
         room.lastActivity = Date.now();
+        if (msg?.camState) {
+          room.hostCamState = msg.camState === 'on' || msg.camState === 'none' ? msg.camState : 'off';
+        }
         if (!room.activeBroadcasterId) {
           room.activeBroadcasterId = clientId;
         }
       } else {
         cancelViewerLeave(room, clientId);
         const prev = room.viewers.get(clientId);
+        const joinCamState = msg?.camState === 'on' || msg?.camState === 'none' ? msg.camState : 'off';
         room.viewers.set(clientId, {
           name,
           socketId: socket.id,
@@ -1466,6 +1475,7 @@ io.on('connection', (socket) => {
           // 마이크 상태는 항상 "실제" 상태만 반영한다. (필수 방이라고 임의로 on 으로 만들지 않음)
           micState: prev?.micState === 'on' || prev?.micState === 'none' ? prev.micState : 'off',
           micReady: prev?.micReady === true,
+          camState: prev?.camState === 'on' || prev?.camState === 'none' ? prev.camState : joinCamState,
         });
         room.lastActivity = Date.now();
       }
@@ -1920,6 +1930,31 @@ io.on('connection', (socket) => {
       broadcastViewerCount(io, room);
     } catch (e) {
       console.error('[mic-status]', e);
+    }
+  });
+
+  /** 카메라 상태: on | off | none(장치 없음/인식 실패) */
+  socket.on('cam-status', (msg) => {
+    try {
+      const code = socket.data.roomCode;
+      const room = code ? getRoom(code) : null;
+      if (!room || !socket.data.clientId) return;
+      const raw = String(msg?.state || 'off');
+      const state = raw === 'on' || raw === 'none' ? raw : 'off';
+      if (socket.data.role === 'host') {
+        if (!requireHost(room, socket.data.hostToken)) return;
+        if (room.hostCamState === state) return;
+        room.hostCamState = state;
+      } else {
+        const viewer = room.viewers.get(socket.data.clientId);
+        if (!viewer) return;
+        if (viewer.camState === state) return;
+        viewer.camState = state;
+      }
+      room.lastActivity = Date.now();
+      broadcastViewerCount(io, room);
+    } catch (e) {
+      console.error('[cam-status]', e);
     }
   });
 

@@ -8,7 +8,7 @@ import {
   setupViewersPanel,
   setSelectedBroadcaster,
   setSpotlightSpeaker,
-} from './viewers-panel.js?v=20261013d';
+} from './viewers-panel.js?v=20261014b';
 import { FloatingSpeakerManager } from './floating-speaker-manager.js?v=20261013d';
 import { WebrtcSignaling } from './webrtc/signaling.js?v=20260715j';
 import { ViewerSubscriber } from './webrtc/viewer-subscriber.js?v=20261013d';
@@ -735,6 +735,7 @@ function syncAvButtons() {
     btnAvCam.title = camOn ? '카메라 켜짐 — 클릭하여 끄기' : '카메라 꺼짐 — 클릭하여 켜기';
   }
   updateAvatarUi();
+  emitCamStatus();
 }
 
 function onAvatarRandomClick() {
@@ -1058,6 +1059,27 @@ function emitMicStatus() {
   try { micCtl?._emit?.(); } catch { /* ignore */ }
 }
 
+/** 서버에 현재 카메라 상태를 다시 알림 (재접속/장치변경/토글 등) */
+async function emitCamStatus() {
+  if (!sync?.socket) return;
+  const camOn = !!(subscriber?.cameraWanted && subscriber?.hasCamera && subscriber?.cameraEnabled);
+  let state = camOn ? 'on' : 'off';
+  if (!camOn) {
+    if (!navigator.mediaDevices?.enumerateDevices) {
+      state = 'none';
+    } else {
+      try {
+        const devs = await navigator.mediaDevices.enumerateDevices();
+        const hasVideo = devs.some((d) => d.kind === 'videoinput');
+        state = hasVideo ? 'off' : 'none';
+      } catch {
+        state = 'none';
+      }
+    }
+  }
+  try { sync.socket.emit('cam-status', { state }); } catch { /* ignore */ }
+}
+
 /** 마이크 컨트롤러 생성 (subscriber 준비 후 1회) */
 function setupViewerMic() {
   if (micCtl || !subscriber || !sync) return;
@@ -1081,8 +1103,13 @@ function setupViewerMic() {
       try { subscriber.avatarManager?.attachMicTrack(track || null); } catch { /* ignore */ }
     },
   });
-  sync.socket?.on?.('connect', () => emitMicStatus());
+  sync.socket?.on?.('connect', () => {
+    emitMicStatus();
+    emitCamStatus();
+  });
+  navigator.mediaDevices?.addEventListener?.('devicechange', () => emitCamStatus());
   micCtl._emit(); // 초기 상태: off / ready=false → 아이콘 비활성으로 시작
+  emitCamStatus();
   syncAvButtons();
 }
 

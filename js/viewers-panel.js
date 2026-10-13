@@ -119,6 +119,21 @@ function renderList(viewers) {
     const micHtml = micState === 'none'
       ? `<span class="viewers-mic is-none" title="${micTitle}" aria-label="${micTitle}"><span class="mic-ico" aria-hidden="true">${micIco}</span><span class="mic-x" aria-hidden="true">✕</span></span>`
       : `<span class="viewers-mic is-${micState}" title="${micTitle}" aria-label="${micTitle}"><span class="mic-ico" aria-hidden="true">${micIco}</span></span>`;
+
+    const camState = v.camState === 'on' || v.camState === 'none' ? v.camState : 'off';
+    const camTitle = camState === 'on'
+      ? '카메라 켜짐'
+      : camState === 'none'
+        ? '카메라 없음 (장치 미인식)'
+        : '카메라 꺼짐';
+    const CAM_SVG_ON = `<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" style="display:block;"><path d="M23 7l-7 5 7 5V7z"></path><rect x="1" y="5" width="15" height="14" rx="2" ry="2"></rect></svg>`;
+    const CAM_SVG_OFF = `<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" style="display:block;"><path d="M16 16v1a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2h2m4 0h6a2 2 0 0 1 2 2v4"></path><path d="M23 7l-7 5 7 5V7z"></path><line x1="1" y1="1" x2="23" y2="23" stroke="#ef4444" stroke-width="2.4" stroke-linecap="round"></line></svg>`;
+    const CAM_SVG_NONE = `<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" style="display:block;"><path d="M23 7l-7 5 7 5V7z"></path><rect x="1" y="5" width="15" height="14" rx="2" ry="2"></rect></svg>`;
+    const camIco = camState === 'on' ? CAM_SVG_ON : (camState === 'none' ? CAM_SVG_NONE : CAM_SVG_OFF);
+    const camHtml = camState === 'none'
+      ? `<span class="viewers-cam is-none" title="${camTitle}" aria-label="${camTitle}"><span class="cam-ico" aria-hidden="true">${camIco}</span><span class="cam-x" aria-hidden="true">✕</span></span>`
+      : `<span class="viewers-cam is-${camState}" title="${camTitle}" aria-label="${camTitle}"><span class="cam-ico" aria-hidden="true">${camIco}</span></span>`;
+
     const classes = [
       'viewers-item',
       role === 'host' ? 'is-host' : '',
@@ -142,6 +157,7 @@ function renderList(viewers) {
       <li class="${classes}" data-speak-id="${escapeHtml(v.id || '')}" data-id="${escapeHtml(v.id || '')}" data-role="${role}" data-name="${name}" ${selectable ? 'role="button" tabindex="0"' : ''}>
         <span class="viewers-avatar" aria-hidden="true">${initial}</span>
         <span class="viewers-name">${name}</span>
+        ${camHtml}
         ${micHtml}
         <span class="viewers-wave-bars" aria-hidden="true" title="음성 인식 중">
           <i></i><i></i><i></i><i></i>

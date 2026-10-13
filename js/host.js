@@ -9,7 +9,7 @@ import {
   setSelectedBroadcaster,
   setSpotlightSpeaker,
   getLatestViewers,
-} from './viewers-panel.js?v=20261013d';
+} from './viewers-panel.js?v=20261014b';
 import { FloatingSpeakerManager } from './floating-speaker-manager.js?v=20261013d';
 import { WebrtcSignaling } from './webrtc/signaling.js?v=20260715j';
 import { HostPublisher } from './webrtc/host-publisher.js?v=20261013d';
@@ -949,6 +949,7 @@ function syncAvButtons() {
   }
   if (optStreamMic) optStreamMic.checked = !!micCtl?.enabled;
   updateAvatarUi();
+  emitCamStatus();
 }
 
 function onAvatarRandomClick() {
@@ -1485,6 +1486,27 @@ function emitMicStatus() {
   try { micCtl?._emit?.(); } catch { /* ignore */ }
 }
 
+/** 서버에 현재 카메라 상태 재통지 (재접속/장치변경/토글 등) */
+async function emitCamStatus() {
+  if (!sync?.socket) return;
+  const camOn = !!(webrtcPublisher?.cameraWanted && webrtcPublisher?.hasCamera && webrtcPublisher?.cameraEnabled);
+  let state = camOn ? 'on' : 'off';
+  if (!camOn) {
+    if (!navigator.mediaDevices?.enumerateDevices) {
+      state = 'none';
+    } else {
+      try {
+        const devs = await navigator.mediaDevices.enumerateDevices();
+        const hasVideo = devs.some((d) => d.kind === 'videoinput');
+        state = hasVideo ? 'off' : 'none';
+      } catch {
+        state = 'none';
+      }
+    }
+  }
+  try { sync.socket.emit('cam-status', { state }); } catch { /* ignore */ }
+}
+
 function setupHostMic() {
   if (micCtl || !webrtcPublisher || !sync) return;
   const isReq = interactionMode === 'bidirectional' && requireMic;
@@ -1505,8 +1527,13 @@ function setupHostMic() {
       try { webrtcPublisher?.onMicTrack?.(track || null); } catch { /* ignore */ }
     },
   });
-  sync.socket.on?.('connect', () => emitMicStatus());
+  sync.socket.on?.('connect', () => {
+    emitMicStatus();
+    emitCamStatus();
+  });
+  navigator.mediaDevices?.addEventListener?.('devicechange', () => emitCamStatus());
   micCtl._emit(); // 초기 상태(off / ready=false) 통지 → 아이콘은 비활성으로 시작
+  emitCamStatus();
   syncAvButtons();
   if (isReq) {
     // 필수 방: 검증 대화상자(필요 시) → 자동 ON

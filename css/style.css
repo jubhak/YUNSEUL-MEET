@@ -1289,8 +1289,8 @@ body.has-ppt .tb-group-room + .tb-sep {
 }
 
 .viewers-popup-box {
-  width: min(440px, 94vw);
-  max-height: min(70vh, 520px);
+  width: min(530px, 95vw);
+  max-height: min(72vh, 540px);
   display: flex;
   flex-direction: column;
   background: var(--surface);
@@ -1344,13 +1344,17 @@ body.has-ppt .tb-group-room + .tb-sep {
 }
 
 .viewers-item {
-  display: flex;
-  align-items: center;
-  gap: 0.75rem;
-  padding: 0.65rem 0.75rem;
+  display: flex !important;
+  flex-direction: row !important;
+  flex-wrap: nowrap !important;
+  align-items: center !important;
+  gap: 0.55rem;
+  padding: 0.55rem 0.75rem;
   background: var(--surface-2);
   border: 1px solid var(--border);
   border-radius: 10px;
+  white-space: nowrap !important;
+  overflow: hidden;
 }
 
 .viewers-item.is-selectable {
@@ -1416,6 +1420,71 @@ body.has-ppt .tb-group-room + .tb-sep {
   font-weight: 650;
   color: #fbbf24;
   flex-shrink: 0;
+}
+
+.viewers-cam {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.55rem;
+  height: 1.55rem;
+  flex-shrink: 0;
+  border-radius: 999px;
+  font-size: 0.95rem;
+  line-height: 1;
+}
+
+.viewers-cam .cam-ico {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  line-height: 1;
+}
+
+.viewers-cam .cam-ico svg {
+  width: 14px;
+  height: 14px;
+  display: block;
+}
+
+.viewers-cam.is-on {
+  color: #38bdf8;
+  background: rgba(56, 189, 248, 0.16);
+  box-shadow: 0 0 0 1px rgba(56, 189, 248, 0.45);
+  opacity: 1;
+}
+
+.viewers-cam.is-off {
+  color: #94a3b8;
+  background: rgba(36, 40, 54, 0.9);
+  box-shadow: 0 0 0 1px rgba(58, 65, 88, 0.8);
+  opacity: 0.85;
+}
+
+.viewers-cam.is-none {
+  color: #94a3b8;
+  background: rgba(248, 113, 113, 0.12);
+  box-shadow: 0 0 0 1px rgba(248, 113, 113, 0.4);
+  opacity: 0.9;
+}
+
+.viewers-cam.is-none .cam-x {
+  position: absolute;
+  right: -0.05rem;
+  bottom: -0.1rem;
+  width: 0.85rem;
+  height: 0.85rem;
+  border-radius: 999px;
+  background: #1a1d27;
+  color: #f87171;
+  font-size: 0.62rem;
+  font-weight: 800;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  line-height: 1;
+  box-shadow: 0 0 0 1px rgba(248, 113, 113, 0.55);
 }
 
 .viewers-mic {
