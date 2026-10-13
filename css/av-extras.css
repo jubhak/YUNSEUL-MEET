@@ -425,6 +425,8 @@ body.display-mode-face .live-stage.is-zoomed { cursor: default; }
   align-items: center;
   gap: 4px;
   margin-left: auto;
+  flex-shrink: 0;
+  white-space: nowrap;
 }
 .btn-item-action {
   border: 1px solid rgba(255, 255, 255, 0.15);
@@ -435,6 +437,9 @@ body.display-mode-face .live-stage.is-zoomed { cursor: default; }
   font-size: 11px;
   font-weight: 600;
   cursor: pointer;
+  white-space: nowrap;
+  flex-shrink: 0;
+  line-height: 1.25;
   transition: all 0.15s ease;
 }
 .btn-item-action:hover {
@@ -453,6 +458,9 @@ body.display-mode-face .live-stage.is-zoomed { cursor: default; }
    ======================================================== */
 .floating-speaker-pip {
   position: fixed;
+  top: 74px;
+  left: 20px;
+  right: auto;
   z-index: 9200;
   width: 260px;
   height: 162px;

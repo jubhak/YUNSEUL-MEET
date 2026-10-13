@@ -26,7 +26,7 @@ const mediaCodecs = [
     clockRate: 90000,
     parameters: {
       'x-google-start-bitrate': 1200,
-      'x-google-max-bitrate': 4500,
+      'x-google-max-bitrate': 8000,
       'x-google-min-bitrate': 300,
     },
   },
@@ -39,7 +39,7 @@ const mediaCodecs = [
       'profile-level-id': '42e01f',
       'level-asymmetry-allowed': 1,
       'x-google-start-bitrate': 1200,
-      'x-google-max-bitrate': 4500,
+      'x-google-max-bitrate': 8000,
       'x-google-min-bitrate': 300,
     },
   },

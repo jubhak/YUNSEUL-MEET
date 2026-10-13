@@ -31,21 +31,18 @@ function ensurePopupDom() {
   `;
   document.body.appendChild(root);
 
+  // 닫기 버튼
   document.getElementById('viewers-popup-close')?.addEventListener('click', (e) => {
     e.preventDefault();
     e.stopPropagation();
     hideViewersPopup();
   });
 
-  // 배경 클릭으로는 닫지 않음
+  // 팝업 내부 클릭 이벤트 처리 (버튼 액션 및 아이템 선택)
   root.addEventListener('click', (e) => {
-    e.stopPropagation();
-  });
-
-  root.addEventListener('click', (e) => {
-    if (!selectable) return;
+    // 배경 레이어 클릭인 경우에만 차단하고 버튼/아이템은 정상 처리
     const btn = e.target.closest?.('[data-act]');
-    if (btn) {
+    if (btn && selectable) {
       e.preventDefault();
       e.stopPropagation();
       const act = btn.getAttribute('data-act');
@@ -61,14 +58,19 @@ function ensurePopupDom() {
     }
 
     const item = e.target.closest?.('.viewers-item[data-id]');
-    if (!item) return;
-    e.preventDefault();
-    const id = item.getAttribute('data-id');
-    const role = item.getAttribute('data-role') || 'viewer';
-    const name = item.getAttribute('data-name') || '';
-    if (!id) return;
-    // 아이템 클릭 시: 기본적으로 플로팅 창 발언자 얼굴 스포트라이트 전환
-    onSpotlightParticipant?.({ id, role, name });
+    if (item && selectable) {
+      e.preventDefault();
+      e.stopPropagation();
+      const id = item.getAttribute('data-id');
+      const role = item.getAttribute('data-role') || 'viewer';
+      const name = item.getAttribute('data-name') || '';
+      if (id) {
+        onSpotlightParticipant?.({ id, role, name });
+      }
+      return;
+    }
+
+    e.stopPropagation();
   });
 
   // 호스트 항목 더블클릭도 동일하게 발표 화면 복귀
@@ -126,7 +128,7 @@ function renderList(viewers) {
     ].filter(Boolean).join(' ');
 
     const actionsHtml = selectable ? `
-      <div class="viewers-actions-cell" onclick="event.stopPropagation()">
+      <div class="viewers-actions-cell">
         ${role !== 'host' ? `
           <button type="button" class="btn-item-action btn-spotlight-action${isSpotlight ? ' is-active-spotlight' : ''}" data-act="spotlight" data-id="${escapeHtml(v.id || '')}" data-name="${name}" data-role="${role}" title="이 발언자 얼굴로 플로팅 창 전환">👤 얼굴</button>
           <button type="button" class="btn-item-action btn-share-action${isSelected ? ' is-active-spotlight' : ''}" data-act="share" data-id="${escapeHtml(v.id || '')}" data-name="${name}" data-role="${role}" title="이 참가자의 PC 화면 공유 요청">🖥️ 화면</button>

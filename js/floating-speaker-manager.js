@@ -145,10 +145,11 @@ export class FloatingSpeakerManager {
     const header = this.root.querySelector('#floating-drag-header');
     if (!header) return;
 
-    // 초기 위치 (우상단 안전 여백)
+    // 초기 위치 (좌측 상단 안전 여백)
     if (!this.root.style.top && !this.root.style.left) {
       this.root.style.top = '74px';
-      this.root.style.right = '20px';
+      this.root.style.left = '20px';
+      this.root.style.right = 'auto';
     }
 
     const onStart = (clientX, clientY) => {

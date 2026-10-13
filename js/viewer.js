@@ -8,10 +8,10 @@ import {
   setupViewersPanel,
   setSelectedBroadcaster,
   setSpotlightSpeaker,
-} from './viewers-panel.js?v=20261013b';
-import { FloatingSpeakerManager } from './floating-speaker-manager.js?v=20261013b';
+} from './viewers-panel.js?v=20261013d';
+import { FloatingSpeakerManager } from './floating-speaker-manager.js?v=20261013d';
 import { WebrtcSignaling } from './webrtc/signaling.js?v=20260715j';
-import { ViewerSubscriber } from './webrtc/viewer-subscriber.js?v=20261013b';
+import { ViewerSubscriber } from './webrtc/viewer-subscriber.js?v=20261013d';
 import { setupViewerZoom } from './viewer-zoom.js?v=20261002b';
 import { setupChatPanel } from './chat-panel.js?v=20260918fix2';
 import { CamFocusManager } from './cam-focus-manager.js?v=20260930a';

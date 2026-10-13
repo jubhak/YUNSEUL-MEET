@@ -1286,7 +1286,7 @@ body.has-ppt .tb-group-room + .tb-sep {
 }
 
 .viewers-popup-box {
-  width: min(400px, 92vw);
+  width: min(440px, 94vw);
   max-height: min(70vh, 520px);
   display: flex;
   flex-direction: column;

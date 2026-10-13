@@ -849,9 +849,9 @@ export class ViewerSubscriber {
       const stream = await navigator.mediaDevices.getDisplayMedia({
         video: {
           displaySurface: 'monitor',
-          frameRate: { ideal: 24, max: 30 },
-          width: { ideal: 1920 },
-          height: { ideal: 1080 },
+          frameRate: { ideal: 30, max: 30 },
+          width: { ideal: 2560, max: 3840 },
+          height: { ideal: 1440, max: 2160 },
         },
         audio: false,
         preferCurrentTab: false,

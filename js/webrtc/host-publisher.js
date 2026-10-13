@@ -326,9 +326,9 @@ export class HostPublisher {
 
     const stream = await navigator.mediaDevices.getDisplayMedia({
       video: {
-        frameRate: { ideal: 24, max: 30 },
-        width: { ideal: 1920 },
-        height: { ideal: 1080 },
+        frameRate: { ideal: 30, max: 30 },
+        width: { ideal: 2560, max: 3840 },
+        height: { ideal: 1440, max: 2160 },
         displaySurface: 'monitor',
       },
       audio: withTabAudio
@@ -724,27 +724,27 @@ export class HostPublisher {
 
   _applyDisplayBudget(count) {
     const n = Math.max(1, Number(count) || 1);
-    const EGRESS_BUDGET = 50_000_000;
-    let maxBitrate = 4_000_000;
-    let startBitrate = 2_500_000;
+    const EGRESS_BUDGET = 60_000_000;
+    let maxBitrate = 6_000_000;
+    let startBitrate = 3_500_000;
     if (n <= 6) {
-      maxBitrate = 4_000_000;
-      startBitrate = 2_500_000;
+      maxBitrate = 6_000_000;
+      startBitrate = 3_500_000;
     } else if (n <= 12) {
-      maxBitrate = 3_000_000;
-      startBitrate = 1_800_000;
+      maxBitrate = 4_500_000;
+      startBitrate = 2_500_000;
     } else if (n <= 20) {
-      maxBitrate = Math.max(800_000, Math.min(2_500_000, Math.floor(EGRESS_BUDGET / n)));
-      startBitrate = Math.min(1_500_000, maxBitrate);
+      maxBitrate = Math.max(1_500_000, Math.min(3_500_000, Math.floor(EGRESS_BUDGET / n)));
+      startBitrate = Math.min(2_000_000, maxBitrate);
     } else if (n <= 30) {
-      maxBitrate = Math.max(500_000, Math.min(1_700_000, Math.floor(EGRESS_BUDGET / n)));
-      startBitrate = Math.min(900_000, maxBitrate);
+      maxBitrate = Math.max(1_000_000, Math.min(2_500_000, Math.floor(EGRESS_BUDGET / n)));
+      startBitrate = Math.min(1_500_000, maxBitrate);
     } else {
-      maxBitrate = Math.max(400_000, Math.min(1_200_000, Math.floor(EGRESS_BUDGET / n)));
-      startBitrate = Math.min(600_000, maxBitrate);
+      maxBitrate = Math.max(800_000, Math.min(1_800_000, Math.floor(EGRESS_BUDGET / n)));
+      startBitrate = Math.min(1_000_000, maxBitrate);
     }
     this.sfu?.setDisplayEncodeBudget?.({ maxBitrate, startBitrate })?.catch?.(() => {});
-    const compositorFps = n > 30 ? 15 : (n > 20 ? 20 : 30);
+    const compositorFps = n > 30 ? 20 : 30;
     this._compositor?.setFps?.(compositorFps);
   }
 
