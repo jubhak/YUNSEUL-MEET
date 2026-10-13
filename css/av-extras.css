@@ -374,3 +374,312 @@ body.rc-controlling #btn-rc-request { display: none !important; }
 @media (pointer: coarse) { .ym-zoom-ui { display: none !important; } }
 body.display-mode-face .ym-zoom-ui { display: none !important; }
 body.display-mode-face .live-stage.is-zoomed { cursor: default; }
+
+/* ========================================================
+   접속자 명단 음성 이퀄라이저 파형 & 스포트라이트 액션
+   ======================================================== */
+.viewers-wave-bars {
+  display: inline-flex;
+  align-items: flex-end;
+  gap: 2px;
+  height: 14px;
+  margin-left: 5px;
+  margin-right: 5px;
+  vertical-align: middle;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.15s ease;
+}
+.is-speaking-clean .viewers-wave-bars {
+  opacity: 1;
+}
+.viewers-wave-bars i {
+  width: 2.5px;
+  height: 100%;
+  background: linear-gradient(to top, #10b981, #34d399);
+  border-radius: 1px;
+  transform-origin: 50% 100%;
+  transform: scaleY(0.18);
+  transition: transform 0.06s ease;
+  will-change: transform;
+}
+
+.viewers-item.is-spotlight {
+  background: rgba(56, 189, 248, 0.15) !important;
+  border: 1px solid rgba(56, 189, 248, 0.5) !important;
+}
+.viewers-spotlight-tag {
+  display: inline-block;
+  padding: 2px 7px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 700;
+  background: linear-gradient(135deg, #0284c7, #0369a1);
+  color: #ffffff;
+  box-shadow: 0 2px 8px rgba(2, 132, 199, 0.4);
+  margin-left: auto;
+  margin-right: 4px;
+}
+.viewers-actions-cell {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: auto;
+}
+.btn-item-action {
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  background: rgba(255, 255, 255, 0.08);
+  color: #e2e8f0;
+  border-radius: 6px;
+  padding: 3px 6px;
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+.btn-item-action:hover {
+  background: rgba(56, 189, 248, 0.25);
+  border-color: rgba(56, 189, 248, 0.6);
+  color: #ffffff;
+}
+.btn-item-action.is-active-spotlight {
+  background: #0284c7;
+  border-color: #38bdf8;
+  color: #ffffff;
+}
+
+/* ========================================================
+   화면 공유 모드 플로팅 발언자 얼굴 오버랩 창 (Floating PIP)
+   ======================================================== */
+.floating-speaker-pip {
+  position: fixed;
+  z-index: 9200;
+  width: 260px;
+  height: 162px;
+  box-sizing: border-box;
+  background: rgba(15, 23, 42, 0.94);
+  border: 1.5px solid rgba(56, 189, 248, 0.45);
+  border-radius: 14px;
+  box-shadow: 0 12px 36px rgba(0, 0, 0, 0.65), 0 0 0 1px rgba(255, 255, 255, 0.06);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  overflow: hidden;
+  user-select: none;
+  touch-action: none;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease, width 0.2s ease, height 0.2s ease;
+}
+.floating-speaker-pip.is-dragging {
+  opacity: 0.92;
+  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.8), 0 0 20px rgba(56, 189, 248, 0.5);
+  cursor: grabbing !important;
+}
+.floating-speaker-pip.is-speaking {
+  border-color: #facc15 !important;
+  box-shadow: 0 12px 36px rgba(0, 0, 0, 0.65), 0 0 18px rgba(250, 204, 21, 0.5) !important;
+}
+
+.floating-speaker-header {
+  position: relative;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  height: 32px;
+  padding: 0 8px 0 10px;
+  background: rgba(15, 23, 42, 0.85);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  cursor: grab;
+}
+.floating-speaker-pip.is-dragging .floating-speaker-header {
+  cursor: grabbing;
+}
+.floating-drag-grip {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  flex: 1;
+}
+.floating-grip-dots {
+  color: #64748b;
+  font-size: 13px;
+  letter-spacing: -2px;
+}
+.floating-speaker-title {
+  font-size: 12px;
+  font-weight: 700;
+  color: #f8fafc;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.floating-live-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #10b981;
+  box-shadow: 0 0 6px #10b981;
+  flex-shrink: 0;
+}
+.floating-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.floating-btn-action {
+  background: transparent;
+  border: none;
+  color: #94a3b8;
+  width: 22px;
+  height: 22px;
+  border-radius: 4px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  font-size: 11px;
+  transition: all 0.12s ease;
+}
+.floating-btn-action:hover {
+  background: rgba(255, 255, 255, 0.12);
+  color: #ffffff;
+}
+.btn-floating-reset-host {
+  width: auto !important;
+  padding: 1px 6px !important;
+  font-size: 10px !important;
+  font-weight: 700 !important;
+  background: rgba(56, 189, 248, 0.2) !important;
+  border: 1px solid rgba(56, 189, 248, 0.5) !important;
+  color: #38bdf8 !important;
+  border-radius: 4px !important;
+}
+.btn-floating-reset-host:hover {
+  background: rgba(56, 189, 248, 0.4) !important;
+  color: #ffffff !important;
+}
+
+.floating-speaker-body {
+  position: relative;
+  width: 100%;
+  height: calc(100% - 32px);
+  background: #090d16;
+  overflow: hidden;
+}
+.floating-speaker-video {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+  background: #000000;
+}
+.floating-speaker-fallback {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  background: linear-gradient(145deg, #090d16, #1e293b);
+}
+.floating-avatar-wrap {
+  position: relative;
+  width: 48px;
+  height: 48px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.floating-avatar-circle {
+  width: 48px;
+  height: 48px;
+  border-radius: 50%;
+  background: linear-gradient(135deg, #3b82f6, #8b5cf6);
+  color: #ffffff;
+  font-size: 20px;
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: 0 4px 14px rgba(59, 130, 246, 0.4);
+  position: relative;
+  z-index: 2;
+}
+.floating-voice-wave {
+  position: absolute;
+  inset: -6px;
+  border-radius: 50%;
+  pointer-events: none;
+}
+.floating-voice-wave span {
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  border: 2px solid #38bdf8;
+  opacity: 0;
+  transform: scale(1);
+  transition: transform 0.08s ease, opacity 0.08s ease;
+}
+.floating-avatar-info {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+}
+.floating-avatar-name {
+  font-size: 12px;
+  font-weight: 600;
+  color: #f1f5f9;
+}
+.floating-avatar-badge {
+  font-size: 10px;
+  color: #94a3b8;
+  background: rgba(255, 255, 255, 0.06);
+  padding: 1px 6px;
+  border-radius: 999px;
+}
+
+/* 최소화 (캡슐화 모드) */
+.floating-speaker-pip.is-minimized {
+  width: 170px !important;
+  height: 34px !important;
+}
+.floating-speaker-pip.is-minimized .floating-speaker-body {
+  display: none !important;
+}
+
+/* 사용자가 닫았을 때 뜨는 복원 칩 */
+.floating-speaker-chip {
+  position: fixed;
+  bottom: 24px;
+  right: 20px;
+  z-index: 9200;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 14px;
+  border-radius: 999px;
+  background: rgba(15, 23, 42, 0.92);
+  border: 1.5px solid rgba(56, 189, 248, 0.6);
+  color: #38bdf8;
+  font-size: 12px;
+  font-weight: 700;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
+  backdrop-filter: blur(8px);
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+.floating-speaker-chip:hover {
+  background: rgba(56, 189, 248, 0.2);
+  color: #ffffff;
+  transform: scale(1.05);
+}
+
+@media (max-width: 640px) {
+  .floating-speaker-pip {
+    width: 190px;
+    height: 120px;
+  }
+}
+

@@ -7,8 +7,10 @@ import {
   setViewerCount,
   setupViewersPanel,
   setSelectedBroadcaster,
+  setSpotlightSpeaker,
   getLatestViewers,
-} from './viewers-panel.js?v=20260930a';
+} from './viewers-panel.js?v=20261013a';
+import { FloatingSpeakerManager } from './floating-speaker-manager.js?v=20261013a';
 import { WebrtcSignaling } from './webrtc/signaling.js?v=20260715j';
 import { HostPublisher } from './webrtc/host-publisher.js?v=20261007e';
 import { setupChatPanel } from './chat-panel.js?v=20260918fix2';
@@ -227,9 +229,92 @@ async function selectParticipant({ id, role, name }) {
   await sync.emit('request-screen-share', { clientId: id, name });
 }
 
+let floatingSpeakerManager = null;
+let currentSpotlightSpeaker = {
+  id: null,
+  name: hostName || '호스트',
+  role: 'host',
+};
+
+function updateFloatingSpeakerUi() {
+  if (!floatingSpeakerManager) return;
+  const isHost = (!currentSpotlightSpeaker.id || currentSpotlightSpeaker.id === sync?.clientId || currentSpotlightSpeaker.role === 'host');
+  let stream = null;
+  if (isHost) {
+    stream = webrtcPublisher?.cameraStream || null;
+  } else {
+    stream = sfuCameraStreams.get(currentSpotlightSpeaker.id) || null;
+  }
+  floatingSpeakerManager.setSpeaker({
+    id: currentSpotlightSpeaker.id,
+    name: currentSpotlightSpeaker.name,
+    role: currentSpotlightSpeaker.role,
+    stream,
+  });
+}
+
+function applySpotlightAudioVideo() {
+  if (webrtcPublisher?.shareMode !== 'screen') return;
+  const isHost = (!currentSpotlightSpeaker.id || currentSpotlightSpeaker.id === sync?.clientId || currentSpotlightSpeaker.role === 'host');
+
+  webrtcPublisher?.sfu?.setVideoSourceActive?.('camera', isHost)?.catch?.(() => {});
+  try {
+    webrtcPublisher?.avatarManager?.setIdle?.(!isHost);
+  } catch { /* ignore */ }
+
+  for (const id of sfuCameraStreams.keys()) {
+    if (!isHost && id === currentSpotlightSpeaker.id) {
+      webrtcPublisher?.resumeRemoteCamera?.(id);
+    } else {
+      webrtcPublisher?.pauseRemoteCamera?.(id);
+    }
+  }
+}
+
+function handleSpotlightSelect(p) {
+  const isHost = !p?.id || p?.id === sync?.clientId || p?.role === 'host';
+  const targetId = isHost ? (sync?.clientId || null) : p.id;
+  const targetName = isHost ? (hostName || '호스트') : (p.name || '참가자');
+  const targetRole = isHost ? 'host' : 'viewer';
+
+  currentSpotlightSpeaker = {
+    id: targetId,
+    name: targetName,
+    role: targetRole,
+  };
+
+  setSpotlightSpeaker(targetId);
+  speakingIndicator.setSpotlightSpeaker(targetId);
+
+  sync?.emit('host-event', {
+    type: 'spotlight-speaker',
+    payload: {
+      clientId: targetId,
+      name: targetName,
+      role: targetRole,
+    },
+  });
+
+  updateFloatingSpeakerUi();
+  applySpotlightAudioVideo();
+}
+
+floatingSpeakerManager = new FloatingSpeakerManager({
+  isHost: true,
+  hostClientId: null,
+  onResetToHost: () => {
+    handleSpotlightSelect({ id: sync?.clientId || null, name: hostName, role: 'host' });
+  },
+});
+
+speakingIndicator.onSpotlightVoice = (isSpeaking, level) => {
+  floatingSpeakerManager?.updateVoice(isSpeaking, level);
+};
+
 setupViewersPanel({
   selectable: true,
   onSelect: (p) => { selectParticipant(p).catch((err) => console.warn(err)); },
+  onSpotlight: (p) => { handleSpotlightSelect(p); },
 });
 const uploadStatus = document.getElementById('upload-status');
 const btnStream = document.getElementById('btn-stream');
@@ -1188,15 +1273,33 @@ function updateShareModeUi(mode) {
 
 function applyShareMode(mode) {
   const screen = mode === 'screen';
-  try { webrtcPublisher?.avatarManager?.setIdle?.(screen); } catch { /* ignore */ }
-  webrtcPublisher?.sfu?.setVideoSourceActive?.('camera', !screen)?.catch?.(() => {});
+  const isHost = (!currentSpotlightSpeaker.id || currentSpotlightSpeaker.id === sync?.clientId || currentSpotlightSpeaker.role === 'host');
+
+  try {
+    webrtcPublisher?.avatarManager?.setIdle?.(screen && !isHost);
+  } catch { /* ignore */ }
+
+  webrtcPublisher?.sfu?.setVideoSourceActive?.('camera', !screen || isHost)?.catch?.(() => {});
+
   for (const id of sfuCameraStreams.keys()) {
-    if (screen) webrtcPublisher?.pauseRemoteCamera?.(id);
-    else webrtcPublisher?.resumeRemoteCamera?.(id);
+    if (screen) {
+      if (!isHost && id === currentSpotlightSpeaker.id) {
+        webrtcPublisher?.resumeRemoteCamera?.(id);
+      } else {
+        webrtcPublisher?.pauseRemoteCamera?.(id);
+      }
+    } else {
+      webrtcPublisher?.resumeRemoteCamera?.(id);
+    }
   }
   if (screen) faceFeed?.reportLive?.([]);
   updateShareModeUi(mode);
   emitDisplayMode(mode === 'screen' ? 'screen' : 'face');
+
+  floatingSpeakerManager?.setSharingActive(screen);
+  if (screen) {
+    updateFloatingSpeakerUi();
+  }
 }
 
 async function startFaceShare() {
@@ -1774,6 +1877,18 @@ sync = new RoomSync({
         hideGuestShare();
       }
     }
+    if (type === 'spotlight-speaker') {
+      const isHost = (!payload?.clientId || payload.clientId === sync?.clientId || payload?.role === 'host');
+      currentSpotlightSpeaker = {
+        id: isHost ? (sync?.clientId || null) : payload.clientId,
+        name: isHost ? (hostName || '호스트') : (payload.name || '참가자'),
+        role: isHost ? 'host' : 'viewer',
+      };
+      setSpotlightSpeaker(currentSpotlightSpeaker.id);
+      speakingIndicator.setSpotlightSpeaker(currentSpotlightSpeaker.id);
+      updateFloatingSpeakerUi();
+      applySpotlightAudioVideo();
+    }
   },
   // 재연결 후 3차 안전망: SFU 프로듀서 검증 및 송출 보장
   onRejoined: (data) => {
@@ -1816,6 +1931,20 @@ sync.start()
     (data.state?.viewers || []).forEach((v) => {
       if (v?.id && v.role !== 'host') knownViewerIds.add(v.id);
     });
+
+    if (floatingSpeakerManager) {
+      floatingSpeakerManager.hostClientId = sync.clientId;
+    }
+    if (data.state?.spotlightSpeakerId) {
+      const isHost = (!data.state.spotlightSpeakerId || data.state.spotlightSpeakerId === sync.clientId || data.state.spotlightSpeakerRole === 'host');
+      currentSpotlightSpeaker = {
+        id: isHost ? sync.clientId : data.state.spotlightSpeakerId,
+        name: data.state.spotlightSpeakerName || (isHost ? hostName : '참가자'),
+        role: isHost ? 'host' : (data.state.spotlightSpeakerRole || 'viewer'),
+      };
+      setSpotlightSpeaker(currentSpotlightSpeaker.id);
+      speakingIndicator.setSpotlightSpeaker(currentSpotlightSpeaker.id);
+    }
 
     isMeetingStarted = !!data.state?.meetingStarted;
     if (!isMeetingStarted) {
@@ -1894,6 +2023,12 @@ sync.start()
       } else {
         removeCameraPip('local');
       }
+      if (floatingSpeakerManager?.isSharingActive) {
+        const isHost = (!currentSpotlightSpeaker.id || currentSpotlightSpeaker.id === sync?.clientId || currentSpotlightSpeaker.role === 'host');
+        if (isHost) {
+          floatingSpeakerManager.setStream(active ? stream : null);
+        }
+      }
       syncAvButtons();
     };
     // ── 참가자 카메라 표시: 딥페이크 직송(faceFeed)이 살아 있으면 그것을, 아니면 SFU 스트림을 사용 ──
@@ -1924,6 +2059,9 @@ sync.start()
     webrtcPublisher.onRemoteCamera = ({ clientId, stream }) => {
       sfuCameraStreams.set(clientId, stream);
       showRemoteCamera(clientId);
+      if (floatingSpeakerManager?.isSharingActive && currentSpotlightSpeaker.id === clientId) {
+        floatingSpeakerManager.setStream(stream);
+      }
     };
     webrtcPublisher.onRemoteCameraClosed = (clientId) => {
       sfuCameraStreams.delete(clientId);
@@ -1931,6 +2069,9 @@ sync.start()
       faceFeed?.dropClient(clientId);
       hostParticipantsGrid.removeStream(clientId);
       removeCameraPip(clientId);
+      if (floatingSpeakerManager?.isSharingActive && currentSpotlightSpeaker.id === clientId) {
+        floatingSpeakerManager.setStream(null);
+      }
     };
     if (faceFeed?.supported) {
       faceFeed.start();

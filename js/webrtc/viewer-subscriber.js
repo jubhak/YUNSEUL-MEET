@@ -72,6 +72,14 @@ export class ViewerSubscriber {
     /** @type {((data: { pingMs: number, lossRate: number, quality: string }) => void)|null} */
     this.onNetworkQuality = null;
 
+    this._spotlightSpeakerId = null;
+    this._spotlightSpeakerName = '호스트';
+    this._spotlightSpeakerRole = 'host';
+    this._cameraWantedIdle = false;
+    this._spotlightConsumer = null;
+    /** @type {((info: { clientId: string, name: string, role: string, stream: MediaStream|null }) => void)|null} */
+    this.onSpotlightStream = null;
+
     this._streamActive = !!streamActive;
     this._unsubStatus = signaling.onStreamStatus((msg) => {
       this._streamActive = !!msg.active;
@@ -130,10 +138,20 @@ export class ViewerSubscriber {
       sfu.consumeFilter = (info) => {
         const source = info?.appData?.source || '';
         const kind = info?.kind;
-        // 얼굴(viewer-camera/camera)은 절대 수신하지 않음 — 호스트 display(+오디오)만
         if (kind === 'video') {
-          if (source === 'camera' || source === 'viewer-camera') return false;
-          return info?.role === 'host' && (source === 'display' || !source);
+          // 화면 공유 모드 시 호스트 display는 기본 수신
+          if (info?.role === 'host' && (source === 'display' || !source)) return true;
+          // 스포트라이트 화자 비디오: 현재 스포트라이트 지정된 화자의 카메라 track만 선택적 수신!
+          if (this._spotlightSpeakerId) {
+            const cid = info?.clientId || info?.appData?.clientId;
+            const isSpotlightHost = (this._spotlightSpeakerRole === 'host' || this._spotlightSpeakerId === this.hostPeerId);
+            if (isSpotlightHost) {
+              if (info?.role === 'host' && source === 'camera') return true;
+            } else {
+              if (cid === this._spotlightSpeakerId && source === 'viewer-camera') return true;
+            }
+          }
+          return false;
         }
         if (kind === 'audio') {
           if (source === 'tab-audio' || source === 'mic') return true;
@@ -151,8 +169,36 @@ export class ViewerSubscriber {
       sfu.onConsumed = (info, consumer) => {
         const source = info?.appData?.source || '';
         const clientId = info?.clientId || info?.appData?.clientId;
-        // 카메라 경로는 서버/필터에서 차단됨 — 방어적 no-op
         if (source === 'camera' || source === 'viewer-camera') {
+          const isSpotlightHost = (this._spotlightSpeakerRole === 'host' || this._spotlightSpeakerId === this.hostPeerId);
+          const isTarget = isSpotlightHost
+            ? (info?.role === 'host' && source === 'camera')
+            : (clientId === this._spotlightSpeakerId && source === 'viewer-camera');
+          if (isTarget && consumer.track) {
+            if (this._spotlightConsumer && this._spotlightConsumer !== consumer) {
+              try { this._spotlightConsumer.close(); } catch { /* ignore */ }
+            }
+            this._spotlightConsumer = consumer;
+            const spotlightStream = new MediaStream([consumer.track]);
+            consumer.track.addEventListener('ended', () => {
+              if (this._spotlightConsumer === consumer) {
+                this._spotlightConsumer = null;
+                this.onSpotlightStream?.({
+                  clientId: this._spotlightSpeakerId,
+                  name: this._spotlightSpeakerName,
+                  role: this._spotlightSpeakerRole,
+                  stream: null,
+                });
+              }
+            }, { once: true });
+            this.onSpotlightStream?.({
+              clientId: this._spotlightSpeakerId,
+              name: this._spotlightSpeakerName,
+              role: this._spotlightSpeakerRole,
+              stream: spotlightStream,
+            });
+            return;
+          }
           try { consumer.close(); } catch { /* ignore */ }
           return;
         }
@@ -186,6 +232,18 @@ export class ViewerSubscriber {
             }
           }
           this.onRemoteAudioTrackClosed?.(clientId);
+        }
+        if (clientId === this._spotlightSpeakerId || (source === 'camera' && this._spotlightSpeakerRole === 'host')) {
+          if (this._spotlightConsumer) {
+            try { this._spotlightConsumer.close(); } catch { /* ignore */ }
+            this._spotlightConsumer = null;
+          }
+          this.onSpotlightStream?.({
+            clientId: this._spotlightSpeakerId,
+            name: this._spotlightSpeakerName,
+            role: this._spotlightSpeakerRole,
+            stream: null,
+          });
         }
         // 마이크/카메라 토글 등 개별 프로듀서 종료로 인해 시청자 화면이
         // 갑작스럽게 '대기중'으로 바뀌는 현상 차단:
@@ -1095,10 +1153,47 @@ export class ViewerSubscriber {
    * 마이크(viewer-mic)는 건드리지 않으므로 목소리는 그대로 전달된다. 해제하면 즉시 재개.
    */
   setCameraIdle(on) {
-    const next = !!on;
-    this._cameraIdle = next;
-    try { this.avatarManager?.setIdle?.(next); } catch { /* ignore */ }
-    this.sfu?.setVideoSourceActive?.('viewer-camera', !next)?.catch?.(() => {});
+    this._cameraWantedIdle = !!on;
+    const isMeSpotlight = !!(this._spotlightSpeakerId && this._spotlightSpeakerId === this.signaling?.localClientId);
+    const effectiveIdle = !!on && !isMeSpotlight;
+    this._cameraIdle = effectiveIdle;
+    try { this.avatarManager?.setIdle?.(effectiveIdle); } catch { /* ignore */ }
+    this.sfu?.setVideoSourceActive?.('viewer-camera', !effectiveIdle)?.catch?.(() => {});
+  }
+
+  setSpotlightSpeaker({ clientId, name, role } = {}) {
+    const prevId = this._spotlightSpeakerId;
+    this._spotlightSpeakerId = clientId || this.hostPeerId || null;
+    this._spotlightSpeakerName = name || (role === 'host' ? '호스트' : '참가자');
+    this._spotlightSpeakerRole = role || 'host';
+
+    const isLocalMe = (this._spotlightSpeakerId === this.signaling?.localClientId);
+
+    if (isLocalMe) {
+      if (this._cameraIdle) {
+        this.setCameraIdle(false);
+      }
+      this.onSpotlightStream?.({
+        clientId: this._spotlightSpeakerId,
+        name: this._spotlightSpeakerName,
+        role: this._spotlightSpeakerRole,
+        stream: this.cameraStream || null,
+      });
+      return;
+    }
+
+    if (prevId === this.signaling?.localClientId && this._cameraWantedIdle) {
+      this.setCameraIdle(true);
+    }
+
+    if (this._spotlightConsumer) {
+      try { this._spotlightConsumer.close(); } catch { /* ignore */ }
+      this._spotlightConsumer = null;
+    }
+
+    if (this.sfu && !this.sfu._closed) {
+      this.sfu.consumeExistingProducers().catch(() => {});
+    }
   }
 
   destroy() {

@@ -5,8 +5,10 @@
  */
 let latestViewers = [];
 let selectedId = null;
+let spotlightId = null;
 let selectable = false;
 let onSelectParticipant = null;
+let onSpotlightParticipant = null;
 
 function ensurePopupDom() {
   let root = document.getElementById('viewers-popup');
@@ -23,7 +25,7 @@ function ensurePopupDom() {
         <button type="button" id="viewers-popup-close" class="btn-close" title="닫기">✕</button>
       </div>
       <p class="viewers-popup-sub"><span id="viewers-popup-count">0</span>명 접속 중</p>
-      <p id="viewers-popup-hint" class="viewers-popup-hint hidden">이름을 누르면 그 화면을 전원에게 보여줍니다. 호스트를 누르면 참가자 공유를 끄고 발표 화면으로 돌아갑니다.</p>
+      <p id="viewers-popup-hint" class="viewers-popup-hint hidden">「👤 얼굴」을 누르면 화면 공유 창에 그 발언자의 얼굴이 뜨고, 「🖥️ 화면」을 누르면 그 사람의 PC 화면 공유를 요청합니다.</p>
       <ul id="viewers-list" class="viewers-list"></ul>
     </div>
   `;
@@ -41,25 +43,43 @@ function ensurePopupDom() {
   });
 
   root.addEventListener('click', (e) => {
+    if (!selectable) return;
+    const btn = e.target.closest?.('[data-act]');
+    if (btn) {
+      e.preventDefault();
+      e.stopPropagation();
+      const act = btn.getAttribute('data-act');
+      const id = btn.getAttribute('data-id');
+      const name = btn.getAttribute('data-name') || '';
+      const role = btn.getAttribute('data-role') || 'viewer';
+      if (act === 'spotlight' || act === 'spotlight-host') {
+        onSpotlightParticipant?.({ id, role, name });
+      } else if (act === 'share') {
+        onSelectParticipant?.({ id, role, name });
+      }
+      return;
+    }
+
     const item = e.target.closest?.('.viewers-item[data-id]');
-    if (!item || !selectable || !onSelectParticipant) return;
+    if (!item) return;
     e.preventDefault();
     const id = item.getAttribute('data-id');
     const role = item.getAttribute('data-role') || 'viewer';
     const name = item.getAttribute('data-name') || '';
     if (!id) return;
-    onSelectParticipant({ id, role, name });
+    // 아이템 클릭 시: 기본적으로 플로팅 창 발언자 얼굴 스포트라이트 전환
+    onSpotlightParticipant?.({ id, role, name });
   });
 
   // 호스트 항목 더블클릭도 동일하게 발표 화면 복귀
   root.addEventListener('dblclick', (e) => {
     const item = e.target.closest?.('.viewers-item[data-id][data-role="host"]');
-    if (!item || !selectable || !onSelectParticipant) return;
+    if (!item || !selectable) return;
     e.preventDefault();
     const id = item.getAttribute('data-id');
     const name = item.getAttribute('data-name') || '';
     if (!id) return;
-    onSelectParticipant({ id, role: 'host', name });
+    onSpotlightParticipant?.({ id, role: 'host', name });
   });
 
   return root;
@@ -84,6 +104,7 @@ function renderList(viewers) {
     const role = v.role === 'host' ? 'host' : 'viewer';
     const tag = role === 'host' ? '호스트' : '참가';
     const isSelected = selectedId && v.id === selectedId;
+    const isSpotlight = spotlightId ? v.id === spotlightId : (role === 'host');
     const micState = v.micState === 'on' || v.micState === 'none' ? v.micState : 'off';
     const micTitle = micState === 'on'
       ? '마이크 켜짐'
@@ -101,14 +122,32 @@ function renderList(viewers) {
       role === 'host' ? 'is-host' : '',
       selectable ? 'is-selectable' : '',
       isSelected ? 'is-selected' : '',
+      isSpotlight ? 'is-spotlight' : '',
     ].filter(Boolean).join(' ');
+
+    const actionsHtml = selectable ? `
+      <div class="viewers-actions-cell" onclick="event.stopPropagation()">
+        ${role !== 'host' ? `
+          <button type="button" class="btn-item-action btn-spotlight-action${isSpotlight ? ' is-active-spotlight' : ''}" data-act="spotlight" data-id="${escapeHtml(v.id || '')}" data-name="${name}" data-role="${role}" title="이 발언자 얼굴로 플로팅 창 전환">👤 얼굴</button>
+          <button type="button" class="btn-item-action btn-share-action${isSelected ? ' is-active-spotlight' : ''}" data-act="share" data-id="${escapeHtml(v.id || '')}" data-name="${name}" data-role="${role}" title="이 참가자의 PC 화면 공유 요청">🖥️ 화면</button>
+        ` : `
+          <button type="button" class="btn-item-action btn-spotlight-action${isSpotlight ? ' is-active-spotlight' : ''}" data-act="spotlight-host" data-id="${escapeHtml(v.id || '')}" data-name="${name}" data-role="host" title="호스트 얼굴로 플로팅 창 복귀">👤 호스트</button>
+        `}
+      </div>
+    ` : '';
+
     return `
       <li class="${classes}" data-speak-id="${escapeHtml(v.id || '')}" data-id="${escapeHtml(v.id || '')}" data-role="${role}" data-name="${name}" ${selectable ? 'role="button" tabindex="0"' : ''}>
         <span class="viewers-avatar" aria-hidden="true">${initial}</span>
         <span class="viewers-name">${name}</span>
         ${micHtml}
+        <span class="viewers-wave-bars" aria-hidden="true" title="음성 인식 중">
+          <i></i><i></i><i></i><i></i>
+        </span>
         <span class="viewers-tag${role === 'host' ? ' is-host-tag' : ''}">${v.admitted === false ? '마이크 확인 중' : tag}</span>
+        ${isSpotlight ? '<span class="viewers-spotlight-tag">🌟 얼굴</span>' : ''}
         ${isSelected ? '<span class="viewers-live">공유중</span>' : ''}
+        ${actionsHtml}
       </li>
     `;
   }).join('');
@@ -138,6 +177,13 @@ export function hideViewersPopup() {
 
 export function setSelectedBroadcaster(id) {
   selectedId = id || null;
+  if (!document.getElementById('viewers-popup')?.classList.contains('hidden')) {
+    renderList(latestViewers);
+  }
+}
+
+export function setSpotlightSpeaker(id) {
+  spotlightId = id || null;
   if (!document.getElementById('viewers-popup')?.classList.contains('hidden')) {
     renderList(latestViewers);
   }
@@ -182,6 +228,7 @@ export function setViewerCount(n, viewers, opts = {}) {
 export function setupViewersPanel(opts = {}) {
   selectable = !!opts.selectable;
   onSelectParticipant = typeof opts.onSelect === 'function' ? opts.onSelect : null;
+  onSpotlightParticipant = typeof opts.onSpotlight === 'function' ? opts.onSpotlight : null;
   ensurePopupDom();
 
   const link = document.getElementById('viewer-count-link');

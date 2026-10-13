@@ -21,10 +21,16 @@ class SpeakingIndicatorManager {
     this._timer = null;
     this._lastSpeaking = new Map();
     this.onSpeakingChange = null;
+    this._currentSpotlightId = null;
+    this.onSpotlightVoice = null;
     this._visHandler = () => this._reschedule();
     if (typeof document !== 'undefined') {
       document.addEventListener('visibilitychange', this._visHandler);
     }
+  }
+
+  setSpotlightSpeaker(id) {
+    this._currentSpotlightId = id || null;
   }
 
   _ensureCtx() {
@@ -182,7 +188,32 @@ class SpeakingIndicatorManager {
           ov.items[i].style.transform = `scaleY(${v.toFixed(2)})`;
         }
       }
+
+      // 접속자 명단(viewers-list) 내 실시간 주파수/이퀄라이저 파형 애니메이션
+      const wave = el.querySelector('.viewers-wave-bars');
+      if (wave) {
+        const bars = wave.children;
+        if (speaking && m && m.bands && bars.length) {
+          const lvl = 0.35 + 0.65 * (m.level || 0);
+          for (let i = 0; i < bars.length; i += 1) {
+            const bandVal = m.bands[i] || m.bands[0] || 0.3;
+            const v = Math.max(0.18, Math.min(1.0, bandVal * lvl * 1.35));
+            bars[i].style.transform = `scaleY(${v.toFixed(2)})`;
+          }
+        } else if (!speaking && bars.length) {
+          for (let i = 0; i < bars.length; i += 1) {
+            bars[i].style.transform = 'scaleY(0.18)';
+          }
+        }
+      }
     });
+
+    if (this.onSpotlightVoice && this._currentSpotlightId) {
+      const spId = this._currentSpotlightId;
+      const s = this.sources.get(spId);
+      const m = s ? this._measure(spId, s, now) : null;
+      try { this.onSpotlightVoice(!!(m && m.speaking), m?.level || 0); } catch { /* ignore */ }
+    }
     if (this.onSpeakingChange) {
       for (const [id, s] of this.sources.entries()) {
         const prev = this._lastSpeaking.get(id);

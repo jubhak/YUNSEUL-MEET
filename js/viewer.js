@@ -7,7 +7,9 @@ import {
   setViewerCount,
   setupViewersPanel,
   setSelectedBroadcaster,
-} from './viewers-panel.js?v=20260930a';
+  setSpotlightSpeaker,
+} from './viewers-panel.js?v=20261013a';
+import { FloatingSpeakerManager } from './floating-speaker-manager.js?v=20261013a';
 import { WebrtcSignaling } from './webrtc/signaling.js?v=20260715j';
 import { ViewerSubscriber } from './webrtc/viewer-subscriber.js?v=20261007e';
 import { setupViewerZoom } from './viewer-zoom.js?v=20261002b';
@@ -95,6 +97,54 @@ let currentViewers = [];
 let cachedStreamActive = false;
 let currentDisplayMode = 'face';
 
+let floatingSpeakerManager = null;
+let currentSpotlightSpeaker = {
+  id: null,
+  name: '호스트',
+  role: 'host',
+};
+
+function handleSpotlightSpeakerEvent(data) {
+  const targetId = data?.clientId || null;
+  const targetName = data?.name || '호스트';
+  const targetRole = data?.role || 'host';
+
+  currentSpotlightSpeaker = {
+    id: targetId,
+    name: targetName,
+    role: targetRole,
+  };
+
+  setSpotlightSpeaker(targetId);
+  speakingIndicator.setSpotlightSpeaker(targetId);
+  subscriber?.setSpotlightSpeaker?.({
+    clientId: targetId,
+    name: targetName,
+    role: targetRole,
+  });
+
+  const isLocalMe = (targetId && targetId === sync?.clientId);
+  let stream = null;
+  if (isLocalMe) {
+    stream = subscriber?.cameraStream || null;
+  }
+
+  floatingSpeakerManager?.setSpeaker({
+    id: targetId,
+    name: targetName,
+    role: targetRole,
+    stream,
+  });
+}
+
+floatingSpeakerManager = new FloatingSpeakerManager({
+  isHost: false,
+});
+
+speakingIndicator.onSpotlightVoice = (isSpeaking, level) => {
+  floatingSpeakerManager?.updateVoice(isSpeaking, level);
+};
+
 function applyDisplayMode(mode) {
   const next = mode === 'screen' ? 'screen' : 'face';
   currentDisplayMode = next;
@@ -102,6 +152,7 @@ function applyDisplayMode(mode) {
   document.body.classList.toggle('display-mode-face', next === 'face');
   viewerZoom?.setEnabled?.(next === 'screen');
   subscriber?.setCameraIdle?.(next === 'screen');
+  floatingSpeakerManager?.setSharingActive(next === 'screen');
 }
 
 applyDisplayMode(currentDisplayMode);
@@ -1155,6 +1206,9 @@ function handleEvent(type, data) {
     case 'display-mode':
       applyDisplayMode(data.mode);
       break;
+    case 'spotlight-speaker':
+      handleSpotlightSpeakerEvent(data);
+      break;
     case 'draw-start':
       viewerDrawCanvas?.handleRemoteStrokeStart(data);
       break;
@@ -1247,6 +1301,13 @@ sync = new RoomSync({
         isMeetingStarted = true;
       }
       if (data.state.displayMode) applyDisplayMode(data.state.displayMode);
+      if (data.state.spotlightSpeakerId) {
+        handleSpotlightSpeakerEvent({
+          clientId: data.state.spotlightSpeakerId,
+          name: data.state.spotlightSpeakerName,
+          role: data.state.spotlightSpeakerRole,
+        });
+      }
       if (data.state.streamActive && isMeetingStarted) {
         if (!tarotLounge._isCountingDown) tarotLounge.hide();
         showLive();
@@ -1285,6 +1346,14 @@ sync.start()
     const isStreamActive = !!data.state?.streamActive || cachedStreamActive;
     isMeetingStarted = !!data.state?.meetingStarted;
     currentViewers = data.state?.viewers || [];
+
+    if (data.state?.spotlightSpeakerId) {
+      handleSpotlightSpeakerEvent({
+        clientId: data.state.spotlightSpeakerId,
+        name: data.state.spotlightSpeakerName,
+        role: data.state.spotlightSpeakerRole,
+      });
+    }
 
     // 접속 시 전체화면 시청 여부 확인 팝업
     initFullscreenPrompt();
@@ -1450,10 +1519,25 @@ sync.start()
     subscriber.onCameraChange = ({ active, stream }) => {
       if (active && stream) {
         updateCameraPip('local', stream, { label: `${viewerName} (내 카메라)`, isMirror: true, isHost: false });
+        if (currentSpotlightSpeaker.id === sync?.clientId) {
+          floatingSpeakerManager?.setStream(stream);
+        }
       } else {
         removeCameraPip('local');
+        if (currentSpotlightSpeaker.id === sync?.clientId) {
+          floatingSpeakerManager?.setStream(null);
+        }
       }
       syncAvButtons();
+    };
+
+    subscriber.onSpotlightStream = ({ clientId, name, role, stream }) => {
+      floatingSpeakerManager?.setSpeaker({
+        id: clientId,
+        name,
+        role,
+        stream,
+      });
     };
 
     subscriber.onRemoteCamera = () => {};

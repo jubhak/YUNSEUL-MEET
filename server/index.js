@@ -520,6 +520,9 @@ function publicState(room) {
     allowClientDeepfake: room.allowClientCamera !== false && room.allowClientDeepfake !== false,
     // 호스트가 지금 시청자에게 보여주는 것: 'face'(참가자 얼굴 화면) | 'screen'(호스트 PC 화면)
     displayMode: room.displayMode === 'screen' ? 'screen' : 'face',
+    spotlightSpeakerId: room.spotlightSpeakerId || room.hostClientId || null,
+    spotlightSpeakerName: room.spotlightSpeakerName || room.hostName || '호스트',
+    spotlightSpeakerRole: room.spotlightSpeakerRole || 'host',
   };
 }
 
@@ -612,6 +615,16 @@ function schedulePeerDisconnectGrace(io, room, clientId, role) {
               io.to(room.hostSocketId).emit('screen-share-ended', { clientId });
             }
             broadcastBroadcaster(io, room);
+          }
+          if (room.spotlightSpeakerId === clientId) {
+            room.spotlightSpeakerId = room.hostClientId || null;
+            room.spotlightSpeakerName = room.hostName || '호스트';
+            room.spotlightSpeakerRole = 'host';
+            io.to(room.code).emit('spotlight-speaker', {
+              clientId: room.hostClientId || null,
+              name: room.spotlightSpeakerName,
+              role: 'host',
+            });
           }
           if (room.hostSocketId) {
             io.to(room.hostSocketId).emit('peer-left', { clientId, role: 'viewer' });
@@ -1819,6 +1832,22 @@ io.on('connection', (socket) => {
           persistRoom(room);
           broadcastBroadcaster(io, room);
           broadcastViewerCount(io, room);
+          return;
+        }
+        case 'spotlight-speaker': {
+          const targetId = String(payload.clientId || room.hostClientId || '');
+          const isHost = !targetId || targetId === room.hostClientId;
+          const targetName = isHost
+            ? (room.hostName || '호스트')
+            : (room.viewers.get(targetId)?.name || payload.name || '참가자');
+          room.spotlightSpeakerId = isHost ? (room.hostClientId || null) : targetId;
+          room.spotlightSpeakerName = targetName;
+          room.spotlightSpeakerRole = isHost ? 'host' : 'viewer';
+          payload.clientId = room.spotlightSpeakerId;
+          payload.name = room.spotlightSpeakerName;
+          payload.role = room.spotlightSpeakerRole;
+          io.to(code).emit('spotlight-speaker', payload);
+          persistRoom(room);
           return;
         }
         default:
