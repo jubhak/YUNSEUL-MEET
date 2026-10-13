@@ -35,7 +35,11 @@
       toolbar.style.setProperty('bottom', 'auto', 'important');
       toolbar.style.setProperty('flex', '0 0 auto', 'important');
       toolbar.style.setProperty('z-index', '9000', 'important');
-      var hostAlways = document.body.classList.contains('presentation-page');
+      var isMobileEnv = /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent)
+        || (window.matchMedia && window.matchMedia('(max-width: 900px) and (pointer: coarse)').matches)
+        || (window.matchMedia && window.matchMedia('(max-width: 768px)').matches)
+        || (window.innerWidth <= 768);
+      var hostAlways = document.body.classList.contains('presentation-page') && !isMobileEnv;
       if (hostAlways) {
         toolbar.style.setProperty('transform', 'translate3d(0,0,0)', 'important');
         toolbar.style.setProperty('visibility', 'visible', 'important');
