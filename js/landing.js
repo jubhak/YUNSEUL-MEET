@@ -45,15 +45,18 @@ document.getElementById('btn-create-room').addEventListener('click', async () =>
     return;
   }
 
-  // 마이크 필수 방: 방을 만들기 전에 호스트의 마이크부터 "실제로 소리가 잡히는지" 검증
+  // 양방향 방: 마이크 필수 옵션 여부와 무관하게 방 만들기 전 호스트 마이크 검증 및 장치 선택
   {
     const modeSel = document.querySelector('input[name="interaction-mode"]:checked')?.value || 'bidirectional';
-    const needMic = modeSel === 'bidirectional' && !!document.getElementById('require-mic')?.checked;
-    if (needMic) {
+    const isBidi = modeSel === 'bidirectional';
+    if (isBidi) {
+      const reqMic = !!document.getElementById('require-mic')?.checked;
       const r = await runMicCheckDialog({
         required: true,
-        title: '호스트 마이크 확인 (필수)',
-        subtitle: '마이크 필수 방입니다. 사용할 마이크를 선택하고 "안녕하세요"라고 말씀해 소리가 잡히는지 확인해 주세요.',
+        title: reqMic ? '호스트 마이크 확인 (필수)' : '호스트 마이크 확인 및 선택',
+        subtitle: reqMic
+          ? '마이크 필수 방입니다. 사용할 마이크를 선택하고 "안녕하세요"라고 말씀해 소리가 잡히는지 확인해 주세요.'
+          : '양방향 회의입니다. 사용할 마이크를 선택하고 "안녕하세요"라고 말씀해 소리가 잡히는지 확인해 주세요.',
         confirmLabel: '확인하고 방 만들기',
         cancelLabel: '취소',
       });
@@ -161,16 +164,22 @@ document.getElementById('btn-join-room').addEventListener('click', async () => {
       return;
     }
 
-    // 마이크 필수 방: 입장 전에 "말했을 때 실제로 소리가 잡히는" 마이크를 검증(장치 선택 가능)
-    if (data.requireMic && data.interactionMode !== 'unidirectional') {
+    // 양방향 방: 마이크 필수 옵션 여부와 무관하게 입장 전에 마이크 검증 및 장치 선택 진행
+    if (data.interactionMode !== 'unidirectional') {
+      const isReq = !!data.requireMic;
       const r = await runMicCheckDialog({
         required: true,
-        title: '마이크 확인 (필수)',
+        title: isReq ? '마이크 확인 (필수)' : '마이크 확인 및 선택',
+        subtitle: isReq
+          ? '이 방은 마이크 사용이 필수입니다. 마이크에 대고 "안녕하세요"라고 말씀해 주세요. 소리가 확인되어야 입장할 수 있습니다.'
+          : '양방향 회의입니다. 사용할 마이크를 선택하고 "안녕하세요"라고 말씀해 소리가 잡히는지 확인해 주세요.',
         confirmLabel: '확인하고 입장',
         cancelLabel: '취소',
       });
       if (!r.ok || !r.verified) {
-        errorEl.textContent = '이 방은 마이크가 필수입니다. 마이크 확인을 완료해야 입장할 수 있습니다.';
+        errorEl.textContent = isReq
+          ? '이 방은 마이크가 필수입니다. 마이크 확인을 완료해야 입장할 수 있습니다.'
+          : '마이크 확인이 완료되지 않아 입장하지 않았습니다.';
         errorEl.classList.remove('hidden');
         return;
       }

@@ -45,7 +45,7 @@ export class MicController {
     this.raw = null;
     this.deviceId = getSavedMicDeviceId();
     this.state = 'off';
-    this.ready = false;
+    this.ready = isMicRecentlyVerified(this.deviceId);
     this._busy = null;
     this._published = false;
     this._gateOpen = false;
@@ -128,8 +128,8 @@ export class MicController {
    * 입장/참여 게이트: 필수 방에서 검증된 마이크가 없으면 대화상자로 반드시 검증.
    * 검증 실패 + 나가기 → onLeave.
    */
-  async ensureGate() {
-    if (!this.requireMic) return true;
+  async ensureGate(force = false) {
+    if (!this.requireMic && !force && this.ready) return true;
     if (this._gateOpen) return this._gateOpen;
     this._gateOpen = (async () => {
       try {
@@ -142,7 +142,14 @@ export class MicController {
               return true;
             } catch { clearMicVerified(); }
           }
-          const r = await runMicCheckDialog({ required: true, initialDeviceId: this.deviceId });
+          const r = await runMicCheckDialog({
+            required: true,
+            title: this.requireMic ? '마이크 확인 (필수)' : '마이크 확인 및 선택',
+            subtitle: this.requireMic
+              ? '이 방은 마이크 사용이 필수입니다. 마이크에 대고 "안녕하세요"라고 말씀해 주세요. 소리가 확인되어야 입장할 수 있습니다.'
+              : '양방향 회의입니다. 사용할 마이크를 선택하고 "안녕하세요"라고 말씀해 소리가 잡히는지 확인해 주세요.',
+            initialDeviceId: this.deviceId,
+          });
           if (!r.ok) { this.o.onLeave?.(); return false; }
           if (r.verified) {
             this.deviceId = r.deviceId || this.deviceId;
@@ -219,7 +226,7 @@ export class MicController {
     if (this._busy) return this._busy;
     this._busy = (async () => {
       try {
-        if (this.requireMic && !this.ready) {
+        if (!this.ready) {
           const ok = await this.ensureGate();
           if (!ok) return false;
         }
@@ -231,13 +238,11 @@ export class MicController {
             this.ready = false;
             this._emit();
             this._notice(describeMicError(err), 'error');
-            if (!this.requireMic) return false;
-            // 필수 방: 다시 검증 대화상자로 장치를 고르게 한다
-            const ok = await this.ensureGate();
+            const ok = await this.ensureGate(true);
             if (!ok) return false;
           }
         }
-        if (!this.requireMic && !this.ready) this.ready = true; // 선택 방: 열림 자체를 ready 로 취급
+        this.ready = true;
         await this._ensureProducer();
         this.state = 'on';
         this._emit();
