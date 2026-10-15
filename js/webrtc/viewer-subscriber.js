@@ -1,5 +1,5 @@
 import { SfuClient } from './sfu-client.js?v=20261006a';
-import { VirtualAvatarManager, openWebcamFlexible, faceModeForRoomCount } from '../virtual-avatar-manager.js?v=20261007e';
+import { VirtualAvatarManager, openWebcamFlexible, faceModeForRoomCount } from '../virtual-avatar-manager.js?v=20261016a';
 
 /**
  * 참가자: SFU에서 호스트 display 수신 + (선택) 마이크/화면 업링크
@@ -43,7 +43,7 @@ export class ViewerSubscriber {
     this._remoteAudioEl = null;
     /** @type {MediaStream|null} */
     this._remoteAudioStream = null;
-    this.avatarManager = new VirtualAvatarManager({ width: 640, height: 360, fps: 28 });
+    this.avatarManager = new VirtualAvatarManager({ width: 640, height: 360, fps: 30 });
     // 참가자 식별자를 아바타 매니저로 전달 → 워커가 참가자별로 스왑 프레임을 분리
     try { this.avatarManager.setClientId?.(signaling?.localClientId || null); } catch { /* ignore */ }
     // 서버가 "호스트가 딥페이크 직송을 화면에 그리는 중"이라고 알리면 SFU 카메라 송출(VP8)을 저fps 로 낮춘다.

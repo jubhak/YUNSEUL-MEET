@@ -1,7 +1,7 @@
 import { TRACK_KIND } from './config.js';
 import { SfuClient } from './sfu-client.js?v=20261006a';
-import { VirtualAvatarManager, openWebcamFlexible, faceModeForRoomCount } from '../virtual-avatar-manager.js?v=20261007e';
-import { FaceCompositor } from './face-compositor.js?v=20261007e';
+import { VirtualAvatarManager, openWebcamFlexible, faceModeForRoomCount } from '../virtual-avatar-manager.js?v=20261016a';
+import { FaceCompositor } from './face-compositor.js?v=20261016a';
 
 /**
  * Host -> SFU display share (+ optional tab audio / mic).
@@ -44,7 +44,7 @@ export class HostPublisher {
     this._ensureGlobalAudioUnlock();
     /** @type {((info: { peerId: string|null, active: boolean, stream?: MediaStream|null }) => void)|null} */
     this.onRelayChange = null;
-    this.avatarManager = new VirtualAvatarManager({ width: 640, height: 360, fps: 28 });
+    this.avatarManager = new VirtualAvatarManager({ width: 640, height: 360, fps: 30 });
     this.avatarManager.swapRole = 'host';   // 호스트 본인의 딥페이크는 서버 용량 초과 거절 대상에서 제외
     // 참가자 식별자를 아바타 매니저로 전달 → 워커가 참가자별로 스왑 프레임을 분리
     try { this.avatarManager.setClientId?.(signaling?.localClientId || null); } catch { /* ignore */ }

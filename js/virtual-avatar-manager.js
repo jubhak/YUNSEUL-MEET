@@ -263,10 +263,10 @@ export const FACE_OUT_H = 270;
 export const FACE_OUT_FPS = 22;
 export const FACE_OUT_W_HD = 640;
 export const FACE_OUT_H_HD = 360;
-export const FACE_OUT_FPS_HD = 28;
+export const FACE_OUT_FPS_HD = 30;
 export const FACE_OUT_W_HQ = 960;
 export const FACE_OUT_H_HQ = 540;
-export const FACE_OUT_FPS_HQ = 26;
+export const FACE_OUT_FPS_HQ = 30;
 export const FACE_OUT_W_CROWD = 512;
 export const FACE_OUT_H_CROWD = 288;
 export const FACE_OUT_FPS_CROWD = 20;
@@ -784,18 +784,16 @@ export class VirtualAvatarManager {
    * 그 값을 넘지 않도록 클램프한다. 참가자가 많아질수록 서버가 캡을 낮춰 보내므로,
    * 클라이언트가 자체 판단으로 계속 26fps를 밀어넣어 서버 GPU 락을 독점하는 상황을 막는다. */
   _swapRequestFps() {
-    const base = this.faceMode === 'mass' ? 8
-      : this.faceMode === 'pack' ? 12
-      : this.faceMode === 'crowd' ? 18
-      : this.faceMode === 'multi' ? 22
-      : this.faceMode === 'high' ? 26
-      : 28;
+    const base = this.faceMode === 'mass' ? 10
+      : this.faceMode === 'pack' ? 15
+      : this.faceMode === 'crowd' ? 20
+      : this.faceMode === 'multi' ? 24
+      : this.faceMode === 'high' ? 30
+      : 30;
     if (this._serverFpsCap) {
-      // 서버가 내려준 fps 캡을 그대로 따른다(서버가 인원 수에 맞춰 이미 충분히 높게 준다: 1인 30, 4명 22 …).
-      // 예전에는 여기서 최소 16fps 를 강제해, 20명처럼 서버가 5~8fps 만 소화할 수 있을 때도 16fps 로 밀어 넣어
-      // 대기 초과 폐기(드롭)·지연 증가·업로드 대역폭 낭비가 생겼다. 안전 하한만 4fps.
+      // 서버가 GPU 실시간 부하 및 백프레셔를 측정해 브로드캐스트한 캡(고성능 GPU 최대 60fps) 적용
       const cap = Math.max(4, this._serverFpsCap);
-      return Math.min(base, cap, this._uploadLimits().fps);
+      return Math.min(cap, this._uploadLimits().fps);
     }
     return Math.min(base, this._uploadLimits().fps);
   }
@@ -814,7 +812,7 @@ export class VirtualAvatarManager {
     if (next) {
       this._stopSwapPump();
       this._resetSwapPipeline();
-      try { this.onFeedState?.(false); } catch { /* ignore */ }
+      try { this.onFeedState?.(false); } catch { /* ignore */ }   // 실물 영상 송출로 돌아가면 저fps 해제
     } else {
       try { this._renderFrame(); } catch { /* ignore */ }
       if (this.mode === 'swap' && !this._swapRejected) {
@@ -860,6 +858,10 @@ export class VirtualAvatarManager {
     if (!Number.isFinite(n) || n <= 0) return;
     if (this._serverFpsCap === n) return;
     this._serverFpsCap = n;
+    if (n > (this.captureFps || 0)) {
+      this.captureFps = n;
+      this._softApplyWebcamConstraints({ width: this.width, height: this.height, fps: n });
+    }
     if (this.mode === 'swap' && this._swapPumpTimer) {
       this._startSwapPump();
     }
@@ -918,8 +920,9 @@ export class VirtualAvatarManager {
     const q = this._playQ;
     if (!q.length) return;
     const now = performance.now();
-    // 큐에 2장 이상 쌓였으면 즉시 소비, 1장뿐이면 최대 45ms 만 붙잡아 도착 간격의 흔들림을 흡수
-    if (q.length >= 2 || (now - q[0].t) >= 45) {
+    // 큐에 2장 이상 쌓였거나 최소 지터 시간(고fps일 때는 20ms) 경과 시 즉시 소비하여 부드러운 반응 제공
+    const jitterThresholdMs = (this._serverFpsCap && this._serverFpsCap > 35) ? 20 : 45;
+    if (q.length >= 2 || (now - q[0].t) >= jitterThresholdMs) {
       const next = q.shift();
       const old = this._lastBitmap;
       this._lastBitmap = next.bmp;
@@ -1092,7 +1095,9 @@ export class VirtualAvatarManager {
   _startRenderLoop() {
     let lastRenderTime = 0;
     const render = (ts) => {
-      const targetFps = this.captureFps || FACE_OUT_FPS;
+      const targetFps = (this.mode === 'swap' && this._serverFpsCap)
+        ? Math.max(this.captureFps || 0, this._serverFpsCap)
+        : (this.captureFps || FACE_OUT_FPS);
       const minFrameMs = 1000 / Math.max(1, targetFps);
       if (!lastRenderTime || (ts - lastRenderTime) >= minFrameMs) {
         lastRenderTime = ts;
@@ -1120,7 +1125,9 @@ export class VirtualAvatarManager {
     // 스로틀되지 않으므로 워커 틱으로 렌더 루프를 구동한다. (탭이 보일 때는 rAF 와 중복 렌더 방지)
     if (this._heartbeatTimer) { try { this._heartbeatTimer.stop(); } catch { /* ignore */ } }
     this._heartbeatTimer = createWorkerTicker(16, () => {
-      const targetFps = this.captureFps || FACE_OUT_FPS;
+      const targetFps = (this.mode === 'swap' && this._serverFpsCap)
+        ? Math.max(this.captureFps || 0, this._serverFpsCap)
+        : (this.captureFps || FACE_OUT_FPS);
       const minFrameMs = 1000 / Math.max(1, targetFps);
       const lag = performance.now() - lastRenderTime;
       const hidden = typeof document !== 'undefined' && document.visibilityState === 'hidden';
@@ -2144,10 +2151,10 @@ export class VirtualAvatarManager {
   /** 업로드 단계별 (최대 폭, JPEG 품질 상한, fps 상한) */
   _uploadLimits() {
     switch (this._uploadLevel) {
-      case 1: return { w: 480, q: 0.62, fps: 30 };
-      case 2: return { w: 384, q: 0.55, fps: 15 };
-      case 3: return { w: 320, q: 0.5, fps: 10 };
-      default: return { w: 640, q: 1, fps: 30 };
+      case 1: return { w: 480, q: 0.65, fps: 30 };
+      case 2: return { w: 384, q: 0.58, fps: 18 };
+      case 3: return { w: 320, q: 0.5, fps: 12 };
+      default: return { w: 640, q: 0.85, fps: 60 };
     }
   }
 

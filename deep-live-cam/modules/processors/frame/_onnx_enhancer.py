@@ -18,6 +18,18 @@ from modules.platform_info import OPENVINO_PROVIDER_CONFIG
 
 IS_APPLE_SILICON = platform.system() == "Darwin" and platform.machine() == "arm64"
 
+# Windows CUDA / cuDNN DLL 경로 확보 (PyTorch torch/lib)
+if platform.system() == "Windows":
+    try:
+        import torch
+        torch_lib = os.path.join(os.path.dirname(torch.__file__), "lib")
+        if os.path.exists(torch_lib):
+            os.add_dll_directory(torch_lib)
+            if torch_lib not in os.environ.get("PATH", ""):
+                os.environ["PATH"] = torch_lib + os.pathsep + os.environ.get("PATH", "")
+    except Exception:
+        pass
+
 # Limit concurrent ONNX calls to avoid VRAM exhaustion on multi-face frames
 THREAD_SEMAPHORE = threading.Semaphore(min(max(1, (os.cpu_count() or 1)), 8))
 
@@ -37,11 +49,13 @@ def build_provider_config(providers=None):
             # Already configured – pass through
             config.append(p)
         elif p == "CUDAExecutionProvider":
-            # Use bare provider — ONNX Runtime's defaults are fastest on
-            # modern GPUs (Blackwell/sm_120).  Custom options like
-            # EXHAUSTIVE cudnn_conv_algo_search hurt performance on these
-            # architectures.
-            config.append(p)
+            # Blackwell (sm_120) & modern CUDA: HEURISTIC conv search + kSameAsRequested
+            cuda_opts = {
+                "arena_extend_strategy": "kSameAsRequested",
+                "cudnn_conv_algo_search": "HEURISTIC",
+                "do_copy_in_default_stream": "1",
+            }
+            config.append((p, cuda_opts))
         elif p == "CoreMLExecutionProvider" and IS_APPLE_SILICON:
             config.append((
                 "CoreMLExecutionProvider",

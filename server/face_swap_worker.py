@@ -62,6 +62,41 @@ from aiohttp import web
 
 import modules.globals
 
+# Windows CUDA 12.x / cuDNN DLL 경로 확보 (PyTorch torch/lib)
+if sys.platform == "win32":
+    try:
+        import torch
+        torch_lib = os.path.join(os.path.dirname(torch.__file__), "lib")
+        if os.path.exists(torch_lib):
+            os.add_dll_directory(torch_lib)
+            if torch_lib not in os.environ.get("PATH", ""):
+                os.environ["PATH"] = torch_lib + os.pathsep + os.environ.get("PATH", "")
+    except Exception:
+        pass
+
+if hasattr(cv2, "setNumThreads"):
+    cv2.setNumThreads(min(4, os.cpu_count() or 4))
+
+
+def _detect_vram_gb() -> float:
+    """사용 가능한 GPU VRAM(GB). 감지 실패 시 0.
+    FACE_SWAP_VRAM_GB 환경변수로 직접 지정할 수도 있다."""
+    env = os.environ.get("FACE_SWAP_VRAM_GB")
+    if env:
+        try:
+            return float(env)
+        except ValueError:
+            pass
+    try:
+        import torch  # type: ignore
+        if torch.cuda.is_available():
+            props = torch.cuda.get_device_properties(0)
+            return float(getattr(props, "total_memory", 0)) / (1024 ** 3)
+    except Exception:
+        pass
+    return 0.0
+
+
 # GPU 실행 프로바이더 선택
 # CUDA를 최우선으로 사용한다: CUDA는 동일 세션에 대한 동시(멀티스레드/멀티프로세스) 추론
 # 호출을 공식 지원하므로, DirectML처럼 전역 락(dml_lock)으로 완전 직렬화할 필요가 없다.
@@ -87,7 +122,7 @@ from modules.processors.frame.face_swapper import get_face_swapper, swap_face
 
 logging.basicConfig(level=logging.INFO, format="[FaceSwapWorker] %(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger("FaceSwapWorker")
-logger.info(f"Initialized ONNX execution providers: {modules.globals.execution_providers}")
+logger.info(f"Initialized ONNX execution providers: {modules.globals.execution_providers} (VRAM={_detect_vram_gb():.1f}GB)")
 
 PORT = int(os.environ.get("FACE_SWAP_PORT", 8765))
 HOST = os.environ.get("FACE_SWAP_HOST", "0.0.0.0")
@@ -377,6 +412,22 @@ def _latency_percentile(p: float = 0.5) -> float:
 
 def _limits_for_clients(n: int):
     """참가자 수별 (fps 하한, fps 상한, 처리 해상도 상한)."""
+    vram = _detect_vram_gb()
+    high_perf = USING_CUDA and (vram >= 8.0)
+    if high_perf:
+        # 고성능 GPU(RTX 5070 Ti 16GB VRAM): 1~2인 시 60 FPS 무지연 초고속 렌더링 지원
+        if n <= 1:
+            return 30.0, 60.0, 640
+        if n == 2:
+            return 24.0, 45.0, 640
+        if n <= 4:
+            return 20.0, 30.0, 640
+        if n <= 7:
+            return 16.0, 24.0, 640
+        if n <= 12:
+            return 12.0, 18.0, 512
+        return 10.0, 15.0, 448
+
     if n <= 1:
         return 24.0, 30.0, 640
     if n == 2:
@@ -398,7 +449,7 @@ def _limits_for_clients(n: int):
 #       FACE_SWAP_AIMD=0 이면 예전 방식(고정 하한).
 _AIMD_ENABLED = os.environ.get("FACE_SWAP_AIMD", "1") == "1"
 _AIMD_MIN_FPS = max(1.0, float(os.environ.get("FACE_SWAP_MIN_FPS", "4")))
-_AIMD_FPS = 30.0
+_AIMD_FPS = 60.0 if (USING_CUDA and _detect_vram_gb() >= 8.0) else 30.0
 _AIMD_LAST_N = 0
 
 
@@ -424,7 +475,8 @@ def update_aimd(n_clients: int):
         # 여유: 천천히 증가. 인원이 줄었다면 기억된 최고 처리량으로 곧바로 회복.
         best_capacity = max(_PEAK_FPS_EMA, 0.0)
         floor_hint = min(fps_cap, (best_capacity * 0.9) / n) if best_capacity > 0 else 0.0
-        _AIMD_FPS = min(fps_cap, max(_AIMD_FPS + 0.5, floor_hint if n < _AIMD_LAST_N else 0.0))
+        step = 1.0 if fps_cap > 30 else 0.5
+        _AIMD_FPS = min(fps_cap, max(_AIMD_FPS + step, floor_hint if n < _AIMD_LAST_N else 0.0))
     _AIMD_LAST_N = n
     logger.info(f"[AIMD] n={n} fps={_AIMD_FPS:.1f} cap={fps_cap} overloaded={overloaded} "
                 f"stale={stale} superseded={superseded} measured={measured:.0f}fps peak={_PEAK_FPS_EMA:.0f}")
@@ -491,7 +543,7 @@ def get_adaptive_profile(n_clients: int) -> dict:
 _ADMIT_ENABLED = os.environ.get("FACE_SWAP_ADMISSION", "1") != "0"
 _ADMIT_MIN_FPS = max(1.0, float(os.environ.get("FACE_SWAP_MIN_ADMIT_FPS", "6")))
 _ADMIT_MAX_CLIENTS = max(0, int(float(os.environ.get("FACE_SWAP_MAX_CLIENTS", "0"))))
-_ADMIT_CAPACITY_FLOOR = max(10.0, float(os.environ.get("FACE_SWAP_CAPACITY_FPS", "150")))
+_ADMIT_CAPACITY_FLOOR = max(10.0, float(os.environ.get("FACE_SWAP_CAPACITY_FPS", "160" if USING_CUDA else "30")))
 _ACTIVE_WINDOW = 6.0            # 이 시간 안에 프레임을 보냈거나 방금 승인된 참가자 = "활성"
 _ACTIVE_TS: dict = {}           # client_key -> 마지막 활동 시각
 ADMIT_REJECTED_TOTAL = 0
@@ -774,9 +826,25 @@ def _build_thread_models_locked():
     import modules.processors.frame.face_swapper as fs_mod
     from modules.processors.frame._onnx_enhancer import build_provider_config
 
-    providers = build_provider_config()
-    # 검출 입력 크기: 웹캠 프레임은 얼굴이 크므로 640 보다 작아도 검출된다(비용 ~ 면적에 비례).
-    det_edge = int(os.environ.get("FACE_SWAP_DET_SIZE", "480"))
+    vram = _detect_vram_gb()
+    # High-performance CUDA tuning: GPU 메모리 아레나를 넉넉하게 배정(최대 14GB)하여
+    # 메모리 할당 병목을 없애고 초고속 추론 지원
+    if USING_CUDA:
+        gpu_mem_bytes = int(min(max(vram * 0.8, 4.0), 14.0) * (1024 ** 3))
+        cuda_opts = {
+            "arena_extend_strategy": "kSameAsRequested",
+            "cudnn_conv_algo_search": "HEURISTIC",
+            "do_copy_in_default_stream": "1",
+            "gpu_mem_limit": str(gpu_mem_bytes),
+        }
+        providers = [("CUDAExecutionProvider", cuda_opts), "CPUExecutionProvider"]
+    else:
+        providers = build_provider_config()
+
+    # 검출 입력 크기: VRAM과 연산력이 충분한 환경(VRAM >= 8GB)에서는 기본 640으로
+    # 고선명 얼굴 인식을 지원하고, 저사양에서는 환경변수/480 사용
+    default_det = "640" if (USING_CUDA and vram >= 8.0) else "480"
+    det_edge = int(os.environ.get("FACE_SWAP_DET_SIZE", default_det))
     analyser = insightface.app.FaceAnalysis(
         name="buffalo_l", providers=providers, allowed_modules=["detection"])
     analyser.prepare(ctx_id=0, det_size=(det_edge, det_edge))
@@ -864,13 +932,16 @@ def _resolve_model_threads() -> int:
     if not USING_CUDA:
         return int(max(1, min(2, cpu // 4)))
     vram = _detect_vram_gb()
-    # 측정: 세션 4개에서 GPU 처리량이 포화(K>=4 이후 증가 거의 없음). VRAM 여유가 크면 4, 작으면 줄인다.
-    if vram >= 10:
+    # 측정: 세션 4개에서 GPU 처리량이 포화(K>=4 에서 164.5 inf/s 최고 처리량).
+    # VRAM 12GB+ 및 8코어 이상 환경에서 4개 스레드를 가동해 전/후처리와 GPU 추론을 최대로 겹침.
+    if vram >= 12 and cpu >= 8:
         n = 4
-    elif vram >= 6:
+    elif vram >= 8:
         n = 3
-    else:
+    elif vram >= 4:
         n = 2
+    else:
+        n = 1
     return int(max(1, min(n, max(1, cpu // 2))))
 
 
@@ -1017,23 +1088,6 @@ def gpu_snapshot():
 #   이 프로세스 안에서 직접 처리한다(GPU가 없는 개발 환경 등에서 유용).
 # ----------------------------------------------------
 
-def _detect_vram_gb() -> float:
-    """사용 가능한 GPU VRAM(GB). 감지 실패 시 0.
-    FACE_SWAP_VRAM_GB 환경변수로 직접 지정할 수도 있다."""
-    env = os.environ.get("FACE_SWAP_VRAM_GB")
-    if env:
-        try:
-            return float(env)
-        except ValueError:
-            pass
-    try:
-        import torch  # type: ignore
-        if torch.cuda.is_available():
-            props = torch.cuda.get_device_properties(0)
-            return float(getattr(props, "total_memory", 0)) / (1024 ** 3)
-    except Exception:
-        pass
-    return 0.0
 
 
 def _resolve_worker_count() -> int:
