@@ -1097,6 +1097,9 @@ export class ViewerSubscriber {
       this.avatarManager.setWebcamStream(null);
       const mode = faceModeForRoomCount(this._faceRoomCount || 1);
       this.avatarManager.setFaceMode(mode);
+      if (!this.avatarManager._getActivePhotoImg?.()) {
+        this.avatarManager._loadDefaultPhoto?.();
+      }
       this.avatarManager.setMode('virtual');
       if (this._micStream?.getAudioTracks?.()[0]) {
         this.avatarManager.attachMicTrack(this._micStream.getAudioTracks()[0]);

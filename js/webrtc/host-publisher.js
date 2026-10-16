@@ -668,6 +668,9 @@ export class HostPublisher {
       this.avatarManager.setWebcamStream(null);
       const mode = faceModeForRoomCount(this._faceRoomCount || 1);
       this.avatarManager.setFaceMode(mode);
+      if (!this.avatarManager._getActivePhotoImg?.()) {
+        this.avatarManager._loadDefaultPhoto?.();
+      }
       this.avatarManager.setMode('virtual');
       if (this.hasMic && this._micTracks?.[0]) {
         this.avatarManager.attachMicTrack(this._micTracks[0]);

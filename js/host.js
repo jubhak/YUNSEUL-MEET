@@ -979,6 +979,13 @@ async function applyFaceAndStartCamera(faceApplyFn) {
       }
       const ok = await webrtcPublisher.ensureCamera(true);
       if (!ok) {
+        // 물리적 카메라가 없는 경우 실사 사진 아바타 카메라 시작 시도
+        const virtOk = await webrtcPublisher.startVirtualCamera();
+        if (virtOk) {
+          showAvToast('카메라 미감지: AI 사진 아바타로 방송');
+          updateAvatarUi();
+          return;
+        }
         alert('카메라를 켤 수 없습니다. 브라우저 카메라 권한 및 연결을 확인해 주세요.');
         return;
       }

@@ -13,184 +13,13 @@ export const HERO_AVATARS = [];
 
 export const CELEBRITY_AVATARS = [
   {
-    id: 'celeb-1',
-    name: '한류 톱스타 (현우)',
-    badge: '로맨스 드라마 남주',
-    gender: 'male',
-    bg: ['#1e1b4b', '#0f172a'],
-    skin: '#fde8d7',
-    skinShadow: '#ebd0be',
-    hair: '#1c1917',
-    hairStyle: 'dandy',
-    eyeColor: '#3c2415',
-    lipColor: '#d9777f',
-    outfit: 'black-suit',
-    accessory: 'none',
-  },
-  {
-    id: 'celeb-2',
-    name: 'K-POP 아이돌 (지수)',
-    badge: '걸그룹 비주얼 센터',
-    gender: 'female',
-    bg: ['#4c0519', '#1e1b4b'],
-    skin: '#fff1f2',
-    skinShadow: '#fed7aa',
-    hair: '#451a03',
-    hairStyle: 'idol_waves',
-    eyeColor: '#451a03',
-    lipColor: '#e11d48',
-    outfit: 'stage-dress',
-    accessory: 'earring-drop',
-  },
-  {
-    id: 'celeb-3',
-    name: '시크 액션스타 (준혁)',
-    badge: '카리스마 액션 주연',
-    gender: 'male',
-    bg: ['#1c1917', '#09090b'],
-    skin: '#f5d0b5',
-    skinShadow: '#deb092',
-    hair: '#0c0a09',
-    hairStyle: 'pompadour',
-    eyeColor: '#1c1917',
-    lipColor: '#c27178',
-    outfit: 'leather-jacket',
-    accessory: 'none',
-  },
-  {
-    id: 'celeb-4',
-    name: '로맨스 여신 (수빈)',
-    badge: '청순 멜로 여배우',
-    gender: 'female',
-    bg: ['#2e1065', '#0f172a'],
-    skin: '#fff5eb',
-    skinShadow: '#fcd3b6',
-    hair: '#291e17',
-    hairStyle: 'long_elegance',
-    eyeColor: '#2e1c10',
-    lipColor: '#f43f5e',
-    outfit: 'silk-blouse',
-    accessory: 'pearl-necklace',
-  },
-  {
-    id: 'celeb-5',
-    name: '힙합 트렌드세터 (민재)',
-    badge: '글로벌 음원 차트 1위',
-    gender: 'male',
-    bg: ['#042f2e', '#0f172a'],
-    skin: '#f8d7be',
-    skinShadow: '#e6bd9f',
-    hair: '#e2e8f0',
-    hairStyle: 'street_beanie',
-    eyeColor: '#262626',
-    lipColor: '#cf757d',
-    outfit: 'street-hoodie',
-    accessory: 'chain-necklace',
-  },
-  {
-    id: 'celeb-6',
-    name: '파리 패션모델 (유나)',
-    badge: '하이패션 런웨이 뮤즈',
-    gender: 'female',
-    bg: ['#3b0764', '#18181b'],
-    skin: '#fff1e6',
-    skinShadow: '#fbd0b8',
-    hair: '#09090b',
-    hairStyle: 'bob_cut',
-    eyeColor: '#172554',
-    lipColor: '#be123c',
-    outfit: 'high-neck',
-    accessory: 'bold-earring',
-  },
-  {
-    id: 'celeb-7',
-    name: '헐리우드 젠틀맨 (다니엘)',
-    badge: '클래식 영화제 남우주연',
-    gender: 'male',
+    id: 'photo-portrait-1',
+    heroId: 'ID_photo_portrait_20260923152425',
+    name: '단정한 프로필',
+    badge: 'AI 실사 프로필',
+    photoUrl: '/photo/ID_photo_portrait_20260923152425.jpeg',
     bg: ['#0f172a', '#1e293b'],
-    skin: '#fae4d2',
-    skinShadow: '#e3c6af',
-    hair: '#44281d',
-    hairStyle: 'tux_classic',
-    eyeColor: '#1e3a5f',
-    lipColor: '#c7787f',
-    outfit: 'classic-tuxedo',
-    accessory: 'bowtie',
-  },
-  {
-    id: 'celeb-8',
-    name: '글램 팝 디바 (올리비아)',
-    badge: '월드투어 솔로 팝스타',
-    gender: 'female',
-    bg: ['#701a75', '#1e1b4b'],
-    skin: '#ffeedd',
-    skinShadow: '#f8cfb4',
-    hair: '#fef08a',
-    hairStyle: 'blonde_glam',
-    eyeColor: '#0284c7',
-    lipColor: '#fb7185',
-    outfit: 'sequin-top',
-    accessory: 'choker',
-  },
-  {
-    id: 'celeb-9',
-    name: '스마트 로코 남주 (서진)',
-    badge: '지적인 변호사/의사 역',
-    gender: 'male',
-    bg: ['#082f49', '#0f172a'],
-    skin: '#fce3d0',
-    skinShadow: '#e4c4ad',
-    hair: '#1e1b18',
-    hairStyle: 'smart_glasses',
-    eyeColor: '#2b1b11',
-    lipColor: '#c97a82',
-    outfit: 'knit-blazer',
-    accessory: 'glasses',
-  },
-  {
-    id: 'celeb-10',
-    name: '상큼 예능 스타 (채원)',
-    badge: '국민 MC 비타민 스타',
-    gender: 'female',
-    bg: ['#831843', '#1e1b4b'],
-    skin: '#fff2e8',
-    skinShadow: '#fcd5bb',
-    hair: '#78350f',
-    hairStyle: 'bright_ponytail',
-    eyeColor: '#451a03',
-    lipColor: '#f43f5e',
-    outfit: 'pastel-cardigan',
-    accessory: 'heart-earring',
-  },
-  {
-    id: 'celeb-11',
-    name: '카리스마 록스타 (태민)',
-    badge: '스타디움 록밴드 프론트맨',
-    gender: 'male',
-    bg: ['#312e81', '#09090b'],
-    skin: '#f6d3bc',
-    skinShadow: '#dfb79e',
-    hair: '#172554',
-    hairStyle: 'wolf_cut',
-    eyeColor: '#1e293b',
-    lipColor: '#ba6e75',
-    outfit: 'rider-vest',
-    accessory: 'piercing',
-  },
-  {
-    id: 'celeb-12',
-    name: '시상식 드레스 여신 (예진)',
-    badge: '골든글로브 레드카펫 여신',
-    gender: 'female',
-    bg: ['#1e1b4b', '#3b0764'],
-    skin: '#fff4eb',
-    skinShadow: '#fbd4bc',
-    hair: '#1c1917',
-    hairStyle: 'updo_goddess',
-    eyeColor: '#3c2415',
-    lipColor: '#9f1239',
-    outfit: 'evening-gown',
-    accessory: 'diamond-necklace',
+    isPhotoAvatar: true,
   },
 ];
 
@@ -477,8 +306,17 @@ export class VirtualAvatarManager {
     this._heroImages = new Map();
     this._customFaceImages = new Map();
     this._selectedFaceImage = null;
-    // 기본 아바타: 실물 웹캠 모드가 기본 (선명한 30~60fps 무지연 송출)
-    this.currentAvatar = CELEBRITY_AVATARS[0] || null;
+    this._defaultPhotoImg = null;
+    this._loadDefaultPhoto();
+    // 기본 아바타: 실사 사진 아바타 기본 설정
+    this.currentAvatar = CELEBRITY_AVATARS[0] || {
+      id: 'photo-portrait-1',
+      heroId: 'ID_photo_portrait_20260923152425',
+      name: '단정한 프로필',
+      isPhotoAvatar: true,
+      photoUrl: '/photo/ID_photo_portrait_20260923152425.jpeg',
+      bg: ['#0f172a', '#1e293b'],
+    };
     this.mode = 'real';
     this.swapModeLock = true;
 
@@ -759,6 +597,44 @@ export class VirtualAvatarManager {
   }
 
   /**
+   * 가상 사진 아바타용 기본 실사 이미지 로드
+   */
+  _loadDefaultPhoto(url = '/photo/ID_photo_portrait_20260923152425.jpeg') {
+    if (this._defaultPhotoImg && this._defaultPhotoImg.complete && this._defaultPhotoImg.naturalWidth) return;
+    try {
+      if (typeof Image !== 'undefined') {
+        const img = new Image();
+        img.crossOrigin = 'anonymous';
+        img.src = url;
+        this._defaultPhotoImg = img;
+        if (!this._selectedFaceImage) {
+          this._selectedFaceImage = img;
+        }
+      }
+    } catch { /* ignore */ }
+  }
+
+  /**
+   * 현재 활성화된 실사 사진 이미지 요소 반환
+   */
+  _getActivePhotoImg() {
+    if (this._selectedFaceImage && this._selectedFaceImage.complete && this._selectedFaceImage.naturalWidth) {
+      return this._selectedFaceImage;
+    }
+    if (this.currentAvatar?.photoImg && this.currentAvatar.photoImg.complete && this.currentAvatar.photoImg.naturalWidth) {
+      return this.currentAvatar.photoImg;
+    }
+    if (this.activeSwapFace && this._customFaceImages?.has(this.activeSwapFace)) {
+      const img = this._customFaceImages.get(this.activeSwapFace);
+      if (img && img.complete && img.naturalWidth) return img;
+    }
+    if (this._defaultPhotoImg && this._defaultPhotoImg.complete && this._defaultPhotoImg.naturalWidth) {
+      return this._defaultPhotoImg;
+    }
+    return null;
+  }
+
+  /**
    * 모드 전환 ('virtual' | 'real' | 'swap')
    */
   setMode(newMode) {
@@ -775,6 +651,9 @@ export class VirtualAvatarManager {
       this.mode = 'virtual';
       this._stopSwapPump();
       try { this.onFeedState?.(false); } catch { /* ignore */ }
+      if (!this._getActivePhotoImg()) {
+        this._loadDefaultPhoto();
+      }
     }
     this.onModeChange?.(this.mode, this.currentAvatar, this.activeSwapFace);
   }
@@ -1444,413 +1323,33 @@ export class VirtualAvatarManager {
     const breatheY = Math.sin(t) * 3.5;
     const headTilt = Math.cos(t * 0.6) * 0.015;
 
-    const a = this.currentAvatar;
-    if (a?.isHero) {
-      this._drawHeroPhoto(ctx, a, w, h, breatheY, headTilt, isBlinking, this._smoothMouth);
-      this._drawAvatarBadge(ctx, a, w, h);
-      return;
-    }
-
-    // 배경 렌더링 (스튜디오 그라디언트)
-    const bgGrad = ctx.createLinearGradient(0, 0, w, h);
-    bgGrad.addColorStop(0, a.bg[0]);
-    bgGrad.addColorStop(1, a.bg[1]);
-    ctx.fillStyle = bgGrad;
-    ctx.fillRect(0, 0, w, h);
-
-    // 스튜디오 원형 소프트 라이팅
-    const light = ctx.createRadialGradient(w * 0.5, h * 0.35, 30, w * 0.5, h * 0.35, 260);
-    light.addColorStop(0, 'rgba(255, 255, 255, 0.12)');
-    light.addColorStop(1, 'rgba(0, 0, 0, 0)');
-    ctx.fillStyle = light;
-    ctx.fillRect(0, 0, w, h);
-
-    ctx.save();
-    ctx.translate(w / 2, h / 2 + breatheY);
-    ctx.rotate(headTilt);
-
-    // 어깨 및 의상 렌더링
-    this._drawOutfit(ctx, a);
-
-    // 목 렌더링
-    this._drawNeck(ctx, a);
-
-    // 머리카락 뒷부분
-    this._drawHairBack(ctx, a);
-
-    // 얼굴 윤곽 & 귀
-    this._drawFaceBase(ctx, a);
-
-    // 귀걸이/악세사리
-    this._drawAccessories(ctx, a);
-
-    // 눈썹
-    this._drawEyebrows(ctx, a);
-
-    // 눈 (깜빡임 반영)
-    this._drawEyes(ctx, a, isBlinking);
-
-    // 코
-    this._drawNose(ctx, a);
-
-    // 입 (립싱크 말하기 반영)
-    this._drawMouth(ctx, a, this._smoothMouth);
-
-    // 앞머리 / 헤어 스타일
-    this._drawHairFront(ctx, a);
-
-    ctx.restore();
-
-    // 워터마크/아바타 배지 텍스트
-    this._drawAvatarBadge(ctx, a, w, h);
+    // 2. 가상 아바타 모드: 실사 사진 기반 아바타 렌더링
+    this._drawPhotoAvatar(ctx, w, h, breatheY, headTilt, isBlinking, this._smoothMouth);
   }
 
-  _drawOutfit(ctx, a) {
-    ctx.save();
-    ctx.beginPath();
-    ctx.ellipse(0, 240, 210, 120, 0, 0, Math.PI * 2);
-    if (a.outfit.includes('suit') || a.outfit.includes('tuxedo')) {
-      ctx.fillStyle = '#09090b';
-      ctx.fill();
-      // 셔츠 브이존
-      ctx.beginPath();
-      ctx.moveTo(-35, 140);
-      ctx.lineTo(35, 140);
-      ctx.lineTo(0, 210);
-      ctx.closePath();
-      ctx.fillStyle = '#f8fafc';
-      ctx.fill();
-      // 타이
-      ctx.beginPath();
-      ctx.moveTo(-10, 150);
-      ctx.lineTo(10, 150);
-      ctx.lineTo(6, 230);
-      ctx.lineTo(0, 245);
-      ctx.lineTo(-6, 230);
-      ctx.closePath();
-      ctx.fillStyle = '#0f172a';
-      ctx.fill();
-    } else if (a.outfit === 'leather-jacket') {
-      ctx.fillStyle = '#18181b';
-      ctx.fill();
-      ctx.strokeStyle = '#3f3f46';
-      ctx.lineWidth = 3;
-      ctx.stroke();
-    } else if (a.outfit === 'stage-dress' || a.outfit === 'evening-gown') {
-      ctx.fillStyle = a.lipColor;
-      ctx.fill();
-    } else {
-      ctx.fillStyle = '#27272a';
-      ctx.fill();
-    }
-    ctx.restore();
-  }
-
-  _drawNeck(ctx, a) {
-    ctx.fillStyle = a.skinShadow;
-    ctx.fillRect(-32, 60, 64, 85);
-    // 목 쇄골 그라데이션 음영
-    const shadow = ctx.createLinearGradient(0, 60, 0, 110);
-    shadow.addColorStop(0, 'rgba(0,0,0,0.22)');
-    shadow.addColorStop(1, 'rgba(0,0,0,0)');
-    ctx.fillStyle = shadow;
-    ctx.fillRect(-32, 60, 64, 50);
-  }
-
-  _drawHairBack(ctx, a) {
-    if (['idol_waves', 'long_elegance', 'blonde_glam', 'wolf_cut'].includes(a.hairStyle)) {
-      ctx.save();
-      ctx.fillStyle = a.hair;
-      ctx.beginPath();
-      ctx.ellipse(0, 50, 120, 150, 0, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.restore();
-    }
-  }
-
-  _drawFaceBase(ctx, a) {
-    // 귀
-    ctx.fillStyle = a.skin;
-    ctx.beginPath();
-    ctx.ellipse(-86, 15, 14, 25, -0.1, 0, Math.PI * 2);
-    ctx.ellipse(86, 15, 14, 25, 0.1, 0, Math.PI * 2);
-    ctx.fill();
-
-    // 얼굴형 (샤프하고 매력적인 V라인)
-    ctx.save();
-    ctx.beginPath();
-    ctx.moveTo(0, -90);
-    ctx.bezierCurveTo(90, -90, 88, 10, 68, 60);
-    ctx.bezierCurveTo(55, 95, 24, 115, 0, 120);
-    ctx.bezierCurveTo(-24, 115, -55, 95, -68, 60);
-    ctx.bezierCurveTo(-88, 10, -90, -90, 0, -90);
-    ctx.closePath();
-
-    ctx.fillStyle = a.skin;
-    ctx.shadowColor = 'rgba(0,0,0,0.18)';
-    ctx.shadowBlur = 16;
-    ctx.fill();
-    ctx.restore();
-
-    // 턱선 은은한 컨투어 음영
-    ctx.save();
-    ctx.beginPath();
-    ctx.moveTo(-60, 70);
-    ctx.quadraticCurveTo(0, 128, 60, 70);
-    ctx.strokeStyle = a.skinShadow;
-    ctx.lineWidth = 4;
-    ctx.stroke();
-    ctx.restore();
-  }
-
-  _drawAccessories(ctx, a) {
-    if (a.accessory === 'earring-drop' || a.accessory === 'bold-earring') {
-      ctx.fillStyle = '#fbbf24';
-      ctx.beginPath();
-      ctx.arc(-86, 36, 4.5, 0, Math.PI * 2);
-      ctx.arc(86, 36, 4.5, 0, Math.PI * 2);
-      ctx.fill();
-    }
-    if (a.accessory === 'glasses') {
-      ctx.strokeStyle = '#18181b';
-      ctx.lineWidth = 3.5;
-      ctx.strokeRect(-62, -18, 48, 30);
-      ctx.strokeRect(14, -18, 48, 30);
-      ctx.beginPath();
-      ctx.moveTo(-14, -3);
-      ctx.lineTo(14, -3);
-      ctx.stroke();
-    }
-  }
-
-  _drawEyebrows(ctx, a) {
-    ctx.strokeStyle = a.hair;
-    ctx.lineWidth = a.gender === 'male' ? 4.5 : 3;
-    ctx.lineCap = 'round';
-
-    // 좌
-    ctx.beginPath();
-    ctx.moveTo(-62, -32);
-    ctx.quadraticCurveTo(-38, -42, -16, -33);
-    ctx.stroke();
-
-    // 우
-    ctx.beginPath();
-    ctx.moveTo(16, -33);
-    ctx.quadraticCurveTo(38, -42, 62, -32);
-    ctx.stroke();
-  }
-
-  _drawEyes(ctx, a, isBlinking) {
-    const eyeY = -10;
-    const eyeX = 38;
-
-    if (isBlinking) {
-      // 감은 눈 (매력적인 미소 눈웃음 라인)
-      ctx.strokeStyle = '#27272a';
-      ctx.lineWidth = 3;
-      ctx.lineCap = 'round';
-      ctx.beginPath();
-      ctx.moveTo(-eyeX - 18, eyeY);
-      ctx.quadraticCurveTo(-eyeX, eyeY + 6, -eyeX + 18, eyeY);
-      ctx.moveTo(eyeX - 18, eyeY);
-      ctx.quadraticCurveTo(eyeX, eyeY + 6, eyeX + 18, eyeY);
-      ctx.stroke();
-      return;
-    }
-
-    // 뜬 눈
-    [-eyeX, eyeX].forEach((x) => {
-      // 흰자
-      ctx.save();
-      ctx.beginPath();
-      ctx.ellipse(x, eyeY, 18, 11, 0, 0, Math.PI * 2);
-      ctx.fillStyle = '#ffffff';
-      ctx.fill();
-
-      // 홍채 (눈동자)
-      ctx.beginPath();
-      ctx.ellipse(x, eyeY, 10.5, 10.5, 0, 0, Math.PI * 2);
-      ctx.fillStyle = a.eyeColor;
-      ctx.fill();
-
-      // 동공
-      ctx.beginPath();
-      ctx.ellipse(x, eyeY, 5, 5, 0, 0, Math.PI * 2);
-      ctx.fillStyle = '#09090b';
-      ctx.fill();
-
-      // 눈동자 하이라이트 (초롱초롱 연예인 눈빛)
-      ctx.beginPath();
-      ctx.arc(x - 3.5, eyeY - 3.5, 2.5, 0, Math.PI * 2);
-      ctx.arc(x + 3.5, eyeY + 2.5, 1.3, 0, Math.PI * 2);
-      ctx.fillStyle = '#ffffff';
-      ctx.fill();
-
-      // 아이라인 / 속눈썹
-      ctx.beginPath();
-      ctx.ellipse(x, eyeY - 1, 19, 12, 0, Math.PI * 1.1, Math.PI * 1.9);
-      ctx.strokeStyle = '#18181b';
-      ctx.lineWidth = a.gender === 'female' ? 2.8 : 1.8;
-      ctx.stroke();
-
-      ctx.restore();
-    });
-  }
-
-  _drawNose(ctx, a) {
-    ctx.strokeStyle = a.skinShadow;
-    ctx.lineWidth = 2.5;
-    ctx.lineCap = 'round';
-    ctx.beginPath();
-    ctx.moveTo(0, -6);
-    ctx.lineTo(2, 28);
-    ctx.lineTo(-4, 33);
-    ctx.lineTo(4, 33);
-    ctx.stroke();
-
-    // 콧대 하이라이트
-    ctx.fillStyle = 'rgba(255, 255, 255, 0.4)';
-    ctx.beginPath();
-    ctx.ellipse(0, 12, 1.5, 10, 0, 0, Math.PI * 2);
-    ctx.fill();
-  }
-
-  _drawMouth(ctx, a, mouthOpen) {
-    const mouthY = 65;
-    const mouthW = 28 + mouthOpen * 4;
-    const mouthH = 3 + mouthOpen * 18;
-
-    ctx.save();
-    if (mouthOpen > 0.12) {
-      // 말하는 중: 벌려진 입 & 치아
-      ctx.beginPath();
-      ctx.ellipse(0, mouthY, mouthW, mouthH, 0, 0, Math.PI * 2);
-      ctx.fillStyle = '#4c0519'; // 입속 어두운 레드
-      ctx.fill();
-      ctx.strokeStyle = a.lipColor;
-      ctx.lineWidth = 2.5;
-      ctx.stroke();
-
-      // 상단 치아
-      ctx.beginPath();
-      ctx.rect(-mouthW * 0.6, mouthY - mouthH * 0.9, mouthW * 1.2, mouthH * 0.7);
-      ctx.fillStyle = '#ffffff';
-      ctx.fill();
-    } else {
-      // 닫힌 입: 매력적인 미소 립
-      ctx.beginPath();
-      ctx.moveTo(-mouthW, mouthY);
-      ctx.quadraticCurveTo(0, mouthY + 5, mouthW, mouthY);
-      ctx.quadraticCurveTo(0, mouthY - 3, -mouthW, mouthY);
-      ctx.fillStyle = a.lipColor;
-      ctx.fill();
-
-      ctx.beginPath();
-      ctx.moveTo(-mouthW, mouthY);
-      ctx.quadraticCurveTo(0, mouthY + 2, mouthW, mouthY);
-      ctx.strokeStyle = 'rgba(0,0,0,0.2)';
-      ctx.lineWidth = 1.8;
-      ctx.stroke();
-    }
-    ctx.restore();
-  }
-
-  _drawHairFront(ctx, a) {
-    ctx.save();
-    ctx.fillStyle = a.hair;
-
-    switch (a.hairStyle) {
-      case 'dandy': // 깔끔한 댄디 컷
-        ctx.beginPath();
-        ctx.ellipse(0, -75, 88, 55, 0, 0, Math.PI * 2);
-        ctx.fill();
-        ctx.beginPath();
-        ctx.moveTo(-82, -45);
-        ctx.quadraticCurveTo(-40, -42, 0, -48);
-        ctx.quadraticCurveTo(40, -40, 82, -45);
-        ctx.lineTo(82, -80);
-        ctx.lineTo(-82, -80);
-        ctx.closePath();
-        ctx.fill();
-        break;
-
-      case 'idol_waves': // 화려한 웨이브 롱
-        ctx.beginPath();
-        ctx.ellipse(0, -75, 92, 60, 0, 0, Math.PI * 2);
-        ctx.fill();
-        ctx.beginPath();
-        ctx.moveTo(-88, -20);
-        ctx.quadraticCurveTo(-95, 60, -75, 150);
-        ctx.quadraticCurveTo(-55, 80, -65, 0);
-        ctx.fill();
-        ctx.beginPath();
-        ctx.moveTo(88, -20);
-        ctx.quadraticCurveTo(95, 60, 75, 150);
-        ctx.quadraticCurveTo(55, 80, 65, 0);
-        ctx.fill();
-        break;
-
-      case 'pompadour': // 카리스마 포마드
-        ctx.beginPath();
-        ctx.ellipse(0, -92, 78, 48, 0, 0, Math.PI * 2);
-        ctx.fill();
-        ctx.beginPath();
-        ctx.moveTo(-75, -55);
-        ctx.lineTo(75, -55);
-        ctx.lineTo(65, -80);
-        ctx.lineTo(-65, -80);
-        ctx.fill();
-        break;
-
-      case 'bob_cut': // 시크 단발
-        ctx.beginPath();
-        ctx.ellipse(0, -75, 90, 58, 0, 0, Math.PI * 2);
-        ctx.fill();
-        ctx.fillRect(-88, -50, 24, 90);
-        ctx.fillRect(64, -50, 24, 90);
-        break;
-
-      default: // 기본 자연스러운 헤어
-        ctx.beginPath();
-        ctx.ellipse(0, -75, 88, 55, 0, 0, Math.PI * 2);
-        ctx.fill();
-        ctx.beginPath();
-        ctx.moveTo(-80, -40);
-        ctx.quadraticCurveTo(0, -35, 80, -40);
-        ctx.lineTo(80, -85);
-        ctx.lineTo(-80, -85);
-        ctx.closePath();
-        ctx.fill();
-        break;
-    }
-
-    // 헤어 윤기 하이라이트
-    ctx.strokeStyle = 'rgba(255, 255, 255, 0.18)';
-    ctx.lineWidth = 4;
-    ctx.beginPath();
-    ctx.arc(0, -88, 65, Math.PI * 1.25, Math.PI * 1.75);
-    ctx.stroke();
-
-    ctx.restore();
-  }
-
-  _drawHeroPhoto(ctx, a, w, h, breatheY, headTilt, isBlinking, mouthLevel) {
-    const img = this._heroImages?.get(a.heroId) || this._heroImages?.get(a.id);
+/**
+   * 실사 사진 기반 AI 가상 아바타 렌더링
+   * 생체 미세 호흡, 카메라 스웨이, 자연스러운 눈 깜빡임 및 마이크 립싱크 모션 지원
+   */
+  _drawPhotoAvatar(ctx, w, h, breatheY, headTilt, isBlinking, mouthLevel) {
+    const img = this._getActivePhotoImg();
     if (!img || !img.complete || !img.naturalWidth) {
-      ctx.fillStyle = a.bg ? a.bg[0] : '#0f172a';
+      const bgGrad = ctx.createLinearGradient(0, 0, w, h);
+      bgGrad.addColorStop(0, '#090d16');
+      bgGrad.addColorStop(1, '#1e293b');
+      ctx.fillStyle = bgGrad;
       ctx.fillRect(0, 0, w, h);
       ctx.fillStyle = '#94a3b8';
-      ctx.font = 'bold 18px sans-serif';
+      ctx.font = 'bold 16px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif';
       ctx.textAlign = 'center';
-      ctx.fillText(`${a.name} AI 페이스 준비 중...`, w / 2, h / 2);
+      ctx.fillText('AI 사진 아바타 준비 중...', w / 2, h / 2);
       return;
     }
 
-    // 1. 배경 (영웅별 엠비언트 그라디언트)
+    // 1. 배경 (은은한 다크 스튜디오 그라디언트)
     const bgGrad = ctx.createLinearGradient(0, 0, w, h);
-    bgGrad.addColorStop(0, a.bg[0]);
-    bgGrad.addColorStop(1, a.bg[1]);
+    bgGrad.addColorStop(0, '#090d16');
+    bgGrad.addColorStop(1, '#1e293b');
     ctx.fillStyle = bgGrad;
     ctx.fillRect(0, 0, w, h);
 
@@ -1871,12 +1370,12 @@ export class VirtualAvatarManager {
     ctx.translate(w / 2, h / 2 + breatheY);
     ctx.rotate(headTilt);
 
-    const scale = 1.04;
+    const scale = 1.03;
     const finalW = drawW * scale;
     const finalH = drawH * scale;
     ctx.drawImage(img, -finalW / 2, -finalH / 2, finalW, finalH);
 
-    // 3. 눈 깜빡임 오버레이 (영웅 얼굴 자연스러운 눈꺼풀 음영)
+    // 3. 눈 깜빡임 오버레이 (자연스러운 눈꺼풀 음영)
     if (isBlinking) {
       ctx.save();
       const eyeY = -finalH * 0.11;
@@ -1884,9 +1383,7 @@ export class VirtualAvatarManager {
       const eyeW = finalW * 0.046;
       const eyeH = 3.5;
 
-      ctx.fillStyle = a.heroId === 'batman' || a.heroId === 'spiderman'
-        ? 'rgba(15, 23, 42, 0.9)'
-        : 'rgba(180, 83, 9, 0.75)';
+      ctx.fillStyle = 'rgba(15, 23, 42, 0.78)';
       ctx.beginPath();
       ctx.ellipse(-eyeDist, eyeY, eyeW, eyeH, 0, 0, Math.PI * 2);
       ctx.ellipse(eyeDist, eyeY, eyeW, eyeH, 0, 0, Math.PI * 2);
@@ -1894,37 +1391,31 @@ export class VirtualAvatarManager {
       ctx.restore();
     }
 
-    // 4. 음성 발화 반응 (입술 반응 및 AI 에너지 오라)
+    // 4. 음성 발화 반응 (입술 반응)
     if (mouthLevel > 0.04) {
       ctx.save();
       const mouthY = finalH * 0.145;
-      const openAmount = mouthLevel * 6.5;
+      const openAmount = mouthLevel * 5.0;
 
-      ctx.fillStyle = 'rgba(15, 23, 42, 0.4)';
+      ctx.fillStyle = 'rgba(15, 23, 42, 0.35)';
       ctx.beginPath();
-      ctx.ellipse(0, mouthY, finalW * 0.045, Math.max(1.5, openAmount), 0, 0, Math.PI * 2);
+      ctx.ellipse(0, mouthY, finalW * 0.04, Math.max(1.5, openAmount), 0, 0, Math.PI * 2);
       ctx.fill();
-
-      // 발화 시 캐릭터 테마 오라 효과
-      const aura = ctx.createRadialGradient(0, 0, finalW * 0.35, 0, 0, finalW * 0.6);
-      const auraColor = a.heroId === 'spiderman'
-        ? 'rgba(239, 68, 68,'
-        : (a.heroId === 'batman' ? 'rgba(148, 163, 184,' : 'rgba(59, 130, 246,');
-      aura.addColorStop(0, `${auraColor} 0)`);
-      aura.addColorStop(1, `${auraColor} ${Math.min(0.28, mouthLevel * 0.35)})`);
-      ctx.fillStyle = aura;
-      ctx.fillRect(-finalW / 2, -finalH / 2, finalW, finalH);
       ctx.restore();
     }
 
     ctx.restore();
 
-    // 5. 스튜디오 시네마틱 비네트 (가장자리 어둡게 처리하여 몰입감 극대화)
+    // 5. 스튜디오 시네마틱 비네트 (가장자리 비네팅으로 몰입감 극대화)
     const vignette = ctx.createRadialGradient(w / 2, h / 2, Math.min(w, h) * 0.45, w / 2, h / 2, Math.max(w, h) * 0.76);
     vignette.addColorStop(0, 'rgba(0, 0, 0, 0)');
-    vignette.addColorStop(1, 'rgba(0, 0, 0, 0.52)');
+    vignette.addColorStop(1, 'rgba(0, 0, 0, 0.45)');
     ctx.fillStyle = vignette;
     ctx.fillRect(0, 0, w, h);
+  }
+
+  _drawHeroPhoto(ctx, a, w, h, breatheY, headTilt, isBlinking, mouthLevel) {
+    return this._drawPhotoAvatar(ctx, w, h, breatheY, headTilt, isBlinking, mouthLevel);
   }
 
   _drawAvatarBadge(ctx, a, w, h) {
@@ -2105,13 +1596,13 @@ export class VirtualAvatarManager {
     this._resetSwapPipeline();
     const ws = this._ws;
     this._ws = null;
-    if (ws) { try { ws.close(); } catch { /* ignore */ } }
-    // 사진 기반(isCustomPhoto) 아바타는 virtual 렌더 경로가 없어 예외가 나므로, 그릴 수 있는 기본 아바타로 되돌린다
-    if (!this.currentAvatar || this.currentAvatar.isCustomPhoto) this.currentAvatar = CELEBRITY_AVATARS[0] || null;
-    this._selectedFaceImage = null;
+    // 실사 사진 아바타 모드 유지: 기존 선택한 사진을 그대로 보존하여 AI 사진 아바타(호흡/눈깜빡임)로 계속 송출
+    if (!this._getActivePhotoImg()) {
+      this._loadDefaultPhoto();
+    }
     this.mode = 'virtual';
     try { this.onFeedState?.(false); } catch { /* ignore */ }
-    this.onModeChange?.(this.mode, this.currentAvatar, null);
+    this.onModeChange?.(this.mode, this.currentAvatar, this.activeSwapFace);
     try { this.onSwapRejected?.(info || {}); } catch { /* ignore */ }
   }
 

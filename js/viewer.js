@@ -566,15 +566,19 @@ btnCamUseAvatar?.addEventListener('click', async () => {
   if (!subscriber) return;
   try {
     btnAvCam.disabled = true;
+    const avMgr = subscriber.avatarManager;
+    if (avMgr && !avMgr._getActivePhotoImg?.()) {
+      avMgr._loadDefaultPhoto?.();
+    }
     const ok = await subscriber.startVirtualCamera();
     if (ok) {
-      showAvToast('가상 얼굴(아바타)로 참여');
+      showAvToast('AI 사진 아바타로 참여');
       updateAvatarUi();
     } else {
-      alert('가상 아바타 송출을 시작할 수 없습니다.');
+      alert('AI 사진 아바타 송출을 시작할 수 없습니다.');
     }
   } catch (err) {
-    alert(`가상 아바타 송출 오류: ${err?.message || err}`);
+    alert(`AI 사진 아바타 송출 오류: ${err?.message || err}`);
   } finally {
     btnAvCam.disabled = false;
     syncAvButtons();
@@ -788,6 +792,16 @@ async function applyFaceAndStartCamera(faceApplyFn) {
       const ok = await subscriber.setCameraEnabled(true);
       if (!ok) {
         const err = subscriber._lastCameraError;
+        const isNotFound = err?.name === 'NotFoundError' || err?.name === 'DevicesNotFoundError' || /not found/i.test(err?.message || '');
+        if (isNotFound) {
+          // 물리적 카메라 장치가 없는 PC: 선택한 실사 사진 아바타로 바로 참여 송출
+          const virtOk = await subscriber.startVirtualCamera();
+          if (virtOk) {
+            showAvToast('카메라 미감지: AI 사진 아바타로 참여');
+            updateAvatarUi();
+            return;
+          }
+        }
         showCameraTroubleshootModal(err, () => applyFaceAndStartCamera(faceApplyFn));
         return;
       }

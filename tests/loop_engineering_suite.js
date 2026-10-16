@@ -397,6 +397,16 @@ async function runLoop3() {
     'Front-end avatar manager enforces swap mode lock'
   );
 
+  // 3-5. Verify removal of legacy 2D vector cartoon characters and presence of photo avatar renderer
+  assert(
+    !avatarMgrContent.includes('_drawOutfit(') && !avatarMgrContent.includes('한류 톱스타 (현우)'),
+    'Legacy 2D vector cartoon characters and methods are eliminated'
+  );
+  assert(
+    avatarMgrContent.includes('_drawPhotoAvatar(') && avatarMgrContent.includes('_loadDefaultPhoto('),
+    'Photo avatar renderer and default photo loaders are active'
+  );
+
   metrics.durations['Loop3'] = Date.now() - t0;
 }
 
