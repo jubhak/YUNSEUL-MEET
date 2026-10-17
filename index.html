@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>YUNSEUL MEET - 실시간 화상 미팅 솔루션</title>
-  <link rel="stylesheet" href="css/style.css?v=20260930k">
+  <link rel="stylesheet" href="css/style.css?v=20261018a">
   <link rel="stylesheet" href="css/av-extras.css?v=20260930k">
 </head>
 <body class="landing-page">
@@ -66,6 +66,15 @@
             </span>
           </label>
         </div>
+        <div id="all-voice-wrap" class="form-group mic-required-group" style="display: none;">
+          <label class="checkbox-option">
+            <input type="checkbox" id="allow-all-voice" name="allow-all-voice">
+            <span class="checkbox-text">
+              <span class="checkbox-title">모든 참가자 목소리 미팅 허용</span>
+              <span class="checkbox-desc">영상은 호스트만 송출 · 참가자는 마이크 확인 후 입장(마이크는 꺼진 상태로 시작). 체크 해제 시 호스트가 지정한 1명만 발언</span>
+            </span>
+          </label>
+        </div>
         <div id="camera-allowed-wrap" class="form-group camera-allowed-group">
           <label class="checkbox-option">
             <input type="checkbox" id="allow-client-cam" name="allow-client-cam" checked>
@@ -103,6 +112,6 @@
 
   </div>
 
-  <script type="module" src="js/landing.js?v=20261013f"></script>
+  <script type="module" src="js/landing.js?v=20261018a"></script>
 </body>
 </html>

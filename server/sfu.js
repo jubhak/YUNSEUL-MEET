@@ -719,9 +719,13 @@ function attachSfuHandlers(socket, ctx) {
       const interactionMode = typeof ctx.getInteractionMode === 'function'
         ? ctx.getInteractionMode()
         : 'bidirectional';
-      // 단방향(대규모 시청): 참가자는 consume만 — produce 차단
+      // 단방향(대규모 시청): 참가자는 consume만 — 호스트가 발언권을 준 1명의 마이크만 예외
       if (interactionMode === 'unidirectional' && role === 'viewer') {
-        return cb?.({ error: 'unidirectional-room' });
+        const floorId = typeof ctx.getVoiceFloorId === 'function' ? ctx.getVoiceFloorId() : null;
+        const allVoice = typeof ctx.getAllowAllVoice === 'function' && ctx.getAllowAllVoice();
+        const micAllowed = msg?.kind === 'audio' && msg?.appData?.source === 'viewer-mic'
+          && (allVoice || (!!floorId && floorId === clientId));
+        if (!micAllowed) return cb?.({ error: 'unidirectional-room' });
       }
       const room = sfuRooms.get(code);
       const peer = room?.peers.get(clientId);
@@ -1037,11 +1041,30 @@ function setSfuSpotlightSpeaker(roomCode, speakerId) {
   }
 }
 
+/** 특정 참가자의 producer 를 서버에서 닫는다(predicate 로 대상 제한). 닫은 개수를 반환. */
+function closeClientProducers(io, roomCode, clientId, predicate = null) {
+  const code = String(roomCode || '');
+  const room = sfuRooms.get(code);
+  const peer = room?.peers.get(clientId);
+  if (!peer) return 0;
+  let n = 0;
+  for (const [id, producer] of [...peer.producers.entries()]) {
+    if (producer.closed || (predicate && !predicate(producer))) continue;
+    const appData = producer.appData || {};
+    try { producer.close(); } catch { /* ignore */ }
+    peer.producers.delete(id);
+    emitProducerEvent(io, room, code, 'sfu-producer-closed', { producerId: id, clientId, appData }, appData);
+    n += 1;
+  }
+  return n;
+}
+
 module.exports = {
   attachSfuHandlers,
   cleanupSocketPeer,
   disposeSfuRoom,
   setSfuSpotlightSpeaker,
+  closeClientProducers,
   getOrCreateRoom,
   listProducers,
   getSfuSnapshot,

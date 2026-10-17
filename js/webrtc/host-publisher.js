@@ -1,6 +1,6 @@
 import { TRACK_KIND } from './config.js';
 import { SfuClient } from './sfu-client.js?v=20261006a';
-import { VirtualAvatarManager, openWebcamFlexible, faceModeForRoomCount } from '../virtual-avatar-manager.js?v=20261016a';
+import { VirtualAvatarManager, openWebcamFlexible, faceModeForRoomCount } from '../virtual-avatar-manager.js?v=20261017b';
 import { FaceCompositor } from './face-compositor.js?v=20261016a';
 
 /**
@@ -20,6 +20,10 @@ export class HostPublisher {
     this.kinds = [];
     /** bidirectional | unidirectional */
     this.interactionMode = 'bidirectional';
+    /** 단방향 발언권을 가진 참가자 clientId */
+    this.voiceFloorId = null;
+    /** 단방향 옵션: 모든 참가자 목소리 허용 */
+    this.allowAllVoice = false;
     /** @type {MediaStreamTrack[]} */
     this._tabAudioTracks = [];
     /** @type {MediaStreamTrack[]} */
@@ -130,10 +134,11 @@ export class HostPublisher {
       role: 'host',
     });
     sfu.consumeFilter = (info) => {
-      if (this.interactionMode === 'unidirectional') return false;
       const source = info?.appData?.source || '';
       const kind = info?.kind || '';
       const role = info?.role || info?.appData?.role || '';
+      // 단방향: 발언권을 받은 참가자의 마이크만 (서버가 그 1명만 송출을 허용한다)
+      if (this.interactionMode === 'unidirectional') return kind === 'audio' && source === 'viewer-mic';
       // 얼굴/마이크만 기본 수신. viewer-display는 화면공유 릴레이용.
       if (source === 'viewer-camera' || source === 'viewer-mic' || source === 'viewer-display') return true;
       // appData.source 가 빠져도 참가자 목소리는 받아야 한다 (한 명이라도 놓치면 전원 무음처럼 들림)
@@ -187,7 +192,7 @@ export class HostPublisher {
   _startProducerResync() {
     if (this._resyncTimer) return;
     this._resyncTimer = setInterval(() => {
-      if (this.interactionMode === 'unidirectional') return;
+      if (this.interactionMode === 'unidirectional' && !this.voiceFloorId && !this.allowAllVoice) return;
       const sfu = this.sfu;
       if (!sfu || sfu._closed || !sfu.recvTransport || sfu.recvTransport.closed) {
         this._ensureSfuRecv().catch(() => {});
@@ -214,7 +219,7 @@ export class HostPublisher {
   }
 
   _checkRemoteAudio() {
-    if (this.interactionMode === 'unidirectional') return;
+    if (this.interactionMode === 'unidirectional' && !this.voiceFloorId && !this.allowAllVoice) return;
     const sfu = this.sfu;
     if (!sfu || sfu._closed) return;
     for (const [producerId, consumer] of sfu.consumers) {
@@ -847,7 +852,8 @@ export class HostPublisher {
     this._faceRoomCount = count;
     this._applyDisplayBudget(count);
     if (!this.avatarManager) return;
-    const mode = faceModeForRoomCount(count);
+    // 단방향: 호스트 얼굴은 호스트 화면(카드) 캡처로만 전달되므로 인원과 무관하게 640×360 유지
+    const mode = this.interactionMode === 'unidirectional' ? 'solo' : faceModeForRoomCount(count);
     // 카메라가 비활성 상태(사용자가 켜지 않음)일 때는 canvas 출력 스트림을 생성/재할당하지 않음
     if (!this.cameraWanted || !this.cameraStream) {
       this.avatarManager.setFaceMode(mode);

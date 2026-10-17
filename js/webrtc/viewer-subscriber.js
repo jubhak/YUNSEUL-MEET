@@ -1,5 +1,5 @@
 import { SfuClient } from './sfu-client.js?v=20261006a';
-import { VirtualAvatarManager, openWebcamFlexible, faceModeForRoomCount } from '../virtual-avatar-manager.js?v=20261016a';
+import { VirtualAvatarManager, openWebcamFlexible, faceModeForRoomCount } from '../virtual-avatar-manager.js?v=20261017b';
 
 /**
  * 참가자: SFU에서 호스트 display 수신 + (선택) 마이크/화면 업링크
@@ -31,6 +31,8 @@ export class ViewerSubscriber {
     this.micOn = false;
     /** bidirectional | unidirectional */
     this.interactionMode = 'bidirectional';
+    /** 단방향 옵션: 모든 참가자 목소리 허용 */
+    this.allowAllVoice = false;
     /** @type {MediaStream|null} */
     this._micStream = null;
     this._audioUnlocked = false;
@@ -142,6 +144,8 @@ export class ViewerSubscriber {
         if (kind === 'video') {
           // 화면 공유 모드 시 호스트 display는 기본 수신
           if (info?.role === 'host' && (source === 'display' || !source)) return true;
+          // 단방향: 호스트 화면 송출만 (얼굴은 화면 안에 있음 — 별도 카메라 PIP는 대역폭만 씀)
+          if (this.interactionMode === 'unidirectional') return false;
           // 스포트라이트 화자 비디오: 현재 스포트라이트 지정된 화자의 카메라 track만 선택적 수신!
           const isSpotlightHost = (!this._spotlightSpeakerId || this._spotlightSpeakerRole === 'host' || (this.hostPeerId && this._spotlightSpeakerId === this.hostPeerId));
           if (isSpotlightHost) {
@@ -154,13 +158,12 @@ export class ViewerSubscriber {
         }
         if (kind === 'audio') {
           if (source === 'tab-audio' || source === 'mic') return true;
-          if (source === 'viewer-mic') {
-            return this.interactionMode !== 'unidirectional';
-          }
+          // 단방향에서도 받는다: 서버가 발언권을 받은 1명의 마이크만 송출을 허용한다
+          if (source === 'viewer-mic') return true;
           const role = info?.role || info?.appData?.role || '';
           if (role === 'host' || source === 'display') return true;
           if (role === 'viewer' || !role) {
-            return this.interactionMode !== 'unidirectional';
+            return this.interactionMode !== 'unidirectional' || this.allowAllVoice;
           }
         }
         return false;
@@ -277,7 +280,7 @@ export class ViewerSubscriber {
   _startProducerResync() {
     if (this._resyncTimer) return;
     this._resyncTimer = setInterval(() => {
-      if (this.interactionMode === 'unidirectional') return;
+      if (this.interactionMode === 'unidirectional' && !this.allowAllVoice) return;
       if (!this.sfu || this.sfu._closed) return;
       this.sfu.consumeExistingProducers?.().catch(() => {});
     }, 4000);
@@ -686,7 +689,7 @@ export class ViewerSubscriber {
       this._playMix = null;
     }
     // 양방향 방에서는 화면 송출이 중단되어도 음성(마이크) 재생을 유지한다
-    const shouldClearAudio = !videoOnly && this.interactionMode === 'unidirectional';
+    const shouldClearAudio = !videoOnly && this.interactionMode === 'unidirectional' && !this.allowAllVoice;
     if (shouldClearAudio && this._remoteAudioEls) {
       for (const el of this._remoteAudioEls.values()) {
         try { el.pause(); } catch { /* ignore */ }

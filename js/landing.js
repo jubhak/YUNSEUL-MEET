@@ -85,11 +85,12 @@ document.getElementById('btn-create-room').addEventListener('click', async () =>
     const requireMic = interactionMode === 'bidirectional' && !!document.getElementById('require-mic')?.checked;
     const allowClientCamera = interactionMode === 'bidirectional' && (document.getElementById('allow-client-cam')?.checked !== false);
     const allowClientDeepfake = allowClientCamera && (document.getElementById('allow-client-deepfake')?.checked !== false);
+    const allowAllVoice = interactionMode === 'unidirectional' && !!document.getElementById('allow-all-voice')?.checked;
 
     const res = await fetch(api('create-room'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ code, interactionMode, requireMic, allowClientCamera, allowClientDeepfake }),
+      body: JSON.stringify({ code, interactionMode, requireMic, allowClientCamera, allowClientDeepfake, allowAllVoice }),
     });
     const data = await res.json().catch(() => ({}));
     if (!res.ok) throw new Error(data.error || '방 생성 실패');
@@ -98,6 +99,7 @@ document.getElementById('btn-create-room').addEventListener('click', async () =>
     const room = data.code || code;
     const mode = data.interactionMode || interactionMode;
     const reqMic = !!(data.requireMic ?? requireMic);
+    const allVoice = !!(data.allowAllVoice ?? allowAllVoice);
     const allowCam = !!(data.allowClientCamera ?? allowClientCamera);
     const allowDfc = !!(data.allowClientDeepfake ?? allowClientDeepfake);
 
@@ -120,6 +122,7 @@ document.getElementById('btn-create-room').addEventListener('click', async () =>
       hn: hostName,
       mode,
       rm: reqMic ? '1' : '0',
+      av: allVoice ? '1' : '0',
       ac: allowCam ? '1' : '0',
       ad: allowDfc ? '1' : '0',
     });
@@ -164,15 +167,17 @@ document.getElementById('btn-join-room').addEventListener('click', async () => {
       return;
     }
 
-    // 양방향 방: 마이크 필수 옵션 여부와 무관하게 입장 전에 마이크 검증 및 장치 선택 진행
-    if (data.interactionMode !== 'unidirectional') {
+    // 양방향 방 · 단방향(모든 참가자 목소리 허용) 방: 입장 전에 마이크 검증 및 장치 선택 진행
+    if (data.interactionMode !== 'unidirectional' || data.allowAllVoice) {
       const isReq = !!data.requireMic;
       const r = await runMicCheckDialog({
         required: true,
         title: isReq ? '마이크 확인 (필수)' : '마이크 확인 및 선택',
         subtitle: isReq
           ? '이 방은 마이크 사용이 필수입니다. 마이크에 대고 "안녕하세요"라고 말씀해 주세요. 소리가 확인되어야 입장할 수 있습니다.'
-          : '양방향 회의입니다. 사용할 마이크를 선택하고 "안녕하세요"라고 말씀해 소리가 잡히는지 확인해 주세요.',
+          : (data.interactionMode === 'unidirectional'
+            ? '목소리 미팅 방입니다. 사용할 마이크를 선택하고 "안녕하세요"라고 말씀해 소리가 잡히는지 확인해 주세요. 입장 후 마이크는 꺼진 상태로 시작합니다.'
+            : '양방향 회의입니다. 사용할 마이크를 선택하고 "안녕하세요"라고 말씀해 소리가 잡히는지 확인해 주세요.'),
         confirmLabel: '확인하고 입장',
         cancelLabel: '취소',
       });
@@ -321,8 +326,10 @@ document.querySelectorAll('input[name="interaction-mode"]').forEach((radio) => {
     const isBidir = radio.value === 'bidirectional';
     const micWrap = document.getElementById('mic-required-wrap');
     const camWrap = document.getElementById('camera-allowed-wrap');
+    const voiceWrap = document.getElementById('all-voice-wrap');
     if (micWrap) micWrap.style.display = isBidir ? 'block' : 'none';
     if (camWrap) camWrap.style.display = isBidir ? 'block' : 'none';
+    if (voiceWrap) voiceWrap.style.display = isBidir ? 'none' : 'block';
   });
 });
 

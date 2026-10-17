@@ -2738,13 +2738,31 @@ body:not(.chat-open) .chat-layer {
   display: none !important;
 }
 
-body.is-unidirectional #btn-av-mic,
-body.is-unidirectional .tb-group-av #btn-av-mic {
+/* 단방향: 참가자 마이크는 호스트가 발언권을 준 1명만 (호스트 마이크는 항상 표시) */
+body.viewer-page.is-unidirectional:not(.has-voice-floor):not(.uni-all-voice) #btn-av-mic {
   display: none !important;
 }
 
-body.viewer-page.is-unidirectional #btn-av-mic {
-  display: none !important;
+/* 단방향: 발언권을 받은 참가자 카드 표시 */
+.participant-card.has-voice-floor {
+  outline: 3px solid #f5b942;
+  outline-offset: -3px;
+}
+.participant-card .voice-floor-badge {
+  position: absolute;
+  top: 6px;
+  left: 6px;
+  z-index: 5;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: rgba(245, 185, 66, 0.92);
+  color: #1b1b1b;
+  font-size: 12px;
+  font-weight: 700;
+  pointer-events: none;
+}
+body.is-unidirectional:not(.viewer-page):not(.uni-all-voice) .participant-card:not([data-participant-id="local"]) {
+  cursor: pointer;
 }
 
 /* 단방향 모드에서 시청자는 카메라 송출 비활성화(숨김) */

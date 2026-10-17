@@ -1,6 +1,6 @@
 import { OverlayManager } from './overlay-manager.js?v=20260930i';
 import { DrawCanvas } from './draw-canvas.js?v=20260918pen2';
-import { RoomSync } from './sync.js?v=20260930a';
+import { RoomSync } from './sync.js?v=20261017b';
 import { goToSlide, getPptEngine } from './host-ppt-loader.js?v=20260715ah';
 import { findHttpLinkAt, findVideoHitAt } from './link-utils.js?v=20260715z';
 import {
@@ -12,7 +12,7 @@ import {
 } from './viewers-panel.js?v=20261014b';
 import { FloatingSpeakerManager } from './floating-speaker-manager.js?v=20261013d';
 import { WebrtcSignaling } from './webrtc/signaling.js?v=20260715j';
-import { HostPublisher } from './webrtc/host-publisher.js?v=20261017a';
+import { HostPublisher } from './webrtc/host-publisher.js?v=20261018a';
 import { setupChatPanel } from './chat-panel.js?v=20261014a';
 import { CamFocusManager } from './cam-focus-manager.js?v=20260930a';
 import { MicController } from './mic-controller.js?v=20261013f';
@@ -72,6 +72,8 @@ let knownViewerIds = new Set();
 let activeBroadcasterId = null;
 let interactionMode = urlMode || sessionStorage.getItem('interactionMode') || 'bidirectional';
 let requireMic = params.get('rm') === '1' || sessionStorage.getItem('requireMic') === 'true';
+/** 단방향 옵션: 모든 참가자 목소리 미팅 허용 (서버 상태로 다시 맞춤) */
+let allowAllVoice = params.get('av') === '1';
 const MIC_PREF_KEY = 'yunseulStreamMic';
 let preferMic = requireMic || sessionStorage.getItem(MIC_PREF_KEY) === '1';
 let chatPanel = null;
@@ -98,12 +100,15 @@ function applyInteractionMode(mode, isRequireMic = requireMic) {
     sessionStorage.setItem('requireMic', requireMic ? 'true' : 'false');
   } catch { /* ignore */ }
   document.body.classList.toggle('is-unidirectional', interactionMode === 'unidirectional');
+  document.body.classList.toggle('uni-all-voice', interactionMode === 'unidirectional' && allowAllVoice);
   const badge = document.getElementById('mode-badge');
   if (badge) {
     if (interactionMode === 'unidirectional') {
-      badge.textContent = '단방향';
+      badge.textContent = allowAllVoice ? '단방향 · 전체 목소리' : '단방향';
       badge.classList.add('is-uni');
-      badge.title = '단방향 대규모 시청 — 참가자는 시청·채팅만';
+      badge.title = allowAllVoice
+        ? '단방향 — 영상은 호스트만, 모든 참가자 목소리 미팅 허용'
+        : '단방향 대규모 시청 — 참가자는 시청·채팅만 (카드를 누르면 1명에게 발언권)';
     } else {
       badge.textContent = requireMic ? '양방향 · 마이크 필수' : '양방향';
       badge.classList.remove('is-uni');
@@ -114,7 +119,8 @@ function applyInteractionMode(mode, isRequireMic = requireMic) {
   }
   if (webrtcPublisher) {
     webrtcPublisher.interactionMode = interactionMode;
-    if (interactionMode === 'bidirectional') {
+    webrtcPublisher.allowAllVoice = interactionMode === 'unidirectional' && allowAllVoice;
+    if (interactionMode === 'bidirectional' || webrtcPublisher.allowAllVoice) {
       webrtcPublisher.ensureReceiving().catch(() => {});
     }
   }
@@ -209,7 +215,7 @@ async function selectParticipant({ id, role, name }) {
   }
 
   if (interactionMode === 'unidirectional') {
-    alert('단방향(대규모 시청) 모드에서는 참가자 화면 공유를 사용할 수 없습니다.');
+    toggleVoiceFloor(id);
     return;
   }
 
@@ -296,6 +302,34 @@ function handleSpotlightSelect(p) {
   applySpotlightAudioVideo();
 }
 
+/** 단방향 발언권: 호스트 + 선택한 참가자 1명만 목소리 공유 */
+let voiceFloorId = null;
+
+function applyVoiceFloorState(clientId) {
+  voiceFloorId = interactionMode === 'unidirectional' && clientId ? clientId : null;
+  if (webrtcPublisher) {
+    webrtcPublisher.voiceFloorId = voiceFloorId;
+    if (voiceFloorId) webrtcPublisher.ensureReceiving?.().catch(() => {});
+  }
+  hostParticipantsGrid?.setVoiceFloor?.(voiceFloorId);
+}
+
+function toggleVoiceFloor(id) {
+  if (interactionMode !== 'unidirectional' || !sync) return;
+  // 모든 참가자 목소리 허용 방: 각자 마이크를 켜고 끄므로 발언권 지정이 없다
+  if (allowAllVoice) return;
+  const target = !id || id === 'local' || id === sync.clientId || id === voiceFloorId ? null : id;
+  if (!target && !voiceFloorId) return;
+  sync.emit('voice-floor', { clientId: target });
+  applyVoiceFloorState(target);
+  if (target) {
+    const v = hostParticipantsGrid?.viewers?.find((x) => (x.id || x.clientId) === target);
+    showToast(`${v?.name || '참가자'}님에게 발언권을 주었습니다. 다시 누르면 회수합니다.`, 'info', 3600);
+  } else {
+    showToast('발언권을 회수했습니다.', 'info', 2400);
+  }
+}
+
 floatingSpeakerManager = new FloatingSpeakerManager({
   isHost: true,
   hostClientId: null,
@@ -311,7 +345,10 @@ speakingIndicator.onSpotlightVoice = (isSpeaking, level) => {
 setupViewersPanel({
   selectable: true,
   onSelect: (p) => { selectParticipant(p).catch((err) => console.warn(err)); },
-  onSpotlight: (p) => { handleSpotlightSelect(p); },
+  onSpotlight: (p) => {
+    if (interactionMode === 'unidirectional') toggleVoiceFloor(p?.id);
+    else handleSpotlightSelect(p);
+  },
 });
 const uploadStatus = document.getElementById('upload-status');
 const btnStream = document.getElementById('btn-stream');
@@ -385,10 +422,14 @@ btnModalStart?.addEventListener('click', async () => {
   // 송출이 없으면 얼굴 화면으로 시작한다(PC 캡처 창이 필요 없음 → 시작이 빨라진다).
   if (!webrtcPublisher?.isActive) {
     meetingStartModal?.classList.add('hidden');
-    const ok = await startFaceShare();
+    // 단방향: 영상 미팅 모드 없이 호스트 PC 화면(전체 화면 권장)만 송출
+    const uni = interactionMode === 'unidirectional';
+    const ok = uni ? await startScreenShare() : await startFaceShare();
     updateTarotShareButton();
     if (!ok) {
-      alert('얼굴 화면 송출을 시작하지 못했습니다. 다시 시도해 주세요.');
+      alert(uni
+        ? '단방향 미팅은 호스트 화면 공유로 진행됩니다. 공유할 화면(전체 화면 권장)을 선택한 뒤 다시 시작해 주세요.'
+        : '얼굴 화면 송출을 시작하지 못했습니다. 다시 시도해 주세요.');
       return;
     }
   }
@@ -471,6 +512,36 @@ class HostParticipantsGridManager {
 
     this.checkOverflow = this.checkOverflow.bind(this);
     window.addEventListener('resize', this.checkOverflow);
+
+    this.voiceFloorId = null;
+    // 단방향: 참가자 카드 클릭 = 발언권 부여/회수 (호스트 카드 클릭 = 회수)
+    this.gridEl?.addEventListener('click', (e) => {
+      if (interactionMode !== 'unidirectional') return;
+      const card = e.target?.closest?.('.participant-card[data-participant-id]');
+      if (!card || !this.gridEl.contains(card)) return;
+      toggleVoiceFloor(card.dataset.participantId);
+    });
+  }
+
+  setVoiceFloor(id) {
+    this.voiceFloorId = id || null;
+    this.gridEl?.querySelectorAll('.participant-card[data-participant-id]').forEach((card) => {
+      this._patchVoiceFloorBadge(card);
+    });
+  }
+
+  _patchVoiceFloorBadge(card) {
+    const on = !!this.voiceFloorId && card.dataset.participantId === this.voiceFloorId;
+    card.classList.toggle('has-voice-floor', on);
+    let badge = card.querySelector('.voice-floor-badge');
+    if (on && !badge) {
+      badge = document.createElement('span');
+      badge.className = 'voice-floor-badge';
+      badge.textContent = '🎤 발언 중';
+      card.appendChild(badge);
+    } else if (!on && badge) {
+      badge.remove();
+    }
   }
 
   checkOverflow() {
@@ -561,7 +632,8 @@ class HostParticipantsGridManager {
 
   updateVisibility() {
     const isLoungeActive = typeof tarotLounge !== 'undefined' && tarotLounge && tarotLounge.isActive;
-    const shouldShow = interactionMode === 'bidirectional' && isMeetingStarted && !isLoungeActive;
+    // 단방향도 미팅이 시작되면 참가자 카드를 계속 깔아 둔다(호스트 화면 송출에 그대로 보임)
+    const shouldShow = isMeetingStarted && !isLoungeActive;
     const wasVisible = this.isVisible;
     this.isVisible = shouldShow;
     if (this.viewEl) {
@@ -593,7 +665,7 @@ class HostParticipantsGridManager {
 
   syncCardsIncremental() {
     if (!this.gridEl) return;
-    if (!this.isVisible && (interactionMode !== 'bidirectional' || tarotLounge?.isActive)) return;
+    if (!this.isVisible && tarotLounge?.isActive) return;
 
     const list = this._participantList();
     const presentIds = new Set(list.map((p) => p.id || p.clientId));
@@ -617,6 +689,7 @@ class HostParticipantsGridManager {
       }
       this.patchCardMeta(pid, p);
       this.patchCardMedia(pid, p);
+      this._patchVoiceFloorBadge(card);
     });
 
     this.gridEl.querySelectorAll('.participant-card-empty').forEach((el) => el.remove());
@@ -1269,7 +1342,10 @@ function updateShareModeUi(mode) {
   const faceBtn = document.getElementById('btn-share-face');
   const pcBtn = document.getElementById('btn-share-pc');
   const on = mode === 'face' || mode === 'screen';
-  if (wrap) wrap.hidden = !on;
+  // 단방향: 영상 미팅(얼굴 화면) 전환 없음 — 화면 공유가 끊겨 얼굴 화면으로 대체된 경우에만 「PC 화면」 복귀 버튼 표시
+  const uni = interactionMode === 'unidirectional';
+  if (wrap) wrap.hidden = !on || (uni && mode === 'screen');
+  if (faceBtn) faceBtn.style.display = uni ? 'none' : '';
   faceBtn?.classList.toggle('is-active', mode === 'face');
   pcBtn?.classList.toggle('is-active', mode === 'screen');
   if (faceBtn) faceBtn.setAttribute('aria-pressed', mode === 'face' ? 'true' : 'false');
@@ -1374,7 +1450,9 @@ async function startScreenShare() {
     // SFU 단일 경로: produce 재확인
     if (ids.length) await webrtcPublisher.publishTo(ids);
     applyShareMode('screen');
-    showToast('PC 화면을 송출합니다. 참가자 얼굴은 잠시 멈추고, 목소리는 그대로입니다.', 'info', 4200);
+    showToast(interactionMode === 'unidirectional'
+      ? '호스트 화면을 송출합니다. 다른 화면을 보여주려면 이 창을 내리고 PC 화면을 띄우세요.'
+      : 'PC 화면을 송출합니다. 참가자 얼굴은 잠시 멈추고, 목소리는 그대로입니다.', 'info', 4200);
     return true;
   } catch (err) {
     console.warn('[stream]', err);
@@ -1557,6 +1635,7 @@ document.getElementById('btn-av-mic-device')?.addEventListener('click', async ()
 btnStream?.addEventListener('click', () => {
   if (webrtcPublisher?.isActive) stopScreenShare();
   else if (isMobileHostEnv() || !canDisplayCapture()) showSharePrompt('');
+  else if (interactionMode === 'unidirectional') startScreenShare();
   else startFaceShare();
 });
 
@@ -1908,6 +1987,9 @@ sync = new RoomSync({
         hideGuestShare();
       }
     }
+    if (type === 'voice-floor') {
+      applyVoiceFloorState(payload?.clientId || null);
+    }
     if (type === 'spotlight-speaker') {
       const isHost = (!payload?.clientId || payload.clientId === sync?.clientId || payload?.role === 'host');
       currentSpotlightSpeaker = {
@@ -1952,6 +2034,7 @@ sync = new RoomSync({
 
 sync.start()
   .then((data) => {
+    if (data.state) allowAllVoice = !!data.state.allowAllVoice;
     if (data.state?.interactionMode || data.state?.requireMic !== undefined) {
       applyInteractionMode(data.state?.interactionMode || interactionMode, !!data.state?.requireMic);
     }
@@ -1992,6 +2075,7 @@ sync.start()
     }
     hostParticipantsGrid.setViewers(data.state?.viewers || []);
     hostParticipantsGrid.updateVisibility();
+    applyVoiceFloorState(data.state?.voiceFloorId || null);
 
 
     if (data.drawings) drawCanvas.loadStrokes(data.drawings);
@@ -2032,6 +2116,9 @@ sync.start()
       },
     });
     webrtcPublisher.interactionMode = interactionMode;
+    webrtcPublisher.voiceFloorId = voiceFloorId;
+    webrtcPublisher.allowAllVoice = interactionMode === 'unidirectional' && allowAllVoice;
+    if (webrtcPublisher.allowAllVoice) webrtcPublisher.ensureReceiving().catch(() => {});
     webrtcPublisher.setSpeakerEnabled?.(true);
     webrtcPublisher.setRoomCode?.(roomCode);
     webrtcPublisher.avatarManager?.setClientId?.(sync.clientId);

@@ -1122,8 +1122,8 @@ export class VirtualAvatarManager {
   }
 
   /**
-   * 원래 내 얼굴. 원본 픽셀을 유지한 채, 옅은 그림자만 조금 올리고 눈썹만 조금 진하게 한다.
-   * 얼굴 영역을 도형으로 자르거나 흐린 색으로 덮지 않는다.
+   * 원래 내 얼굴. 원본 픽셀을 유지한 채, 피부 위의 주름(팔자·눈가·이마)만 주변 피부 밝기로 메우고
+   * 눈썹은 자연스럽게 채워 진하게 한다. 얼굴 영역을 도형으로 자르거나 흐린 색으로 덮지 않는다.
    */
   _drawRealFace(ctx, w, h) {
     const video = this.rawWebcamVideo;
@@ -1147,111 +1147,191 @@ export class VirtualAvatarManager {
     ctx.drawImage(this._beautyCanvas, 0, 0);
   }
 
-  _boxBlurRgb(rSrc, gSrc, bSrc, w, h, radius, rDst, gDst, bDst) {
+  /** 단일 채널 박스 블러(누적합, 반경 무관 O(n)). src 와 dst 는 같은 배열이어도 된다. */
+  _boxBlur1(src, dst, w, h, radius) {
     const r = Math.max(1, radius | 0);
     const span = Math.max(w, h) + 1;
-    if (!this._beautyPrefixR || this._beautyPrefixR.length < span) {
-      this._beautyPrefixR = new Float64Array(span);
-      this._beautyPrefixG = new Float64Array(span);
-      this._beautyPrefixB = new Float64Array(span);
-    }
+    if (!this._bbPrefix || this._bbPrefix.length < span) this._bbPrefix = new Float64Array(span);
     const n = w * h;
-    if (!this._beautyTmpR || this._beautyTmpR.length !== n) {
-      this._beautyTmpR = new Float32Array(n);
-      this._beautyTmpG = new Float32Array(n);
-      this._beautyTmpB = new Float32Array(n);
-    }
-    const pr = this._beautyPrefixR;
-    const pg = this._beautyPrefixG;
-    const pb = this._beautyPrefixB;
-    const tr = this._beautyTmpR;
-    const tg = this._beautyTmpG;
-    const tb = this._beautyTmpB;
+    if (!this._bbTmp || this._bbTmp.length < n) this._bbTmp = new Float32Array(n);
+    const pr = this._bbPrefix;
+    const tmp = this._bbTmp;
     for (let y = 0; y < h; y += 1) {
-      pr[0] = 0;
-      pg[0] = 0;
-      pb[0] = 0;
       const row = y * w;
+      pr[0] = 0;
+      for (let x = 0; x < w; x += 1) pr[x + 1] = pr[x] + src[row + x];
       for (let x = 0; x < w; x += 1) {
-        pr[x + 1] = pr[x] + rSrc[row + x];
-        pg[x + 1] = pg[x] + gSrc[row + x];
-        pb[x + 1] = pb[x] + bSrc[row + x];
-      }
-      for (let x = 0; x < w; x += 1) {
-        const a = Math.max(0, x - r);
-        const b = Math.min(w, x + r + 1);
-        const inv = 1 / (b - a);
-        tr[row + x] = (pr[b] - pr[a]) * inv;
-        tg[row + x] = (pg[b] - pg[a]) * inv;
-        tb[row + x] = (pb[b] - pb[a]) * inv;
+        const a = x - r < 0 ? 0 : x - r;
+        const b = x + r + 1 > w ? w : x + r + 1;
+        tmp[row + x] = (pr[b] - pr[a]) / (b - a);
       }
     }
     for (let x = 0; x < w; x += 1) {
       pr[0] = 0;
-      pg[0] = 0;
-      pb[0] = 0;
+      for (let y = 0; y < h; y += 1) pr[y + 1] = pr[y] + tmp[y * w + x];
       for (let y = 0; y < h; y += 1) {
-        pr[y + 1] = pr[y] + tr[y * w + x];
-        pg[y + 1] = pg[y] + tg[y * w + x];
-        pb[y + 1] = pb[y] + tb[y * w + x];
-      }
-      for (let y = 0; y < h; y += 1) {
-        const a = Math.max(0, y - r);
-        const b = Math.min(h, y + r + 1);
-        const inv = 1 / (b - a);
-        const i = y * w + x;
-        rDst[i] = (pr[b] - pr[a]) * inv;
-        gDst[i] = (pg[b] - pg[a]) * inv;
-        bDst[i] = (pb[b] - pb[a]) * inv;
+        const a = y - r < 0 ? 0 : y - r;
+        const b = y + r + 1 > h ? h : y + r + 1;
+        dst[y * w + x] = (pr[b] - pr[a]) / (b - a);
       }
     }
   }
 
+  /**
+   * 주름 제거 + 눈썹 진하게. 분석(피부 마스크·주변 피부 밝기·눈썹 위치)은 1/2 해상도에서,
+   * 적용은 원본 해상도에서 쌍선형 보간으로 해 선명도를 잃지 않는다.
+   */
   _retouchRealSkin(px, w, h) {
-    const n = w * h;
-    if (!this._skinLuma || this._skinLuma.length !== n) {
-      this._skinLuma = new Float32Array(n);
-      this._skinRb = new Float32Array(n);
-      this._skinGb = new Float32Array(n);
-      this._skinBb = new Float32Array(n);
-    }
-    const luma = this._skinLuma;
-    for (let i = 0, p = 0; i < n; i += 1, p += 4) {
-      luma[i] = px[p] * 0.299 + px[p + 1] * 0.587 + px[p + 2] * 0.114;
-    }
-    const radius = Math.max(3, Math.round(w / 48));
-    this._boxBlurRgb(luma, luma, luma, w, h, radius, this._skinRb, this._skinGb, this._skinBb);
-    const blur = this._skinRb;
-    for (let y = 0; y < h; y += 1) {
+    const sw = (w + 1) >> 1;
+    const sh = (h + 1) >> 1;
+    const sn = sw * sh;
+    if (!this._rt || this._rt.sw !== sw || this._rt.sh !== sh || this._rt.w !== w || this._rt.h !== h) {
+      const f = () => new Float32Array(sn);
+      const xi0 = new Int32Array(w); const xi1 = new Int32Array(w); const xw = new Float32Array(w);
       for (let x = 0; x < w; x += 1) {
-        const i = y * w + x;
-        const p = i * 4;
-        const L = luma[i];
-        const Lb = blur[i];
-        const edge = Math.abs(L - Lb);
-        if (this._isBrowPixel(luma, w, h, x, y, L)) {
-          px[p] = Math.max(0, px[p] * 0.82);
-          px[p + 1] = Math.max(0, px[p + 1] * 0.82);
-          px[p + 2] = Math.max(0, px[p + 2] * 0.82);
-          continue;
-        }
-        if (edge < 16 && L + 4 < Lb) {
-          const lift = Math.min(20, (Lb - L) * 0.5);
-          px[p] = Math.min(255, px[p] + lift);
-          px[p + 1] = Math.min(255, px[p + 1] + lift);
-          px[p + 2] = Math.min(255, px[p + 2] + lift);
-        }
+        const fx = Math.min(sw - 1, Math.max(0, (x + 0.5) / 2 - 0.5));
+        xi0[x] = Math.floor(fx); xi1[x] = Math.min(sw - 1, xi0[x] + 1); xw[x] = fx - xi0[x];
+      }
+      const yi0 = new Int32Array(h); const yi1 = new Int32Array(h); const yw = new Float32Array(h);
+      for (let y = 0; y < h; y += 1) {
+        const fy = Math.min(sh - 1, Math.max(0, (y + 0.5) / 2 - 0.5));
+        yi0[y] = Math.floor(fy); yi1[y] = Math.min(sh - 1, yi0[y] + 1); yw[y] = fy - yi0[y];
+      }
+      this._rt = {
+        w, h, sw, sh,
+        L: f(), skin: f(), soft: f(), num: f(), den: f(), base: f(), fine: f(), brow: f(),
+        xi0, xi1, xw, yi0, yi1, yw,
+      };
+    }
+    const { L, skin, soft, num, den, base, fine, brow } = this._rt;
+
+    // 1) 1/2 해상도 밝기 + 피부색(YCbCr) 판정. 입술(Cr 높음)·눈동자(어두움)·흰자(채도 없음)는 제외
+    for (let sy = 0; sy < sh; sy += 1) {
+      const y0 = sy * 2;
+      const y1 = Math.min(h - 1, y0 + 1);
+      for (let sx = 0; sx < sw; sx += 1) {
+        const x0 = sx * 2;
+        const x1 = Math.min(w - 1, x0 + 1);
+        const p00 = (y0 * w + x0) * 4; const p01 = (y0 * w + x1) * 4;
+        const p10 = (y1 * w + x0) * 4; const p11 = (y1 * w + x1) * 4;
+        const r = (px[p00] + px[p01] + px[p10] + px[p11]) * 0.25;
+        const g = (px[p00 + 1] + px[p01 + 1] + px[p10 + 1] + px[p11 + 1]) * 0.25;
+        const b = (px[p00 + 2] + px[p01 + 2] + px[p10 + 2] + px[p11 + 2]) * 0.25;
+        const Y = r * 0.299 + g * 0.587 + b * 0.114;
+        const cb = 128 - 0.168736 * r - 0.331264 * g + 0.5 * b;
+        const cr = 128 + 0.5 * r - 0.418688 * g - 0.081312 * b;
+        const i = sy * sw + sx;
+        L[i] = Y;
+        // 그늘진 피부(콧대 옆·턱선)도 피부로 봐야 경계에 얼룩이 안 생긴다 — 어두울수록 색이 옅어지는 만큼 범위를 넓게
+        skin[i] = (Y > 30 && cb >= 75 && cb <= 128 && cr >= 131 && cr <= 170 && cr - cb > 8) ? 1 : 0;
       }
     }
-  }
 
-  _isBrowPixel(luma, w, h, x, y, L) {
-    if (y < h * 0.16 || y > h * 0.46 || x < 2 || x >= w - 2 || L > 98) return false;
-    const up = luma[(y - 2) * w + x];
-    const down = luma[Math.min(h - 1, y + 2) * w + x];
-    const left = luma[y * w + (x - 2)];
-    const right = luma[y * w + (x + 2)];
-    return (left + right) * 0.5 < L + 16 && (up + down) * 0.5 > L + 14;
+    // 2) 주변 "피부만"의 평균 밝기(정규화 블러) — 머리카락·눈·배경이 섞여 테두리가 번지지 않게
+    for (let i = 0; i < sn; i += 1) num[i] = L[i] * skin[i];
+    // 주름 굵기 정도의 반경 — 더 크면 얼굴 윤곽 음영까지 밝아져 납작/창백해진다
+    const bigR = Math.max(4, Math.round(sw / 56));
+    this._boxBlur1(num, num, sw, sh, bigR);
+    this._boxBlur1(skin, den, sw, sh, bigR);
+    for (let i = 0; i < sn; i += 1) base[i] = den[i] > 0.08 ? num[i] / den[i] : L[i];
+    this._boxBlur1(L, fine, sw, sh, 1);
+
+    // 3) 눈썹: 이마 피부 아래, 눈두덩 피부 위의 가로로 어두운 띠. 흰자가 옆에 있으면 눈이므로 제외
+    brow.fill(0);
+    const dyA = Math.max(4, Math.round(sh * 0.05));
+    const dyB = Math.max(3, Math.round(sh * 0.045));
+    const rs = Math.max(3, Math.round(sw * 0.03));
+    const hr = Math.max(2, rs >> 1);
+    const dyU = Math.max(4, Math.round(sh * 0.08));
+    const yStart = Math.max(dyA, Math.round(sh * 0.08));
+    const yEnd = Math.min(sh - 1 - dyB, Math.round(sh * 0.5));
+    for (let sy = yStart; sy <= yEnd; sy += 1) {
+      const row = sy * sw;
+      for (let sx = rs; sx < sw - rs; sx += 1) {
+        const i = row + sx;
+        const l = L[i];
+        if (l > 125 || den[i] < 0.25 || base[i] - l < 10) continue;
+        // 좌우로 이어지는 어둠(눈썹 결)
+        const edgeL = base[i] - 5;
+        if (L[i - hr] > edgeL || L[i + hr] > edgeL) continue;
+        // 가는 가로 띠: 위(이마)·아래(눈두덩) 가까이에 확실히 밝은 피부가 있어야 한다
+        // — 얼굴 옆 그림자처럼 세로로 길게 이어지는 어둠은 제외. 눈썹 두께가 사람마다 달라 범위로 찾는다
+        let upOk = false;
+        for (let k = 2; k <= dyA && !upOk; k += 1) {
+          const j = i - k * sw;
+          if (L[j] - l >= 14 && skin[j]) upOk = true;
+        }
+        if (!upOk) continue;
+        let downOk = false;
+        for (let k = 2; k <= dyB && !downOk; k += 1) {
+          const j = i + k * sw;
+          if (L[j] - l >= 10 && skin[j]) downOk = true;
+        }
+        if (!downOk) continue;
+        // 바로 위에 밝은 틈을 두고 또 어두운 띠가 있으면 눈(위에 눈썹)·입(위에 콧구멍)이다
+        let peak = l;
+        let stacked = false;
+        for (let k = 1; k <= dyU && sy - k >= 0; k += 1) {
+          const lu = L[i - k * sw];
+          if (lu > peak) peak = lu;
+          else if (peak > l + 10 && lu < peak - 14 && lu < base[i] - 6) { stacked = true; break; }
+        }
+        if (stacked) continue;
+        let sclera = false;
+        const bright = l + 60;
+        for (let k = sx - rs; k <= sx + rs; k += 1) {
+          if (L[row + k] > bright && !skin[row + k]) { sclera = true; break; }
+        }
+        if (!sclera) brow[i] = 1;
+      }
+    }
+    // 띠 사이 빈틈까지 채워 자연스럽게(살짝 퍼진 눈썹 마스크)
+    this._boxBlur1(brow, brow, sw, sh, 2);
+    this._boxBlur1(skin, soft, sw, sh, Math.max(3, Math.round(sw / 80)));
+
+    // 4) 원본 해상도 적용
+    const { xi0, xi1, xw, yi0, yi1, yw } = this._rt;
+    for (let y = 0; y < h; y += 1) {
+      const r0 = yi0[y] * sw;
+      const r1 = yi1[y] * sw;
+      const wy = yw[y];
+      for (let x = 0; x < w; x += 1) {
+        const a = r0 + xi0[x]; const b = r0 + xi1[x];
+        const c = r1 + xi0[x]; const d = r1 + xi1[x];
+        const wx = xw[x];
+        const w00 = (1 - wx) * (1 - wy); const w01 = wx * (1 - wy);
+        const w10 = (1 - wx) * wy; const w11 = wx * wy;
+        const m = soft[a] * w00 + soft[b] * w01 + soft[c] * w10 + soft[d] * w11;
+        const bw = brow[a] * w00 + brow[b] * w01 + brow[c] * w10 + brow[d] * w11;
+        if (m < 0.02 && bw < 0.02) continue;
+        const p = (y * w + x) * 4;
+        let R = px[p]; let G = px[p + 1]; let B = px[p + 2];
+        const l = R * 0.299 + G * 0.587 + B * 0.114;
+        const bs = base[a] * w00 + base[b] * w01 + base[c] * w10 + base[d] * w11;
+        const browW = bw > 1 ? 1 : bw * 1.6 > 1 ? 1 : bw * 1.6;
+        const skinW = m * (1 - browW);
+        if (skinW > 0.02) {
+          // 주변 피부보다 어두운 가는 골(주름)은 거의 다 메우고, 큰 그림자(콧구멍·얼굴 윤곽)는 남긴다
+          const dk = bs - l;
+          let delta = 0;
+          // 더 어두운 픽셀이 덜 밝아져 역전되면 그늘에 점박이가 생기므로, 줄어드는 기울기를 완만하게(결과 밝기 순서 유지)
+          if (dk > 1.5) delta = dk <= 20 ? dk * 0.88 : dk < 60 ? 17.6 * (60 - dk) / 40 : 0;
+          const fn = fine[a] * w00 + fine[b] * w01 + fine[c] * w10 + fine[d] * w11;
+          const sm = fn - l;
+          if (sm > -14 && sm < 14 && sm * 0.45 > delta) delta = sm * 0.45;
+          else if (delta === 0 && sm > -14 && sm < 0) delta = sm * 0.45;
+          delta *= skinW;
+          R += delta; G += delta; B += delta;
+        }
+        if (browW > 0.02) {
+          // 이미 어두운 털은 더 진하게, 털 사이 피부는 살짝만(빈 곳 채움) — 갈색 톤 유지
+          const dark = (bs - l + 6) / 16;
+          const f = browW * (dark < 0.35 ? 0.35 : dark > 1 ? 1 : dark);
+          R *= 1 - 0.3 * f; G *= 1 - 0.34 * f; B *= 1 - 0.38 * f;
+        }
+        px[p] = R; px[p + 1] = G; px[p + 2] = B;
+      }
+    }
   }
 
   _renderFrame() {

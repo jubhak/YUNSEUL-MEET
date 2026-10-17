@@ -2,7 +2,7 @@
  * 참가자: WebRTC로 호스트 화면을 시청 (화상회의 수신 모드)
  * PPT ZIP/동영상 추출 없음 — 추후 다자 화상 UI를 같은 레이어에 확장 가능
  */
-import { RoomSync } from './sync.js?v=20260930a';
+import { RoomSync } from './sync.js?v=20261017b';
 import {
   setViewerCount,
   setupViewersPanel,
@@ -11,7 +11,7 @@ import {
 } from './viewers-panel.js?v=20261014b';
 import { FloatingSpeakerManager } from './floating-speaker-manager.js?v=20261013d';
 import { WebrtcSignaling } from './webrtc/signaling.js?v=20260715j';
-import { ViewerSubscriber } from './webrtc/viewer-subscriber.js?v=20261016a';
+import { ViewerSubscriber } from './webrtc/viewer-subscriber.js?v=20261018a';
 import { setupViewerZoom } from './viewer-zoom.js?v=20261002b';
 import { setupChatPanel } from './chat-panel.js?v=20261014a';
 import { CamFocusManager } from './cam-focus-manager.js?v=20260930a';
@@ -83,6 +83,13 @@ let subscriber = null;
 try { window.__ymDebug = { get subscriber() { return subscriber; }, get micCtl() { return micCtl; } }; } catch { /* ignore */ }
 let chatPanel = null;
 let interactionMode = 'bidirectional';
+/** 단방향 발언권: 호스트가 지정한 참가자 1명만 마이크로 전체 발언 */
+let hasVoiceFloor = false;
+let voiceFloorResyncTimers = [];
+/** 단방향 옵션: 모든 참가자 목소리 미팅 허용(입장 시 마이크 확인, 마이크는 꺼진 채 시작) */
+let allowAllVoice = false;
+/** 단방향에서 지금 내 마이크를 쓸 수 있는가 */
+const canUseMicInUni = () => hasVoiceFloor || allowAllVoice;
 let requireMic = sessionStorage.getItem('requireMic') === 'true';
 let allowClientCamera = true;
 let allowClientDeepfake = true;
@@ -154,7 +161,7 @@ function applyDisplayMode(mode) {
   document.body.classList.toggle('display-mode-face', next === 'face');
   viewerZoom?.setEnabled?.(next === 'screen');
   subscriber?.setCameraIdle?.(next === 'screen');
-  floatingSpeakerManager?.setSharingActive(next === 'screen');
+  floatingSpeakerManager?.setSharingActive(next === 'screen' && interactionMode !== 'unidirectional');
 }
 
 applyDisplayMode(currentDisplayMode);
@@ -201,13 +208,17 @@ function applyInteractionMode(mode, isRequireMic = requireMic) {
     sessionStorage.setItem('interactionMode', interactionMode);
     sessionStorage.setItem('requireMic', requireMic ? 'true' : 'false');
   } catch { /* ignore */ }
+  const uniAllVoice = interactionMode === 'unidirectional' && allowAllVoice;
   document.body.classList.toggle('is-unidirectional', interactionMode === 'unidirectional');
+  document.body.classList.toggle('uni-all-voice', uniAllVoice);
   const badge = document.getElementById('mode-badge');
   if (badge) {
     if (interactionMode === 'unidirectional') {
-      badge.textContent = '단방향';
+      badge.textContent = uniAllVoice ? '단방향 · 목소리 미팅' : '단방향';
       badge.classList.add('is-uni');
-      badge.title = '단방향 대규모 시청 — 시청·채팅만 가능';
+      badge.title = uniAllVoice
+        ? '단방향 — 영상은 호스트만, 마이크로 대화 가능'
+        : '단방향 대규모 시청 — 시청·채팅만 가능';
     } else {
       badge.textContent = requireMic ? '양방향 · 마이크 필수' : '양방향';
       badge.classList.remove('is-uni');
@@ -218,17 +229,58 @@ function applyInteractionMode(mode, isRequireMic = requireMic) {
   }
   if (subscriber) {
     subscriber.interactionMode = interactionMode;
-    if (interactionMode === 'bidirectional') {
+    subscriber.allowAllVoice = uniAllVoice;
+    if (interactionMode === 'bidirectional' || uniAllVoice) {
       subscriber.ensureReceiving?.().catch(() => {});
     }
   }
   if (micCtl) {
     if (interactionMode === 'unidirectional') {
       micCtl.setRequireMic(false);
-      if (micCtl.enabled) micCtl.disable().catch(() => {});
+      if (micCtl.enabled && !canUseMicInUni()) micCtl.disable().catch(() => {});
     } else if (micCtl.requireMic !== requireMic) {
       micCtl.setRequireMic(requireMic);
     }
+  }
+  floatingSpeakerManager?.setSharingActive(currentDisplayMode === 'screen' && interactionMode !== 'unidirectional');
+  if (typeof syncAvButtons === 'function') syncAvButtons();
+}
+
+async function applyVoiceFloor(clientId, name = '', { announce = true, republish = false } = {}) {
+  if (allowAllVoice) return;
+  const mine = interactionMode === 'unidirectional' && !!clientId && clientId === sync?.clientId;
+  const was = hasVoiceFloor;
+  hasVoiceFloor = mine;
+  document.body.classList.toggle('has-voice-floor', mine);
+
+  // 발언자 마이크 producer 이벤트를 놓쳐도 들리도록 잠시 뒤 한 번 더 목록을 받아 consume
+  voiceFloorResyncTimers.forEach((t) => clearTimeout(t));
+  voiceFloorResyncTimers = [];
+  if (clientId && !mine && interactionMode === 'unidirectional') {
+    for (const ms of [1500, 4500]) {
+      voiceFloorResyncTimers.push(setTimeout(() => {
+        const sfu = subscriber?.sfu;
+        if (sfu && !sfu._closed) sfu.consumeExistingProducers?.().catch(() => {});
+      }, ms));
+    }
+  }
+
+  if (mine && (!was || republish)) {
+    // 서버가 닫은 이전 producer 가 남아 있으면 replaceTrack 으로 무음이 되므로 먼저 정리
+    try { await subscriber?.sfu?.stopPublishing?.({ source: 'viewer-mic' }); } catch { /* ignore */ }
+    if (micCtl) {
+      micCtl._published = false;
+      // 발언권은 호스트가 즉석에서 주므로 "말해보기" 확인창 없이 기본 마이크로 바로 켠다(실패 시 장치 선택창)
+      micCtl.ready = true;
+      if (announce) showToast('호스트가 발언권을 주었습니다. 마이크가 켜집니다.', 'info', 4200);
+      const ok = await micCtl.enable();
+      if (!ok && announce) showToast('마이크를 켤 수 없습니다. 마이크 버튼으로 다시 시도해 주세요.', 'warn', 5200);
+    }
+  } else if (!mine && was) {
+    if (micCtl?.enabled) await micCtl.disable().catch(() => {});
+    try { await subscriber?.sfu?.stopPublishing?.({ source: 'viewer-mic' }); } catch { /* ignore */ }
+    if (micCtl) micCtl._published = false;
+    if (announce) showToast('발언권이 종료되었습니다. 채팅으로 참여해 주세요.', 'info', 3600);
   }
   if (typeof syncAvButtons === 'function') syncAvButtons();
 }
@@ -732,7 +784,7 @@ function syncAvButtons() {
       ? (isReqMic ? '마이크 켜짐 (마이크 필수 모임 — 끌 수 없음)' : '마이크 켜짐 — 클릭하여 끄기')
       : (micCtl?.state === 'none' ? '마이크를 사용할 수 없습니다 — 클릭하여 다시 시도' : '마이크 꺼짐 — 클릭하여 켜기');
   }
-  document.getElementById('btn-av-mic-device')?.classList.toggle('hidden', !micCtl || interactionMode === 'unidirectional');
+  document.getElementById('btn-av-mic-device')?.classList.toggle('hidden', !micCtl || (interactionMode === 'unidirectional' && !canUseMicInUni()));
   if (btnAvCam) {
     btnAvCam.classList.toggle('is-active', camOn);
     btnAvCam.setAttribute('aria-pressed', camOn ? 'true' : 'false');
@@ -1041,8 +1093,8 @@ btnAvSpeaker?.addEventListener('click', () => {
 
 btnAvMic?.addEventListener('click', async () => {
   if (!subscriber || !micCtl) return;
-  if (interactionMode === 'unidirectional') {
-    showToast('단방향(대규모 시청) 모드에서는 마이크를 사용할 수 없습니다.', 'warn');
+  if (interactionMode === 'unidirectional' && !canUseMicInUni()) {
+    showToast('단방향 모드에서는 호스트가 발언권을 준 경우에만 마이크를 쓸 수 있습니다.', 'warn');
     return;
   }
   if (!sync?.socket?.connected) {
@@ -1252,6 +1304,9 @@ function handleEvent(type, data) {
     case 'spotlight-speaker':
       handleSpotlightSpeakerEvent(data);
       break;
+    case 'voice-floor':
+      applyVoiceFloor(data?.clientId || null, data?.name || '').catch(() => {});
+      break;
     case 'draw-start':
       viewerDrawCanvas?.handleRemoteStrokeStart(data);
       break;
@@ -1338,6 +1393,7 @@ sync = new RoomSync({
   onRejoined: (data) => {
     console.log('[viewer] 1차 안전망: 소켓 재체결 성공, 상태 동기화 진행', data);
     if (data?.state) {
+      allowAllVoice = !!data.state.allowAllVoice;
       applyRoomPermissions(data.state);
       if (data.state.viewers) currentViewers = data.state.viewers;
       if (data.state.meetingStarted) {
@@ -1351,6 +1407,8 @@ sync = new RoomSync({
           role: data.state.spotlightSpeakerRole,
         });
       }
+      applyVoiceFloor(data.state.voiceFloorId || null, data.state.voiceFloorName || '', { announce: false, republish: true })
+        .catch(() => {});
       if (data.state.streamActive && isMeetingStarted) {
         if (!tarotLounge._isCountingDown) tarotLounge.hide();
         showLive();
@@ -1379,6 +1437,7 @@ sync.start()
     }
 
     if (data.state) {
+      allowAllVoice = !!data.state.allowAllVoice;
       applyRoomPermissions(data.state);
     }
 
@@ -1615,6 +1674,9 @@ sync.start()
     });
     applyInteractionMode(data.state?.interactionMode || interactionMode, !!data.state?.requireMic);
     setupViewerMic();
+    if (data.state?.voiceFloorId) {
+      applyVoiceFloor(data.state.voiceFloorId, data.state.voiceFloorName || '', { announce: false }).catch(() => {});
+    }
     if (sync?.socket && interactionMode === 'bidirectional') {
       // 호스트의 원격 제어(마우스/키보드) 요청 승인 UI
       rcViewer = new RemoteControlViewer({ socket: sync.socket });

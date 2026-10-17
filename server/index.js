@@ -33,7 +33,7 @@ const multer = require('multer');
 const { Server } = require('socket.io');
 const { createRemoteControl } = require('./remote-control');
 const { createFaceRelay } = require('./face-relay');
-const { attachSfuHandlers, cleanupSocketPeer, disposeSfuRoom, setSfuSpotlightSpeaker, detectAnnouncedIp, getListenIps, getRtcPort, getSfuSnapshot, getWorker, getWorkerCount } = require('./sfu');
+const { attachSfuHandlers, cleanupSocketPeer, disposeSfuRoom, setSfuSpotlightSpeaker, closeClientProducers, detectAnnouncedIp, getListenIps, getRtcPort, getSfuSnapshot, getWorker, getWorkerCount } = require('./sfu');
 
 const ROOT = path.join(__dirname, '..');
 const DATA_DIR = path.join(ROOT, 'data');
@@ -233,7 +233,7 @@ function normalizeInteractionMode(mode) {
   return mode === 'unidirectional' ? 'unidirectional' : 'bidirectional';
 }
 
-function defaultRoom(code, hostToken, interactionMode = 'bidirectional', requireMic = false, allowClientCamera = true, allowClientDeepfake = true) {
+function defaultRoom(code, hostToken, interactionMode = 'bidirectional', requireMic = false, allowClientCamera = true, allowClientDeepfake = true, allowAllVoice = false) {
   const normMode = normalizeInteractionMode(interactionMode);
   const allowCam = normMode === 'bidirectional' && allowClientCamera !== false;
   const allowDfc = allowCam && allowClientDeepfake !== false;
@@ -250,6 +250,8 @@ function defaultRoom(code, hostToken, interactionMode = 'bidirectional', require
     // bidirectional: 기존 화상 미팅 / unidirectional: 대규모 시청(참가자 produce 없음)
     interactionMode: normMode,
     requireMic: normMode === 'bidirectional' && !!requireMic,
+    // 단방향 옵션: 모든 참가자 목소리 미팅 허용(영상은 호스트만)
+    allowAllVoice: normMode === 'unidirectional' && !!allowAllVoice,
     allowClientCamera: allowCam,
     allowClientDeepfake: allowDfc,
     presentation: null,
@@ -266,6 +268,8 @@ function defaultRoom(code, hostToken, interactionMode = 'bidirectional', require
     endedAt: 0,
     meetingStarted: false,
     displayMode: 'face',
+    voiceFloorId: null, // 단방향: 호스트가 발언권을 준 참가자 1명
+    voiceFloorName: '',
     createdAt: Date.now(),
     hostLastSeen: 0,
     lastActivity: Date.now(),
@@ -382,6 +386,7 @@ function persistRoom(room) {
     activeBroadcasterId: room.activeBroadcasterId || null,
     interactionMode: normMode,
     requireMic: normMode === 'bidirectional' && !!room.requireMic,
+    allowAllVoice: normMode === 'unidirectional' && !!room.allowAllVoice,
     allowClientCamera: room.allowClientCamera !== false,
     allowClientDeepfake: room.allowClientCamera !== false && room.allowClientDeepfake !== false,
     ended: room.ended,
@@ -408,7 +413,8 @@ function loadRoomFromDisk(code) {
       normMode,
       !!raw.requireMic,
       raw.allowClientCamera !== false,
-      raw.allowClientDeepfake !== false
+      raw.allowClientDeepfake !== false,
+      !!raw.allowAllVoice
     );
     Object.assign(room, {
       // 디스크의 hostConnected는 신뢰하지 않음 — 실제 소켓이 있을 때만 true
@@ -521,6 +527,7 @@ function publicState(room) {
     popup: room.popup || null,
     interactionMode: normMode,
     requireMic: normMode === 'bidirectional' && !!room.requireMic,
+    allowAllVoice: normMode === 'unidirectional' && !!room.allowAllVoice,
     allowClientCamera: room.allowClientCamera !== false,
     allowClientDeepfake: room.allowClientCamera !== false && room.allowClientDeepfake !== false,
     // 호스트가 지금 시청자에게 보여주는 것: 'face'(참가자 얼굴 화면) | 'screen'(호스트 PC 화면)
@@ -528,7 +535,25 @@ function publicState(room) {
     spotlightSpeakerId: room.spotlightSpeakerId || room.hostClientId || null,
     spotlightSpeakerName: room.spotlightSpeakerName || room.hostName || '호스트',
     spotlightSpeakerRole: room.spotlightSpeakerRole || 'host',
+    voiceFloorId: normMode === 'unidirectional' ? (room.voiceFloorId || null) : null,
+    voiceFloorName: normMode === 'unidirectional' ? (room.voiceFloorName || '') : '',
   };
+}
+
+/** 단방향 발언권: 대상 참가자 1명만 마이크 송출 허용. 이전 발언자의 마이크 송출은 서버에서 닫는다. */
+function setVoiceFloor(io, room, targetId) {
+  const prev = room.voiceFloorId || null;
+  const next = targetId && room.viewers.has(targetId) ? targetId : null;
+  room.voiceFloorId = next;
+  room.voiceFloorName = next ? (room.viewers.get(next)?.name || '참가자') : '';
+  if (prev && prev !== next) {
+    try {
+      closeClientProducers(io, room.code, prev, (p) => p.kind === 'audio' && p.appData?.source === 'viewer-mic');
+    } catch (err) {
+      console.warn('[voice-floor] close producers', err);
+    }
+  }
+  io.to(room.code).emit('voice-floor', { clientId: next, name: room.voiceFloorName });
 }
 
 function broadcastBroadcaster(io, room) {
@@ -632,6 +657,7 @@ function schedulePeerDisconnectGrace(io, room, clientId, role) {
             });
             try { setSfuSpotlightSpeaker(room.code, room.spotlightSpeakerId); } catch { /* ignore */ }
           }
+          if (room.voiceFloorId === clientId) setVoiceFloor(io, room, null);
           if (room.hostSocketId) {
             io.to(room.hostSocketId).emit('peer-left', { clientId, role: 'viewer' });
           }
@@ -1121,7 +1147,7 @@ app.post('/api/create-room', (req, res) => {
   const requireMic = interactionMode === 'bidirectional' && !!req.body?.requireMic;
   const allowClientCamera = req.body?.allowClientCamera !== false;
   const allowClientDeepfake = allowClientCamera && req.body?.allowClientDeepfake !== false;
-  const room = defaultRoom(code, hostToken, interactionMode, requireMic, allowClientCamera, allowClientDeepfake);
+  const room = defaultRoom(code, hostToken, interactionMode, requireMic, allowClientCamera, allowClientDeepfake, !!req.body?.allowAllVoice);
   try {
     ensureRoomLogDir(room);
   } catch (err) {
@@ -1137,6 +1163,7 @@ app.post('/api/create-room', (req, res) => {
     hostToken,
     interactionMode: room.interactionMode,
     requireMic: !!room.requireMic,
+    allowAllVoice: !!room.allowAllVoice,
     allowClientCamera: !!room.allowClientCamera,
     allowClientDeepfake: !!room.allowClientDeepfake,
   });
@@ -1301,7 +1328,7 @@ app.post('/api/create-room.php', (req, res) => {
   const requireMic = interactionMode === 'bidirectional' && !!req.body?.requireMic;
   const allowClientCamera = req.body?.allowClientCamera !== false;
   const allowClientDeepfake = allowClientCamera && req.body?.allowClientDeepfake !== false;
-  const room = defaultRoom(code, hostToken, interactionMode, requireMic, allowClientCamera, allowClientDeepfake);
+  const room = defaultRoom(code, hostToken, interactionMode, requireMic, allowClientCamera, allowClientDeepfake, !!req.body?.allowAllVoice);
   try {
     ensureRoomLogDir(room);
   } catch (err) {
@@ -1316,6 +1343,7 @@ app.post('/api/create-room.php', (req, res) => {
     hostToken,
     interactionMode: room.interactionMode,
     requireMic: !!room.requireMic,
+    allowAllVoice: !!room.allowAllVoice,
     allowClientCamera: !!room.allowClientCamera,
     allowClientDeepfake: !!room.allowClientDeepfake,
   });
@@ -1417,6 +1445,11 @@ io.on('connection', (socket) => {
       const room = getRoom(socket.data.roomCode);
       return room?.spotlightSpeakerId || room?.hostClientId || null;
     },
+    getVoiceFloorId: () => {
+      const room = getRoom(socket.data.roomCode);
+      return room?.voiceFloorId || null;
+    },
+    getAllowAllVoice: () => !!getRoom(socket.data.roomCode)?.allowAllVoice,
   });
   attachRemoteControlSocket(socket);
 
@@ -1864,6 +1897,12 @@ io.on('connection', (socket) => {
           payload.role = room.spotlightSpeakerRole;
           try { setSfuSpotlightSpeaker(code, room.spotlightSpeakerId); } catch { /* ignore */ }
           io.to(code).emit('spotlight-speaker', payload);
+          persistRoom(room);
+          return;
+        }
+        case 'voice-floor': {
+          if (normalizeInteractionMode(room.interactionMode) !== 'unidirectional' || room.allowAllVoice) return;
+          setVoiceFloor(io, room, String(payload.clientId || ''));
           persistRoom(room);
           return;
         }
