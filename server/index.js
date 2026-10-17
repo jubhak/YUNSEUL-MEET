@@ -1381,10 +1381,10 @@ const io = new Server(server, {
 
 // 원격 제어(호스트 → 화면 공유 중인 참가자 PC) — server/remote-control.js
 const remoteControl = createRemoteControl({ io, getRoom, requireHost });
-const faceRelay = createFaceRelay({ rooms, getRoom, requireHost });
+const faceRelay = createFaceRelay({ rooms, getRoom, requireHost, onSwapDemand: () => faceSwapParkTick() });
 app.get('/api/face-relay/status', requireLocalAdmin, (_req, res) => {
   res.setHeader('Cache-Control', 'no-store');
-  res.json({ ok: true, ...faceRelay.getStats() });
+  res.json({ ok: true, ...faceRelay.getStats(), workerTier: faceSwapTier });
 });
 remoteControl.registerRoutes(app);
 function attachRemoteControlSocket(socket) {
@@ -1824,6 +1824,7 @@ io.on('connection', (socket) => {
           // 늦게 들어온 참가자도 publicState 로 현재 모드를 받는다.
           room.displayMode = payload.mode === 'screen' ? 'screen' : 'face';
           payload.mode = room.displayMode;
+          faceSwapParkTick();
           break;
         }
         case 'set-broadcaster': {
@@ -2016,6 +2017,11 @@ server.listen(PORT, HOST, () => {
   // Deep-Live-Cam 실시간 페이스 스왑 백그라운드 워커 기동
   startFaceSwapWorker();
   try { startExtraFaceSwapWorkers(); } catch (err) { console.warn('[FaceSwap] extra workers', err); }
+  if (FACE_SWAP_PARK_ENABLED) {
+    setInterval(() => {
+      try { faceSwapParkTick(); } catch (err) { console.warn('[FaceSwap] park tick', err); }
+    }, 3000).unref?.();
+  }
 
   try { sweepRooms(); } catch (err) { console.warn('[room] initial sweep', err); }
   setInterval(() => {
@@ -2095,6 +2101,78 @@ server.on('upgrade', (req, socket, head) => {
 let faceSwapProcess = null;
 let faceSwapRestartTimer = null;
 let faceSwapStopping = false;
+// 워커 VRAM 단계 (ONNX CUDA 메모리 풀은 프로세스가 살아 있는 동안 반납되지 않으므로 단계 전환 = 워커 재기동):
+//  full   : 얼굴 화면 방이 하나라도 있음 → 추론 스레드 최대(실측 ~5GB+), 추가 워커 포함
+//  light  : 모든 방이 PC 화면 + 딥페이크 송출자 1~2명(플로팅 발표자 등) → 스레드 1개(실측 ~1.3GB)
+//  parked : 모든 방이 PC 화면 + 딥페이크 송출자 없음 → 워커 종료(VRAM 0)
+// 올리는 전환은 즉시(재기동 5~10s), 내리는 전환은 FACE_SWAP_PARK_DELAY_MS 동안 유지될 때만. FACE_SWAP_PARK=0 이면 항상 full.
+const FACE_SWAP_PARK_ENABLED = process.env.FACE_SWAP_PARK !== '0' && process.env.FACE_RELAY !== '0';
+const FACE_SWAP_PARK_DELAY_MS = Math.max(5000, Number(process.env.FACE_SWAP_PARK_DELAY_MS) || 15000);
+const FACE_SWAP_LIGHT_MAX = Math.max(0, Number(process.env.FACE_SWAP_LIGHT_MAX_CLIENTS ?? 2) || 0);
+const FACE_SWAP_TIER_RANK = { parked: 0, light: 1, full: 2 };
+let faceSwapTier = 'full';
+let faceSwapProcTier = null;
+let faceSwapTierSwitching = false;
+let faceSwapDownSince = 0;
+
+function killProcessTree(child) {
+  if (!child || child.exitCode !== null) return;
+  if (process.platform === 'win32' && child.pid) {
+    try {
+      spawn('taskkill', ['/PID', String(child.pid), '/T', '/F'], { windowsHide: true, stdio: 'ignore' })
+        .on('error', () => { try { child.kill(); } catch { /* ignore */ } });
+      return;
+    } catch { /* fall through */ }
+  }
+  try { child.kill('SIGTERM'); } catch { /* ignore */ }
+}
+
+function desiredFaceSwapTier() {
+  let liveRooms = 0;
+  for (const room of rooms.values()) {
+    if (!room || room.ended || !room.hostConnected) continue;
+    liveRooms += 1;
+    if (room.displayMode !== 'screen') return 'full';
+  }
+  if (!liveRooms) return 'full';
+  const active = faceRelay.activeSwapCount();
+  if (!active) return 'parked';
+  return active <= FACE_SWAP_LIGHT_MAX ? 'light' : 'full';
+}
+
+function setFaceSwapTier(next) {
+  if (next === faceSwapTier || faceSwapStopping) return;
+  console.log(`[FaceSwap] 워커 단계 ${faceSwapTier} → ${next}`);
+  faceSwapTier = next;
+  clearTimeout(faceSwapRestartTimer);
+  if (next !== 'full') {
+    for (const child of extraFaceSwapProcs.values()) killProcessTree(child);
+  }
+  if (faceSwapProcess && faceSwapProcTier !== next) {
+    faceSwapTierSwitching = next !== 'parked';
+    killProcessTree(faceSwapProcess);
+  }
+  if (next !== 'parked') {
+    startFaceSwapWorker();
+    if (next === 'full') spawnExtraFaceSwapWorkers(0);
+  }
+}
+
+function faceSwapParkTick() {
+  if (!FACE_SWAP_PARK_ENABLED || faceSwapStopping) return;
+  const want = desiredFaceSwapTier();
+  if (FACE_SWAP_TIER_RANK[want] >= FACE_SWAP_TIER_RANK[faceSwapTier]) {
+    faceSwapDownSince = 0;
+    if (want !== faceSwapTier) setFaceSwapTier(want);
+    return;
+  }
+  const now = Date.now();
+  if (!faceSwapDownSince) faceSwapDownSince = now;
+  if (now - faceSwapDownSince >= FACE_SWAP_PARK_DELAY_MS) {
+    faceSwapDownSince = 0;
+    setFaceSwapTier(want);
+  }
+}
 
 function getPythonCmd() {
   const pythonCandidates = [
@@ -2112,7 +2190,7 @@ function getPythonCmd() {
 }
 
 function startFaceSwapWorker() {
-  if (faceSwapStopping) return;
+  if (faceSwapStopping || faceSwapTier === 'parked') return;
   if (faceSwapProcess) return;
 
   const net = require('net');
@@ -2128,7 +2206,7 @@ function startFaceSwapWorker() {
 }
 
 function _spawnFaceSwapWorkerProcess() {
-  if (faceSwapStopping) return;
+  if (faceSwapStopping || faceSwapTier === 'parked') return;
   if (faceSwapProcess) return;
 
   const workerScript = path.join(__dirname, 'face_swap_worker.py');
@@ -2136,39 +2214,52 @@ function _spawnFaceSwapWorkerProcess() {
 
   const pythonCmd = getPythonCmd();
   const workersEnv = process.env.FACE_SWAP_WORKERS || '0';
-  console.log(`[FaceSwap] starting worker with ${pythonCmd} (FACE_SWAP_WORKERS=${workersEnv})...`);
+  const tier = faceSwapTier;
+  const env = { ...process.env, PYTHONUNBUFFERED: '1' };
+  if (tier === 'light') {
+    env.FACE_SWAP_CONCURRENCY = '1';
+    env.FACE_SWAP_WORKERS = '0';
+  }
+  console.log(`[FaceSwap] starting worker with ${pythonCmd} (FACE_SWAP_WORKERS=${env.FACE_SWAP_WORKERS || workersEnv}, tier=${tier})...`);
 
   try {
-    faceSwapProcess = spawn(pythonCmd, ['-u', workerScript], {
+    const child = spawn(pythonCmd, ['-u', workerScript], {
       cwd: ROOT,
       stdio: ['ignore', 'pipe', 'pipe'],
       windowsHide: true,
-      env: { ...process.env, PYTHONUNBUFFERED: '1' },
+      env,
     });
-    faceSwapProcess.stdout.on('data', (d) => {
+    faceSwapProcess = child;
+    faceSwapProcTier = tier;
+    child.stdout.on('data', (d) => {
       const s = d.toString().trim();
       if (s) console.log('[FaceSwap]', s);
     });
-    faceSwapProcess.stderr.on('data', (d) => {
+    child.stderr.on('data', (d) => {
       const s = d.toString().trim();
       if (s) console.log('[FaceSwap]', s);
     });
-    faceSwapProcess.on('error', (err) => {
+    child.on('error', (err) => {
       console.warn('[FaceSwap] worker spawn error:', err);
     });
-    faceSwapProcess.on('exit', (code) => {
+    child.on('exit', (code) => {
       console.log(`[FaceSwap] worker exited (code=${code})`);
-      faceSwapProcess = null;
-      if (!faceSwapStopping) {
+      if (faceSwapProcess === child) {
+        faceSwapProcess = null;
+        faceSwapProcTier = null;
+      }
+      const quick = faceSwapTierSwitching;
+      faceSwapTierSwitching = false;
+      if (!faceSwapStopping && faceSwapTier !== 'parked') {
         clearTimeout(faceSwapRestartTimer);
         faceSwapRestartTimer = setTimeout(() => {
           startFaceSwapWorker();
-        }, 3000);
+        }, quick ? 300 : 3000);
       }
     });
   } catch (err) {
     console.warn('[FaceSwap] could not spawn worker:', err);
-    if (!faceSwapStopping) {
+    if (!faceSwapStopping && faceSwapTier !== 'parked') {
       clearTimeout(faceSwapRestartTimer);
       faceSwapRestartTimer = setTimeout(startFaceSwapWorker, 5000);
     }
@@ -2178,6 +2269,7 @@ function _spawnFaceSwapWorkerProcess() {
 // 추가 GPU 워커 프로세스 (선택): FACE_SWAP_EXTRA_WORKERS=N → 포트 base+1..base+N 에 독립 워커를 더 띄우고
 // 릴레이가 접속 수가 적은 워커로 분배한다. (GPU 1장에서는 이득이 작고 VRAM 을 2배 쓴다. GPU 여러 장/큰 VRAM 용)
 const extraFaceSwapProcs = new Map();
+let extraFaceSwapPorts = [];
 function startExtraFaceSwapWorkers() {
   const n = Math.max(0, Math.min(7, Number(process.env.FACE_SWAP_EXTRA_WORKERS || 0) || 0));
   if (!n || process.env.FACE_SWAP_PORTS) return;
@@ -2185,10 +2277,17 @@ function startExtraFaceSwapWorkers() {
   const ports = [base];
   for (let i = 1; i <= n; i++) ports.push(base + i);
   process.env.FACE_SWAP_PORTS = ports.join(',');
+  if (!fs.existsSync(path.join(__dirname, 'face_swap_worker.py'))) return;
+  extraFaceSwapPorts = ports.slice(1);
+  // 메인 워커가 모델을 올린 뒤에 시작해 초기 VRAM/디스크 경합을 줄인다
+  spawnExtraFaceSwapWorkers(20000);
+}
+
+function spawnExtraFaceSwapWorkers(delayMs) {
+  if (!extraFaceSwapPorts.length) return;
   const workerScript = path.join(__dirname, 'face_swap_worker.py');
-  if (!fs.existsSync(workerScript)) return;
   const spawnOne = (port) => {
-    if (faceSwapStopping || extraFaceSwapProcs.has(port)) return;
+    if (faceSwapStopping || faceSwapTier !== 'full' || extraFaceSwapProcs.has(port)) return;
     console.log(`[FaceSwap] extra worker on port ${port}`);
     const child = spawn(getPythonCmd(), ['-u', workerScript], {
       cwd: ROOT,
@@ -2203,12 +2302,11 @@ function startExtraFaceSwapWorkers() {
     child.on('error', (err) => console.warn(`[FaceSwap:${port}] spawn error:`, err));
     child.on('exit', (code) => {
       console.log(`[FaceSwap:${port}] exited (code=${code})`);
-      extraFaceSwapProcs.delete(port);
-      if (!faceSwapStopping) setTimeout(() => spawnOne(port), 3000).unref?.();
+      if (extraFaceSwapProcs.get(port) === child) extraFaceSwapProcs.delete(port);
+      if (!faceSwapStopping && faceSwapTier === 'full') setTimeout(() => spawnOne(port), 3000).unref?.();
     });
   };
-  // 메인 워커가 모델을 올린 뒤에 시작해 초기 VRAM/디스크 경합을 줄인다
-  setTimeout(() => { for (const p of ports.slice(1)) spawnOne(p); }, 20000).unref?.();
+  setTimeout(() => { for (const p of extraFaceSwapPorts) spawnOne(p); }, delayMs).unref?.();
 }
 
 function stopFaceSwapWorker() {

@@ -117,12 +117,19 @@ export class HostPublisher {
 
   async _ensureSfu() {
     if (this.sfu && !this.sfu._closed) return this.sfu;
-    this.sfu = new SfuClient({
+    // 동시 호출(수신 준비 + 마이크 + 얼굴 송출)이 각자 클라이언트를 만들거나 init 전의 클라이언트를 받지 않도록 한 번만 만든다.
+    if (this._sfuInitPromise) return this._sfuInitPromise;
+    this._sfuInitPromise = this._createSfu().finally(() => { this._sfuInitPromise = null; });
+    return this._sfuInitPromise;
+  }
+
+  async _createSfu() {
+    const sfu = new SfuClient({
       socket: this.signaling.socket,
       clientId: this.signaling.localClientId,
       role: 'host',
     });
-    this.sfu.consumeFilter = (info) => {
+    sfu.consumeFilter = (info) => {
       if (this.interactionMode === 'unidirectional') return false;
       const source = info?.appData?.source || '';
       const kind = info?.kind || '';
@@ -133,30 +140,42 @@ export class HostPublisher {
       if (kind === 'audio' && role !== 'host') return true;
       return false;
     };
-    this.sfu.onConsumed = (info, consumer) => this._onRemoteConsumed(info, consumer);
-    this.sfu.onProducerClosed = (msg) => this._onRemoteProducerClosed(msg);
-    await this.sfu.init();
-    // 카메라 송신 정지 감시 + 단계적 자동 복구(ICE 재시작 → producer 재생성 → 트랜스포트 재생성)
-    this.sfu.startSenderMonitor();
-    return this.sfu;
-  }
-
-  async _ensureSfuRecv() {
-    const sfu = await this._ensureSfu();
-    if (!sfu.recvTransport || sfu.recvTransport.closed) {
-      await sfu.ensureRecvTransport();
-      await sfu.consumeExistingProducers();
-      sfu.startNetworkStatsMonitor((data) => {
-        this.onNetworkQuality?.(data);
-      });
+    sfu.onConsumed = (info, consumer) => this._onRemoteConsumed(info, consumer);
+    sfu.onProducerClosed = (msg) => this._onRemoteProducerClosed(msg);
+    try {
+      await sfu.init();
+    } catch (err) {
+      try { sfu.dispose(); } catch { /* ignore */ }
+      throw err;
     }
-    // 참가자 얼굴 영상 정지 자동 복구 (PLI → consumer 재동기화 → 재-consume → ICE 재시작)
-    sfu.startReceiverMonitor();
-    this._startProducerResync();
+    this.sfu = sfu;
+    // 카메라 송신 정지 감시 + 단계적 자동 복구(ICE 재시작 → producer 재생성 → 트랜스포트 재생성)
+    sfu.startSenderMonitor();
     return sfu;
   }
 
+  async _ensureSfuRecv() {
+    if (this._recvInitPromise) return this._recvInitPromise;
+    this._recvInitPromise = (async () => {
+      const sfu = await this._ensureSfu();
+      if (!sfu.recvTransport || sfu.recvTransport.closed) {
+        await sfu.ensureRecvTransport();
+        await sfu.consumeExistingProducers();
+        sfu.startNetworkStatsMonitor((data) => {
+          this.onNetworkQuality?.(data);
+        });
+      }
+      // 참가자 얼굴 영상 정지 자동 복구 (PLI → consumer 재동기화 → 재-consume → ICE 재시작)
+      sfu.startReceiverMonitor();
+      return sfu;
+    })().finally(() => { this._recvInitPromise = null; });
+    return this._recvInitPromise;
+  }
+
   async ensureReceiving() {
+    // 첫 수신 준비가 실패해도(소켓 재연결/타이밍) 주기 재동기화가 다시 붙이도록 먼저 시작한다.
+    this._startProducerResync();
+    this._startAudioWatchdog();
     return await this._ensureSfuRecv();
   }
 
@@ -169,9 +188,60 @@ export class HostPublisher {
     if (this._resyncTimer) return;
     this._resyncTimer = setInterval(() => {
       if (this.interactionMode === 'unidirectional') return;
-      if (!this.sfu || this.sfu._closed) return;
-      this.sfu.consumeExistingProducers?.().catch(() => {});
+      const sfu = this.sfu;
+      if (!sfu || sfu._closed || !sfu.recvTransport || sfu.recvTransport.closed) {
+        this._ensureSfuRecv().catch(() => {});
+        return;
+      }
+      sfu.consumeExistingProducers?.().catch(() => {});
     }, 4000);
+  }
+
+  /**
+   * 참가자 목소리 재생 감시: 받고 있는 오디오마다 재생 요소가 있는지, 멈춰 있지 않은지 2초마다 확인한다.
+   * 자동재생이 막히면 배너로 알리고, 모두 재생되면 배너를 내린다. 스피커를 끈 상태는 건드리지 않는다.
+   */
+  _startAudioWatchdog() {
+    if (this._audioWatchdog) return;
+    this._audioWatchdog = setInterval(() => this._checkRemoteAudio(), 2000);
+  }
+
+  _stopAudioWatchdog() {
+    if (this._audioWatchdog) {
+      clearInterval(this._audioWatchdog);
+      this._audioWatchdog = null;
+    }
+  }
+
+  _checkRemoteAudio() {
+    if (this.interactionMode === 'unidirectional') return;
+    const sfu = this.sfu;
+    if (!sfu || sfu._closed) return;
+    for (const [producerId, consumer] of sfu.consumers) {
+      if (!consumer || consumer.closed || consumer.kind !== 'audio') continue;
+      const track = consumer.track;
+      if (!track || track.readyState === 'ended') continue;
+      const meta = sfu.consumerMeta.get(producerId) || {};
+      const clientId = meta.clientId || meta.appData?.clientId;
+      if (!clientId || clientId === this.signaling.localClientId) continue;
+      if (!this._remoteAudioEls?.has(`${clientId}:${track.id}`)) {
+        this._playViewerMic(clientId, track);
+      }
+    }
+    if (!this.speakerOn || !this._remoteAudioEls?.size) return;
+    const els = [...this._remoteAudioEls.values()].filter(Boolean);
+    const attempts = els.map((el) => {
+      if (el.muted) el.muted = false;
+      if (!el.paused) return Promise.resolve(true);
+      return el.play().then(() => true, () => false);
+    });
+    Promise.all(attempts).then((results) => {
+      if (!this.speakerOn) return;
+      const ok = results.every(Boolean);
+      this._viewerMicPlaying = ok;
+      if (ok) this.onAudioPlaybackState?.({ ok: true });
+      else this.onAudioPlaybackState?.({ ok: false, needUnmute: true });
+    });
   }
 
   _stopProducerResync() {
@@ -239,14 +309,18 @@ export class HostPublisher {
       this.onRemoteCameraClosed?.(clientId);
     }
     if (isMic || (!source && !kind)) {
+      // 닫힌 consumer 의 트랙(ended)만 정리한다. 마이크를 껐다 켤 때 새 consumer 가 먼저 붙으면
+      // 같은 참가자의 "살아 있는" 재생 요소까지 지워 목소리가 끊기던 문제.
+      let live = false;
       if (this._remoteAudioEls) {
-        for (const [key] of [...this._remoteAudioEls.entries()]) {
-          if (key.startsWith(`${clientId}:`)) {
-            this._cleanupViewerAudio(key, clientId);
-          }
+        for (const [key, el] of [...this._remoteAudioEls.entries()]) {
+          if (!key.startsWith(`${clientId}:`)) continue;
+          const tracks = el?.srcObject?.getAudioTracks?.() || [];
+          if (tracks.length && tracks.some((t) => t.readyState !== 'ended')) { live = true; continue; }
+          this._cleanupViewerAudio(key, clientId);
         }
       }
-      this.onRemoteAudioTrackClosed?.(clientId);
+      if (!live) this.onRemoteAudioTrackClosed?.(clientId);
     }
   }
 
@@ -400,8 +474,10 @@ export class HostPublisher {
       });
     }
 
+    this._applyDisplayBudget(this._faceRoomCount || 1);
     await this._publishToSfu();
     await this.sfu?.setDisplayMotion?.(false);
+    this._applyDisplayBudget(this._faceRoomCount || 1);
     this._ensureSfuRecv().catch((err) => {
       console.warn('[HostPublisher] sfu recv', err);
     });
@@ -745,6 +821,17 @@ export class HostPublisher {
     } else {
       maxBitrate = Math.max(800_000, Math.min(1_800_000, Math.floor(EGRESS_BUDGET / n)));
       startBitrate = Math.min(1_000_000, maxBitrate);
+    }
+    // PC 화면(글씨/문서)은 정지 구간에 비트를 거의 쓰지 않으므로, 스크롤·전환 순간 선명도를 위해 상한을 더 준다.
+    // (서버 코덱 상한 x-google-max-bitrate 8Mbps 이내)
+    if (this.shareMode === 'screen') {
+      if (n <= 6) {
+        maxBitrate = 8_000_000;
+        startBitrate = 5_000_000;
+      } else if (n <= 12) {
+        maxBitrate = 5_500_000;
+        startBitrate = 3_000_000;
+      }
     }
     this.sfu?.setDisplayEncodeBudget?.({ maxBitrate, startBitrate })?.catch?.(() => {});
     const compositorFps = n > 30 ? 20 : 30;
@@ -1283,6 +1370,7 @@ export class HostPublisher {
 
   dispose() {
     this._stopProducerResync();
+    this._stopAudioWatchdog();
     this.stop();
     this._unsubLeft?.();
     if (this._remoteAudioEls) {

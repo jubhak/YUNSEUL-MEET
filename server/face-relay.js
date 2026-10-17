@@ -23,7 +23,7 @@ const CLIENT_SLOW_BUF = 768 * 1024;   // 참가자 쪽 송신 버퍼가 이보�
 const FEED_MAX_BUF = 512 * 1024;      // 호스트 쪽 송신 버퍼 상한
 const OPEN = 1;
 
-function createFaceRelay({ rooms, requireHost, getRoom, log = console.log }) {
+function createFaceRelay({ rooms, requireHost, getRoom, log = console.log, onSwapDemand = null }) {
   const relayEnabled = process.env.FACE_RELAY !== '0';
   const feedEnabled = process.env.FACE_FEED !== '0';
   // 참가자에게 결과 JPEG 를 돌려주지 않는 모드(기본 auto).
@@ -56,6 +56,11 @@ function createFaceRelay({ rooms, requireHost, getRoom, log = console.log }) {
   const portLoad = new Map();
   /** clientId -> { code, ts } (방 조회 캐시) */
   const roomCache = new Map();
+  /** 참가자 스왑 연결 상태 (GPU 수요 판단용): { ws, idle, openedAt, lastFrameAt } */
+  const swapConnStates = new Set();
+  const SWAP_ACTIVE_MS = 15000;      // 이 시간 안에 프레임을 보냈거나 막 접속한 비-idle 연결 = GPU 수요
+  const UP_RETRY_MS = 1000;          // 워커 기동 중이면 참가자 연결은 유지한 채 이 간격으로 재시도
+  const UP_RETRY_MAX_MS = 60000;
 
   const stats = {
     swapConns: 0, framesIn: 0, framesFed: 0, feedDropped: 0, clientDropped: 0,
@@ -197,9 +202,11 @@ function createFaceRelay({ rooms, requireHost, getRoom, log = console.log }) {
       if (!isHost) prio = '';
     }
 
-    const port = pickPort();
     stats.swapConns += 1;
-    let released = false;
+    const conn = { ws, idle: false, openedAt: Date.now(), lastFrameAt: 0 };
+    swapConnStates.add(conn);
+    let port = 0;
+    let released = true;
     const release = () => {
       if (released) return;
       released = true;
@@ -208,19 +215,14 @@ function createFaceRelay({ rooms, requireHost, getRoom, log = console.log }) {
 
     try { ws._socket?.setNoDelay(true); } catch { /* ignore */ }
 
-    const headers = {};
-    if (cid) headers['X-Client-Id'] = cid;
-    if (prio) headers['X-Client-Prio'] = prio;
-    const up = new WebSocket(`ws://127.0.0.1:${port}/ws`, {
-      headers,
-      perMessageDeflate: false,
-      maxPayload: MAX_MSG,
-      handshakeTimeout: 8000,
-    });
-
     /** 워커 연결 전에 도착한 메시지 (프레임은 최신 몇 개만 유지) */
     let queue = [];
     let closed = false;
+    let up = null;
+    let upOpened = false;
+    let retryTimer = null;
+    let lastDemandAt = 0;
+    const firstTryAt = Date.now();
     // 프록시/터널의 유휴 타임아웃 방지 (브라우저는 pong 을 자동 응답)
     const pingTimer = setInterval(() => {
       try { if (ws.readyState === OPEN) ws.ping(); } catch { /* ignore */ }
@@ -229,27 +231,89 @@ function createFaceRelay({ rooms, requireHost, getRoom, log = console.log }) {
     const closeBoth = (code = 1000) => {
       if (closed) return;
       closed = true;
+      swapConnStates.delete(conn);
+      clearTimeout(retryTimer);
       release();
       clearInterval(pingTimer);
       try { if (ws.readyState <= 1) ws.close(code); } catch { /* ignore */ }
-      try { if (up.readyState <= 1) up.close(); else up.terminate(); } catch { /* ignore */ }
+      try { if (up) { if (up.readyState <= 1) up.close(); else up.terminate(); } } catch { /* ignore */ }
+    };
+    const signalDemand = () => {
+      if (!onSwapDemand) return;
+      const now = Date.now();
+      if (now - lastDemandAt < 1000) return;
+      lastDemandAt = now;
+      try { onSwapDemand(); } catch { /* ignore */ }
     };
 
-    let upOpened = false;
-    up.on('open', () => {
-      upOpened = true;
-      portDownUntil.delete(port);
-      try { up._socket?.setNoDelay(true); } catch { /* ignore */ }
-      for (const [d, bin] of queue) {
-        try { up.send(d, { binary: bin }); } catch { /* ignore */ }
-      }
-      queue = [];
-    });
+    // 워커가 기동 중(VRAM 반납 후 재기동 포함)이면 참가자 연결은 끊지 않고 워커 연결만 재시도한다.
+    const connectUp = () => {
+      if (closed) return;
+      release();
+      port = pickPort();
+      released = false;
+      const headers = {};
+      if (cid) headers['X-Client-Id'] = cid;
+      if (prio) headers['X-Client-Prio'] = prio;
+      const sock = new WebSocket(`ws://127.0.0.1:${port}/ws`, {
+        headers,
+        perMessageDeflate: false,
+        maxPayload: MAX_MSG,
+        handshakeTimeout: 8000,
+      });
+      up = sock;
+      let failed = false;
+      const onFail = () => {
+        if (failed || up !== sock) return;
+        failed = true;
+        if (upOpened) { closeBoth(1011); return; }
+        portDownUntil.set(port, Date.now() + 5000);
+        if (!closed && ws.readyState === OPEN && Date.now() - firstTryAt < UP_RETRY_MAX_MS) {
+          release();
+          clearTimeout(retryTimer);
+          retryTimer = setTimeout(connectUp, UP_RETRY_MS);
+          retryTimer.unref?.();
+          return;
+        }
+        closeBoth(1011);
+      };
+      sock.on('open', () => {
+        if (up !== sock || closed) { try { sock.close(); } catch { /* ignore */ } return; }
+        upOpened = true;
+        portDownUntil.delete(port);
+        try { sock._socket?.setNoDelay(true); } catch { /* ignore */ }
+        for (const [d, bin] of queue) {
+          try { sock.send(d, { binary: bin }); } catch { /* ignore */ }
+        }
+        queue = [];
+      });
+      sock.on('message', (data, isBinary) => { if (up === sock) onUpMessage(data, isBinary); });
+      sock.on('close', () => {
+        if (up !== sock) return;
+        if (upOpened) closeBoth(); else onFail();
+      });
+      sock.on('error', onFail);
+    };
 
     ws.on('message', (data, isBinary) => {
+      if (isBinary) {
+        conn.lastFrameAt = Date.now();
+        if (!upOpened) signalDemand();
+      }
       if (!isBinary) {
         // hello 메시지의 clientId 를 반영(방 조회용)
         const s = data.toString();
+        if (s.length < 512 && s.includes('"idle"')) {
+          try {
+            const m = JSON.parse(s);
+            if (m?.type === 'idle') {
+              conn.idle = !!m.on;
+              if (!conn.idle) conn.lastFrameAt = Date.now();
+            }
+          } catch { /* ignore */ }
+        } else if (!upOpened && s.length < 4096 && s.includes('"set_source"')) {
+          signalDemand();
+        }
         if (s.length < 512 && s.includes('"hello"')) {
           try {
             const m = JSON.parse(s);
@@ -265,14 +329,15 @@ function createFaceRelay({ rooms, requireHost, getRoom, log = console.log }) {
           } catch { /* ignore */ }
         }
       }
-      if (up.readyState === OPEN) {
+      if (upOpened && up && up.readyState === OPEN) {
         try { up.send(data, { binary: isBinary }); } catch { /* ignore */ }
-      } else if (up.readyState === WebSocket.CONNECTING) {
+      } else if (!closed && !upOpened) {
         queue.push([data, isBinary]);
         let frames = 0;
         for (let i = queue.length - 1; i >= 0; i--) {
           if (queue[i][1] && ++frames > 3) queue.splice(i, 1);
         }
+        if (queue.length > 64) queue.splice(0, queue.length - 64);
       }
     });
 
@@ -303,7 +368,7 @@ function createFaceRelay({ rooms, requireHost, getRoom, log = console.log }) {
     stateTimer.unref?.();
     ws.on('close', () => clearInterval(stateTimer));
 
-    up.on('message', (data, isBinary) => {
+    function onUpMessage(data, isBinary) {
       if (ws.readyState !== OPEN) return;
       if (isBinary) {
         stats.framesIn += 1;
@@ -339,15 +404,22 @@ function createFaceRelay({ rooms, requireHost, getRoom, log = console.log }) {
         stats.clientReturned += 1;
       }
       try { ws.send(data, { binary: isBinary }); } catch { /* ignore */ }
-    });
+    }
 
     ws.on('close', () => closeBoth());
     ws.on('error', () => closeBoth());
-    up.on('close', () => closeBoth());
-    up.on('error', () => {
-      if (!upOpened) portDownUntil.set(port, Date.now() + 5000);
-      closeBoth(1011);
-    });
+    connectUp();
+  }
+
+  /** 지금 GPU 를 실제로 쓰는(쓰려는) 스왑 연결 수 — idle(PC 화면 대기) 연결은 제외 */
+  function activeSwapCount() {
+    const now = Date.now();
+    let n = 0;
+    for (const c of swapConnStates) {
+      if (c.idle || c.ws.readyState !== OPEN) continue;
+      if (now - Math.max(c.lastFrameAt, c.openedAt) < SWAP_ACTIVE_MS) n += 1;
+    }
+    return n;
   }
 
   function onFeedConnection(ws, code) {
@@ -428,11 +500,12 @@ function createFaceRelay({ rooms, requireHost, getRoom, log = console.log }) {
       sfuSave: sfuSaveEnabled,
       ports: getPorts().map((p) => ({ port: p, connections: portLoad.get(p) || 0 })),
       hostFeeds: feeds,
+      swapActive: activeSwapCount(),
       ...stats,
     };
   }
 
-  return { handleUpgrade, getStats };
+  return { handleUpgrade, getStats, activeSwapCount, relayEnabled };
 }
 
 module.exports = { createFaceRelay };

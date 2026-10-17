@@ -12,7 +12,7 @@ import {
 } from './viewers-panel.js?v=20261014b';
 import { FloatingSpeakerManager } from './floating-speaker-manager.js?v=20261013d';
 import { WebrtcSignaling } from './webrtc/signaling.js?v=20260715j';
-import { HostPublisher } from './webrtc/host-publisher.js?v=20261016a';
+import { HostPublisher } from './webrtc/host-publisher.js?v=20261017a';
 import { setupChatPanel } from './chat-panel.js?v=20261014a';
 import { CamFocusManager } from './cam-focus-manager.js?v=20260930a';
 import { MicController } from './mic-controller.js?v=20261013f';
