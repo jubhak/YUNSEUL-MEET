@@ -246,7 +246,9 @@ function updateFloatingSpeakerUi() {
   if (!floatingSpeakerManager) return;
   const isHost = (!currentSpotlightSpeaker.id || currentSpotlightSpeaker.id === sync?.clientId || currentSpotlightSpeaker.role === 'host');
   let stream = null;
-  if (isHost) {
+  if (interactionMode === 'unidirectional') {
+    stream = null;
+  } else if (isHost) {
     stream = webrtcPublisher?.cameraStream || null;
   } else {
     stream = sfuCameraStreams.get(currentSpotlightSpeaker.id) || null;
@@ -1377,7 +1379,8 @@ function applyShareMode(mode) {
   updateShareModeUi(mode);
   emitDisplayMode(mode === 'screen' ? 'screen' : 'face');
 
-  floatingSpeakerManager?.setSharingActive(screen);
+  // 단방향: 호스트 화면엔 참가자 카드만 — 호스트 얼굴 미니창은 클라이언트에만 띄운다
+  floatingSpeakerManager?.setSharingActive(screen && interactionMode !== 'unidirectional');
   if (screen) {
     updateFloatingSpeakerUi();
   }
