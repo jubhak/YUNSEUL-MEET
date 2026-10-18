@@ -11,7 +11,7 @@ import {
 } from './viewers-panel.js?v=20261014b';
 import { FloatingSpeakerManager } from './floating-speaker-manager.js?v=20261013d';
 import { WebrtcSignaling } from './webrtc/signaling.js?v=20260715j';
-import { ViewerSubscriber } from './webrtc/viewer-subscriber.js?v=20261018a';
+import { ViewerSubscriber } from './webrtc/viewer-subscriber.js?v=20261018b';
 import { setupViewerZoom } from './viewer-zoom.js?v=20261002b';
 import { setupChatPanel } from './chat-panel.js?v=20261014a';
 import { CamFocusManager } from './cam-focus-manager.js?v=20260930a';
@@ -161,7 +161,7 @@ function applyDisplayMode(mode) {
   document.body.classList.toggle('display-mode-face', next === 'face');
   viewerZoom?.setEnabled?.(next === 'screen');
   subscriber?.setCameraIdle?.(next === 'screen');
-  floatingSpeakerManager?.setSharingActive(next === 'screen' && interactionMode !== 'unidirectional');
+  floatingSpeakerManager?.setSharingActive(next === 'screen');
 }
 
 applyDisplayMode(currentDisplayMode);
@@ -242,7 +242,6 @@ function applyInteractionMode(mode, isRequireMic = requireMic) {
       micCtl.setRequireMic(requireMic);
     }
   }
-  floatingSpeakerManager?.setSharingActive(currentDisplayMode === 'screen' && interactionMode !== 'unidirectional');
   if (typeof syncAvButtons === 'function') syncAvButtons();
 }
 

@@ -144,8 +144,8 @@ export class ViewerSubscriber {
         if (kind === 'video') {
           // 화면 공유 모드 시 호스트 display는 기본 수신
           if (info?.role === 'host' && (source === 'display' || !source)) return true;
-          // 단방향: 호스트 화면 송출만 (얼굴은 화면 안에 있음 — 별도 카메라 PIP는 대역폭만 씀)
-          if (this.interactionMode === 'unidirectional') return false;
+          // 단방향: 호스트 화면 + 호스트 얼굴(떠 있는 얼굴 창)만 — 참가자 영상은 없다
+          if (this.interactionMode === 'unidirectional') return info?.role === 'host' && source === 'camera';
           // 스포트라이트 화자 비디오: 현재 스포트라이트 지정된 화자의 카메라 track만 선택적 수신!
           const isSpotlightHost = (!this._spotlightSpeakerId || this._spotlightSpeakerRole === 'host' || (this.hostPeerId && this._spotlightSpeakerId === this.hostPeerId));
           if (isSpotlightHost) {
