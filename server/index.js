@@ -1510,7 +1510,7 @@ app.get('/api/myface-config', (_req, res) => {
 app.post('/api/myface-config', (req, res) => {
   const { password, config } = req.body || {};
   if (password !== '13240305') {
-    return res.status(403).json({ ok: false, error: '수치를 조정할 수 없습니다' });
+    return res.status(403).json({ ok: false, error: '접근할 수 없습니다.' });
   }
   if (!config || typeof config !== 'object') {
     return res.status(400).json({ ok: false, error: '유효한 설정이 아닙니다.' });
@@ -1565,14 +1565,14 @@ io.on('connection', (socket) => {
     try {
       const { password, config } = data || {};
       if (password !== '13240305') {
-        if (typeof callback === 'function') callback({ ok: false, error: '수치를 조정할 수 없습니다' });
+        if (typeof callback === 'function') callback({ ok: false, error: '접근할 수 없습니다.' });
         return;
       }
       const updated = writeMyFaceIni(config || {});
       io.emit('myface-config-updated', { config: updated });
       if (typeof callback === 'function') callback({ ok: true, config: updated });
     } catch (err) {
-      if (typeof callback === 'function') callback({ ok: false, error: '수치를 조정할 수 없습니다' });
+      if (typeof callback === 'function') callback({ ok: false, error: '접근할 수 없습니다.' });
     }
   });
 

@@ -123,7 +123,7 @@ export class HostBeautyBarManager {
         this.openBox();
         showToast('관리자 인증이 완료되었습니다.', 'info', 3000);
       } else {
-        alert('수치를 조정할 수 없습니다');
+        alert('접근할 수 없습니다.');
       }
       return;
     }
@@ -151,10 +151,10 @@ export class HostBeautyBarManager {
       showToast('관리자 인증이 완료되었습니다.', 'info', 3000);
     } else {
       if (this.errorMsgEl) {
-        this.errorMsgEl.textContent = '수치를 조정할 수 없습니다';
+        this.errorMsgEl.textContent = '접근할 수 없습니다.';
         this.errorMsgEl.classList.remove('hidden');
       }
-      alert('수치를 조정할 수 없습니다');
+      alert('접근할 수 없습니다.');
       if (this.passwordInput) {
         this.passwordInput.value = '';
         this.passwordInput.focus();
@@ -164,7 +164,7 @@ export class HostBeautyBarManager {
 
   _handleAuthCancel() {
     this.closeAuthModal();
-    alert('수치를 조정할 수 없습니다');
+    alert('접근할 수 없습니다.');
   }
 
   updateLockIcon() {
@@ -366,7 +366,7 @@ export class HostBeautyBarManager {
           e.stopPropagation();
           const key = range.dataset.key;
           range.value = this.config[key] !== undefined ? this.config[key] : range.defaultValue;
-          alert('수치를 조정할 수 없습니다');
+          alert('접근할 수 없습니다.');
           this.openAuthModal();
           return;
         }
@@ -432,7 +432,7 @@ export class HostBeautyBarManager {
       const ind = this.boxEl?.querySelector('.solo-beauty-save-indicator');
       if (!res.ok) {
         if (res.status === 403) {
-          alert('수치를 조정할 수 없습니다');
+          alert('접근할 수 없습니다.');
         }
         if (ind) {
           ind.textContent = '저장 실패';

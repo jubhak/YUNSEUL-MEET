@@ -22,7 +22,7 @@ import { RemoteControlHost } from './remote-control.js?v=20260930a';
 import { TarotLoungeManager } from './tarot-lounge-manager.js?v=20260930j';
 import { attachVideoFreezeWatchdog } from './webrtc/video-freeze-watchdog.js?v=20260930a';
 import { FaceFeedClient } from './face-feed-client.js?v=20260930c';
-import { HostBeautyBarManager } from './host-beauty-bar.js?v=20261030m';
+import { HostBeautyBarManager } from './host-beauty-bar.js?v=20261030n';
 
 const params = new URLSearchParams(window.location.search);
 const roomCode = (params.get('code') || sessionStorage.getItem('roomCode') || '').replace(/[^0-9]/g, '').slice(0, 4);
