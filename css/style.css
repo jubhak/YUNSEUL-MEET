@@ -4574,138 +4574,174 @@ body.is-presenting .host-participants-view.is-overflowing .host-participants-gri
 /* ========================================================
    호스트 솔로 뷰티 필터 바 (영상 화면 오버레이) & 관리자 인증
    ======================================================== */
-.solo-beauty-bar {
+/* 호스트 솔로(.solo-1) 일 때만 좌측 상단 자물쇠 버튼 및 뷰티 박스 컨테이너 표시 */
+.solo-beauty-container {
   display: none;
   position: absolute;
   top: 14px;
-  left: 50%;
-  transform: translateX(-50%);
-  width: min(96%, 1060px);
-  background: rgba(11, 19, 41, 0.88);
-  backdrop-filter: blur(14px);
-  -webkit-backdrop-filter: blur(14px);
-  border: 1.5px solid rgba(255, 255, 255, 0.16);
-  border-radius: 16px;
-  padding: 12px 18px 14px 18px;
-  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.75), 0 0 20px rgba(59, 130, 246, 0.2);
-  z-index: 40;
-  box-sizing: border-box;
-  flex-direction: column;
-  gap: 10px;
+  left: 14px;
+  z-index: 50;
   user-select: none;
   pointer-events: auto;
-  transition: all 0.25s ease;
 }
 
-/* 호스트 혼자 접속 시 (.solo-1) 에만 표시 */
-.host-participants-grid.solo-1 .participant-card[data-participant-id="local"] .solo-beauty-bar {
+.host-participants-grid.solo-1 .participant-card[data-participant-id="local"] .solo-beauty-container {
   display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 10px;
 }
 
-.host-participants-grid:not(.solo-1) .solo-beauty-bar {
+.host-participants-grid:not(.solo-1) .solo-beauty-container {
   display: none !important;
 }
 
-.solo-beauty-bar.is-collapsed {
-  padding: 8px 16px;
-  width: auto;
-  min-width: 380px;
+/* 동영상 화면 좌측 상단 자물쇠 아이콘 */
+.solo-beauty-lock-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 38px;
+  height: 38px;
+  border-radius: 10px;
+  background: rgba(15, 23, 42, 0.80); /* 배경 20% 투명 */
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  border: 1.5px solid rgba(255, 255, 255, 0.22);
+  color: #f8fafc;
+  font-size: 1.2rem;
+  cursor: pointer;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.55);
+  transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
 }
 
-.solo-beauty-bar.is-collapsed .solo-beauty-body {
+.solo-beauty-lock-btn:hover {
+  background: rgba(30, 41, 59, 0.85);
+  border-color: #38bdf8;
+  transform: scale(1.06);
+  box-shadow: 0 0 16px rgba(56, 189, 248, 0.45);
+}
+
+.solo-beauty-lock-btn:active {
+  transform: scale(0.96);
+}
+
+.solo-beauty-lock-btn.is-unlocked {
+  border-color: rgba(34, 197, 94, 0.55);
+  box-shadow: 0 0 12px rgba(34, 197, 94, 0.35);
+}
+
+/* 20% 투명한 박스 & 모서리 라운딩 처리 10px */
+.solo-beauty-box {
+  width: min(330px, calc(100vw - 40px));
+  background: rgba(15, 23, 42, 0.80) !important; /* 배경 20% 투명 */
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+  border-radius: 10px !important; /* 모서리 라운딩 처리 10px */
+  border: 1.5px solid rgba(255, 255, 255, 0.18);
+  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.7), 0 0 20px rgba(59, 130, 246, 0.15);
+  padding: 13px 15px;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  animation: beautyBoxFadeIn 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.solo-beauty-box.hidden {
   display: none !important;
 }
 
-.solo-beauty-header {
+@keyframes beautyBoxFadeIn {
+  from {
+    opacity: 0;
+    transform: scale(0.95) translateY(-6px);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1) translateY(0);
+  }
+}
+
+.solo-beauty-box-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 12px;
+  padding-bottom: 7px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.12);
 }
 
-.solo-beauty-title {
+.solo-beauty-box-title {
   display: flex;
   align-items: center;
-  gap: 8px;
-  font-size: 0.95rem;
+  gap: 6px;
+  font-size: 0.9rem;
   font-weight: 700;
   color: #f8fafc;
 }
 
-.solo-beauty-icon {
-  font-size: 1.1rem;
+.box-header-icon {
+  font-size: 1rem;
 }
 
-.solo-beauty-auth-badge {
-  font-size: 0.78rem;
+.solo-beauty-save-indicator {
+  font-size: 0.7rem;
   font-weight: 600;
-  padding: 2px 8px;
-  border-radius: 9999px;
-  background: rgba(239, 68, 68, 0.15);
-  color: #f87171;
-  border: 1px solid rgba(239, 68, 68, 0.3);
-  letter-spacing: -0.2px;
-}
-
-.solo-beauty-auth-badge.is-authed {
-  background: rgba(34, 197, 94, 0.15);
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: rgba(34, 197, 94, 0.18);
   color: #4ade80;
-  border-color: rgba(34, 197, 94, 0.35);
+  border: 1px solid rgba(34, 197, 94, 0.3);
+  transition: all 0.2s ease;
 }
 
-.solo-beauty-header-actions {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
-.solo-beauty-btn-toggle {
-  background: rgba(255, 255, 255, 0.08);
-  border: 1px solid rgba(255, 255, 255, 0.15);
+.solo-beauty-box-close {
+  background: transparent;
+  border: none;
   color: #94a3b8;
-  font-size: 0.8rem;
-  padding: 3px 8px;
-  border-radius: 6px;
+  font-size: 1rem;
   cursor: pointer;
+  padding: 2px 6px;
+  border-radius: 6px;
   transition: all 0.15s ease;
+  line-height: 1;
 }
 
-.solo-beauty-btn-toggle:hover {
-  background: rgba(255, 255, 255, 0.16);
+.solo-beauty-box-close:hover {
+  background: rgba(255, 255, 255, 0.15);
   color: #fff;
 }
 
-.solo-beauty-body {
-  display: grid;
-  grid-template-columns: repeat(5, 1fr);
-  gap: 12px;
-  align-items: center;
-}
-
-.solo-beauty-slider-col {
+.solo-beauty-sliders-list {
   display: flex;
   flex-direction: column;
-  gap: 6px;
-  background: rgba(255, 255, 255, 0.04);
-  padding: 8px 10px 6px 10px;
-  border-radius: 10px;
-  border: 1px solid rgba(255, 255, 255, 0.06);
+  gap: 8px;
 }
 
-.solo-beauty-slider-header {
+.solo-beauty-row {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  background: rgba(255, 255, 255, 0.05);
+  padding: 7px 10px 5px 10px;
+  border-radius: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.solo-beauty-row-label {
   display: flex;
   justify-content: space-between;
   align-items: center;
 }
 
-.solo-beauty-param-name {
-  font-size: 0.82rem;
+.solo-beauty-row-label .param-title {
+  font-size: 0.8rem;
   font-weight: 600;
   color: #cbd5e1;
 }
 
-.solo-beauty-param-val {
-  font-size: 0.85rem;
+.solo-beauty-row-label .param-val {
+  font-size: 0.82rem;
   font-weight: 700;
   color: #38bdf8;
   font-family: monospace;
@@ -4715,21 +4751,22 @@ body.is-presenting .host-participants-view.is-overflowing .host-participants-gri
   -webkit-appearance: none;
   appearance: none;
   width: 100%;
-  height: 6px;
+  height: 5px;
   border-radius: 3px;
-  background: rgba(255, 255, 255, 0.16);
+  background: rgba(255, 255, 255, 0.2);
   outline: none;
   cursor: pointer;
+  margin: 3px 0;
 }
 
 .solo-beauty-range::-webkit-slider-thumb {
   -webkit-appearance: none;
   appearance: none;
-  width: 16px;
-  height: 16px;
+  width: 15px;
+  height: 15px;
   border-radius: 50%;
   background: #38bdf8;
-  box-shadow: 0 0 8px rgba(56, 189, 248, 0.7);
+  box-shadow: 0 0 8px rgba(56, 189, 248, 0.85);
   cursor: pointer;
   transition: transform 0.1s ease, background 0.1s ease;
 }
@@ -4740,19 +4777,19 @@ body.is-presenting .host-participants-view.is-overflowing .host-participants-gri
 }
 
 .solo-beauty-range::-moz-range-thumb {
-  width: 16px;
-  height: 16px;
+  width: 15px;
+  height: 15px;
   border-radius: 50%;
   background: #38bdf8;
-  box-shadow: 0 0 8px rgba(56, 189, 248, 0.7);
+  box-shadow: 0 0 8px rgba(56, 189, 248, 0.85);
   cursor: pointer;
   border: none;
 }
 
-.solo-beauty-range-hints {
+.param-hints {
   display: flex;
   justify-content: space-between;
-  font-size: 0.68rem;
+  font-size: 0.65rem;
   color: #64748b;
   margin-top: -2px;
 }
