@@ -1600,6 +1600,11 @@ sync.start()
     if (subscriber.avatarManager) {
       subscriber.avatarManager.onAvatarChange = () => updateAvatarUi();
       subscriber.avatarManager.onModeChange = () => updateAvatarUi();
+      sync.socket?.on?.('myface-config-updated', ({ config }) => {
+        try {
+          subscriber.avatarManager?.updateMyFaceConfig?.(config);
+        } catch { /* ignore */ }
+      });
       // 서버 하드웨어 용량이 한계라 딥페이크를 더 적용할 수 없을 때: 실물 얼굴이 나가지 않도록 카메라를 끄고 안내한다.
       subscriber.avatarManager.onSwapRejected = (info) => {
         Promise.resolve(subscriber.setCameraEnabled(false)).catch(() => {}).finally(() => {

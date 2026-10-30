@@ -1419,6 +1419,114 @@ function attachRemoteControlSocket(socket) {
   remoteControl.attachSocket(socket);
 }
 
+// ========================================================
+// myface.ini 뷰티 필터 설정 관리 API (호스트 슬라이더 바 연동)
+// ========================================================
+const MYFACE_INI_PATH = path.join(ROOT, 'myface.ini');
+const DEFAULT_MYFACE_CONFIG = {
+  smooth_intensity: 0.63,
+  edge_threshold: 17.0,
+  blur_radius: 20,
+  brightness_lift: 1.70,
+  contrast_balance: 1.30,
+};
+
+function readMyFaceIni() {
+  try {
+    if (!fs.existsSync(MYFACE_INI_PATH)) return { ...DEFAULT_MYFACE_CONFIG };
+    const content = fs.readFileSync(MYFACE_INI_PATH, 'utf8');
+    const cfg = { ...DEFAULT_MYFACE_CONFIG };
+    for (const line of content.split(/\r?\n/)) {
+      const trimmed = line.trim();
+      if (!trimmed || trimmed.startsWith(';') || trimmed.startsWith('#') || trimmed.startsWith('[')) continue;
+      const eqIdx = trimmed.indexOf('=');
+      if (eqIdx === -1) continue;
+      const key = trimmed.slice(0, eqIdx).trim().toLowerCase();
+      const val = parseFloat(trimmed.slice(eqIdx + 1).trim());
+      if (isNaN(val)) continue;
+      if (key in cfg) {
+        cfg[key] = val;
+      }
+    }
+    return cfg;
+  } catch (err) {
+    console.warn('[myface.ini] read failed:', err);
+    return { ...DEFAULT_MYFACE_CONFIG };
+  }
+}
+
+function writeMyFaceIni(newCfg) {
+  const current = readMyFaceIni();
+  const merged = {
+    smooth_intensity: typeof newCfg.smooth_intensity === 'number' && !isNaN(newCfg.smooth_intensity)
+      ? Math.max(0, Math.min(1.0, newCfg.smooth_intensity))
+      : current.smooth_intensity,
+    edge_threshold: typeof newCfg.edge_threshold === 'number' && !isNaN(newCfg.edge_threshold)
+      ? Math.max(1.0, Math.min(100.0, newCfg.edge_threshold))
+      : current.edge_threshold,
+    blur_radius: typeof newCfg.blur_radius === 'number' && !isNaN(newCfg.blur_radius)
+      ? Math.max(1, Math.min(30, Math.round(newCfg.blur_radius)))
+      : current.blur_radius,
+    brightness_lift: typeof newCfg.brightness_lift === 'number' && !isNaN(newCfg.brightness_lift)
+      ? Math.max(0.5, Math.min(2.5, newCfg.brightness_lift))
+      : current.brightness_lift,
+    contrast_balance: typeof newCfg.contrast_balance === 'number' && !isNaN(newCfg.contrast_balance)
+      ? Math.max(0.5, Math.min(2.5, newCfg.contrast_balance))
+      : current.contrast_balance,
+  };
+
+  const content = `; ========================================================
+; YUNSEUL-MEET 실물 웹캠 뷰티 필터 설정 (myface.ini)
+; 호스트 컨트롤 바 또는 메모장으로 수정한 후 저장 시 실시간 반영됩니다.
+; ========================================================
+
+[beauty]
+; 1. 스킨 스무딩 강도 (0.00 ~ 1.00)
+smooth_intensity = ${merged.smooth_intensity.toFixed(2)}
+
+; 2. 엣지(윤곽선) 보존 민감도 (1.0 ~ 100.0)
+edge_threshold = ${merged.edge_threshold.toFixed(1)}
+
+; 3. 블러 퍼짐 반경 (1 ~ 30)
+blur_radius = ${Math.round(merged.blur_radius)}
+
+; 4. 피부 톤업 밝기 (0.50 ~ 2.50)
+brightness_lift = ${merged.brightness_lift.toFixed(2)}
+
+; 5. 입체감 대비 균형 (0.50 ~ 2.50)
+contrast_balance = ${merged.contrast_balance.toFixed(2)}
+`;
+
+  fs.writeFileSync(MYFACE_INI_PATH, content, 'utf8');
+  return merged;
+}
+
+app.get('/api/myface-config', (_req, res) => {
+  res.setHeader('Cache-Control', 'no-store');
+  const config = readMyFaceIni();
+  res.json({ ok: true, config });
+});
+
+app.post('/api/myface-config', (req, res) => {
+  const { password, config } = req.body || {};
+  if (password !== '13240305') {
+    return res.status(403).json({ ok: false, error: '수치를 조정할 수 없습니다' });
+  }
+  if (!config || typeof config !== 'object') {
+    return res.status(400).json({ ok: false, error: '유효한 설정이 아닙니다.' });
+  }
+  try {
+    const updated = writeMyFaceIni(config);
+    if (io) {
+      io.emit('myface-config-updated', { config: updated });
+    }
+    return res.json({ ok: true, config: updated });
+  } catch (err) {
+    console.error('[myface.ini] 저장 실패:', err);
+    return res.status(500).json({ ok: false, error: 'myface.ini 파일 저장 실패' });
+  }
+});
+
 io.on('connection', (socket) => {
   socket.data.roomCode = null;
   socket.data.role = null;
@@ -1452,6 +1560,21 @@ io.on('connection', (socket) => {
     getAllowAllVoice: () => !!getRoom(socket.data.roomCode)?.allowAllVoice,
   });
   attachRemoteControlSocket(socket);
+
+  socket.on('update-myface-config', (data, callback) => {
+    try {
+      const { password, config } = data || {};
+      if (password !== '13240305') {
+        if (typeof callback === 'function') callback({ ok: false, error: '수치를 조정할 수 없습니다' });
+        return;
+      }
+      const updated = writeMyFaceIni(config || {});
+      io.emit('myface-config-updated', { config: updated });
+      if (typeof callback === 'function') callback({ ok: true, config: updated });
+    } catch (err) {
+      if (typeof callback === 'function') callback({ ok: false, error: '수치를 조정할 수 없습니다' });
+    }
+  });
 
   socket.on('join', (msg, ack) => {
     try {

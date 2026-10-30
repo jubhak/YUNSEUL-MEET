@@ -1224,21 +1224,15 @@ export class VirtualAvatarManager {
   }
 
   /**
-   * myface.ini 파일 비동기 로드
-   * 페이지 새로고침 시 캐시 방지(?t=timestamp) 쿼리로 최신 INI 수치를 읽어옵니다.
+   * 외부(소켓 브로드캐스트/호스트 슬라이더)에서 변경된 뷰티 설정을 즉시 갱신
    */
-  async _loadMyFaceIni() {
-    try {
-      if (typeof window === 'undefined' || typeof fetch === 'undefined') return;
-      const res = await fetch('/myface.ini?t=' + Date.now());
-      if (res.ok) {
-        const text = await res.text();
-        this.myFaceConfig = parseMyFaceIni(text);
-        console.log('[myface.ini] 뷰티 필터 설정 로드 완료:', this.myFaceConfig);
-      }
-    } catch (err) {
-      console.warn('[myface.ini] 설정 로드 실패 (기본값 사용):', err);
-    }
+  updateMyFaceConfig(newCfg) {
+    if (!newCfg || typeof newCfg !== 'object') return;
+    this.myFaceConfig = {
+      ...(this.myFaceConfig || DEFAULT_MYFACE_CONFIG),
+      ...newCfg,
+    };
+    console.log('[myface.ini] 뷰티 필터 실시간 갱신:', this.myFaceConfig);
   }
 
   /**

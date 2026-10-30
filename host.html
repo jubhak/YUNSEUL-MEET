@@ -523,6 +523,25 @@
     </div>
   </div>
 
+  <!-- 관리자 인증 모달 (myface.ini 뷰티 필터 조정용) -->
+  <div id="myface-auth-modal" class="meeting-start-modal hidden" role="dialog" aria-modal="true" aria-labelledby="myface-auth-title">
+    <div class="meeting-start-card myface-auth-card">
+      <div class="myface-auth-icon">🔒</div>
+      <h2 id="myface-auth-title" style="margin-top:0;font-size:1.3rem;color:#f8fafc;">관리자 인증</h2>
+      <p class="myface-auth-desc">
+        뷰티 필터 수치를 조정하려면 관리자 비밀번호를 입력해 주세요.
+      </p>
+      <div style="margin-bottom: 1.2rem;">
+        <input type="password" id="myface-auth-password" class="myface-auth-input" placeholder="비밀번호 입력" autocomplete="off" />
+        <div id="myface-auth-error-msg" class="myface-auth-error hidden">수치를 조정할 수 없습니다</div>
+      </div>
+      <div class="meeting-start-actions">
+        <button type="button" id="btn-myface-auth-cancel" class="btn btn-secondary">취소</button>
+        <button type="button" id="btn-myface-auth-confirm" class="btn btn-primary btn-myface-confirm">확인</button>
+      </div>
+    </div>
+  </div>
+
   <div id="load-progress" aria-hidden="true"></div>
 
   <script src="/socket.io/socket.io.js"></script>
@@ -531,7 +550,7 @@
   <script type="module" src="js/load-progress.js?v=20260715w"></script>
   <script type="module" src="js/deps.js?v=20260826a"></script>
   <script type="module" src="js/host-ppt-loader.js?v=20260826local1"></script>
-  <script type="module" src="js/host.js?v=20261030k"></script>
+  <script type="module" src="js/host.js?v=20261030l"></script>
   <script type="module">
     import { setupDisplayMode } from './js/display-mode.js?v=20261013e';
     setupDisplayMode({ autoPromptMobile: true });

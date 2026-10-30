@@ -22,6 +22,7 @@ import { RemoteControlHost } from './remote-control.js?v=20260930a';
 import { TarotLoungeManager } from './tarot-lounge-manager.js?v=20260930j';
 import { attachVideoFreezeWatchdog } from './webrtc/video-freeze-watchdog.js?v=20260930a';
 import { FaceFeedClient } from './face-feed-client.js?v=20260930c';
+import { HostBeautyBarManager } from './host-beauty-bar.js?v=20261030l';
 
 const params = new URLSearchParams(window.location.search);
 const roomCode = (params.get('code') || sessionStorage.getItem('roomCode') || '').replace(/[^0-9]/g, '').slice(0, 4);
@@ -695,6 +696,10 @@ class HostParticipantsGridManager {
     });
 
     this.gridEl.querySelectorAll('.participant-card-empty').forEach((el) => el.remove());
+    const localCard = this.gridEl.querySelector('.participant-card[data-participant-id="local"]');
+    if (localCard) {
+      try { hostBeautyBar?.attachToCard(localCard); } catch { /* ignore */ }
+    }
     const n = list.length;
     this.gridEl.classList.toggle('solo-1', n === 1);
     this.gridEl.classList.toggle('pair-2', n === 2);
@@ -717,6 +722,9 @@ class HostParticipantsGridManager {
         </div>
       </div>
     `;
+    if (pid === 'local') {
+      try { hostBeautyBar?.attachToCard(card); } catch { /* ignore */ }
+    }
     this.observer?.observe(card);
     return card;
   }
@@ -863,6 +871,10 @@ const hostParticipantsGridEl = document.getElementById('host-participants-grid')
 hostParticipantsGrid = new HostParticipantsGridManager({
   viewEl: hostParticipantsView,
   gridEl: hostParticipantsGridEl,
+});
+const hostBeautyBar = new HostBeautyBarManager({
+  getAvatarManager: () => webrtcPublisher?.avatarManager || null,
+  getSocket: () => sync?.socket || null,
 });
 hostParticipantsGrid.updateVisibility();
 
