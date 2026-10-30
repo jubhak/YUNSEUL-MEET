@@ -1,6 +1,6 @@
 import { TRACK_KIND } from './config.js';
 import { SfuClient } from './sfu-client.js?v=20261006a';
-import { VirtualAvatarManager, openWebcamFlexible, faceModeForRoomCount } from '../virtual-avatar-manager.js?v=20261017b';
+import { VirtualAvatarManager, openWebcamFlexible, faceModeForRoomCount } from '../virtual-avatar-manager.js?v=20261030k';
 import { FaceCompositor } from './face-compositor.js?v=20261016a';
 
 /**

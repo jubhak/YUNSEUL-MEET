@@ -11,7 +11,7 @@ import {
 } from './viewers-panel.js?v=20261014b';
 import { FloatingSpeakerManager } from './floating-speaker-manager.js?v=20261013d';
 import { WebrtcSignaling } from './webrtc/signaling.js?v=20260715j';
-import { ViewerSubscriber } from './webrtc/viewer-subscriber.js?v=20261018b';
+import { ViewerSubscriber } from './webrtc/viewer-subscriber.js?v=20261030k';
 import { setupViewerZoom } from './viewer-zoom.js?v=20261002b';
 import { setupChatPanel } from './chat-panel.js?v=20261014a';
 import { CamFocusManager } from './cam-focus-manager.js?v=20260930a';
