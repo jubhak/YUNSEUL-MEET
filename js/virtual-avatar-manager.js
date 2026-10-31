@@ -289,34 +289,68 @@ export async function openWebcamFlexible() {
   throw lastError || new Error('카메라 스트림을 시작할 수 없습니다.');
 }
 
-// myface.ini 뷰티 필터 기본 설정 및 INI 파서
+// myface.ini 뷰티 필터 및 딥페이크 기본 설정 & 파서
 export const DEFAULT_MYFACE_CONFIG = {
-  smooth_intensity: 0.68,
-  edge_threshold: 16.0,
-  blur_radius: 3,
-  brightness_lift: 1.04,
-  contrast_balance: 1.02,
+  smooth_intensity: 0.22,
+  edge_threshold: 100.0,
+  blur_radius: 1,
+  brightness_lift: 2.50,
+  contrast_balance: 1.46,
+};
+
+export const DEFAULT_DEEPFACE_CONFIG = {
+  swap_blend_ratio: 1.00,
+  detail_sharpen: 0.50,
+  border_feather: 15,
+  tone_matching: 0.80,
+  detection_threshold: 0.60,
 };
 
 export function parseMyFaceIni(text) {
-  const cfg = { ...DEFAULT_MYFACE_CONFIG };
-  if (!text) return cfg;
+  const beauty = { ...DEFAULT_MYFACE_CONFIG };
+  const deepface = { ...DEFAULT_DEEPFACE_CONFIG };
+  if (!text) return { ...beauty, beauty, deepface };
+
+  let currentSection = 'beauty';
   const lines = text.split(/\r?\n/);
   for (const line of lines) {
     const trimmed = line.trim();
-    if (!trimmed || trimmed.startsWith(';') || trimmed.startsWith('#') || trimmed.startsWith('[')) continue;
+    if (!trimmed || trimmed.startsWith(';') || trimmed.startsWith('#')) continue;
+    if (trimmed.startsWith('[') && trimmed.endsWith(']')) {
+      const sec = trimmed.slice(1, -1).trim().toLowerCase();
+      if (sec === 'deepface' || sec === 'deep_face') {
+        currentSection = 'deepface';
+      } else if (sec === 'beauty') {
+        currentSection = 'beauty';
+      }
+      continue;
+    }
     const eqIdx = trimmed.indexOf('=');
     if (eqIdx === -1) continue;
     const key = trimmed.slice(0, eqIdx).trim().toLowerCase();
     const val = parseFloat(trimmed.slice(eqIdx + 1).trim());
     if (isNaN(val)) continue;
-    if (key === 'smooth_intensity') cfg.smooth_intensity = Math.max(0.0, Math.min(1.0, val));
-    else if (key === 'edge_threshold') cfg.edge_threshold = Math.max(1.0, Math.min(100.0, val));
-    else if (key === 'blur_radius') cfg.blur_radius = Math.max(1, Math.min(30, Math.round(val)));
-    else if (key === 'brightness_lift') cfg.brightness_lift = Math.max(0.5, Math.min(2.5, val));
-    else if (key === 'contrast_balance') cfg.contrast_balance = Math.max(0.5, Math.min(2.5, val));
+
+    if (currentSection === 'deepface') {
+      if (key === 'swap_blend_ratio') deepface.swap_blend_ratio = Math.max(0.0, Math.min(1.0, val));
+      else if (key === 'detail_sharpen') deepface.detail_sharpen = Math.max(0.0, Math.min(2.0, val));
+      else if (key === 'border_feather') deepface.border_feather = Math.max(1, Math.min(30, Math.round(val)));
+      else if (key === 'tone_matching') deepface.tone_matching = Math.max(0.0, Math.min(1.0, val));
+      else if (key === 'detection_threshold') deepface.detection_threshold = Math.max(0.3, Math.min(0.85, val));
+    } else {
+      if (key === 'smooth_intensity') beauty.smooth_intensity = Math.max(0.0, Math.min(1.0, val));
+      else if (key === 'edge_threshold') beauty.edge_threshold = Math.max(1.0, Math.min(100.0, val));
+      else if (key === 'blur_radius') beauty.blur_radius = Math.max(1, Math.min(30, Math.round(val)));
+      else if (key === 'brightness_lift') beauty.brightness_lift = Math.max(0.5, Math.min(2.5, val));
+      else if (key === 'contrast_balance') beauty.contrast_balance = Math.max(0.5, Math.min(2.5, val));
+    }
   }
-  return cfg;
+
+  return {
+    ...beauty,
+    beauty,
+    deepface,
+  };
 }
 
 export class VirtualAvatarManager {
@@ -382,6 +416,7 @@ export class VirtualAvatarManager {
     // 실시간 Deep-Live-Cam 페이스 스왑 상태 (얼굴 선택 모달에서 선택 시 활성화)
     // myface.ini 설정
     this.myFaceConfig = { ...DEFAULT_MYFACE_CONFIG };
+    this.deepFaceConfig = { ...DEFAULT_DEEPFACE_CONFIG };
     this._loadMyFaceIni();
     this.activeSwapFace = null;
     this._lastSwappedImage = null;
@@ -1212,11 +1247,24 @@ export class VirtualAvatarManager {
   async _loadMyFaceIni() {
     try {
       if (typeof window === 'undefined' || typeof fetch === 'undefined') return;
-      const res = await fetch('/myface.ini?t=' + Date.now());
-      if (res.ok) {
+      const res = await fetch('/api/myface-config?t=' + Date.now()).catch(() => fetch('/myface.ini?t=' + Date.now()));
+      if (res && res.ok) {
         const text = await res.text();
-        this.myFaceConfig = parseMyFaceIni(text);
-        console.log('[myface.ini] 뷰티 필터 설정 로드 완료:', this.myFaceConfig);
+        let parsed;
+        try {
+          const json = JSON.parse(text);
+          parsed = json.config || json;
+        } catch {
+          parsed = parseMyFaceIni(text);
+        }
+        if (parsed.beauty) {
+          this.myFaceConfig = parsed.beauty;
+          this.deepFaceConfig = parsed.deepface || { ...DEFAULT_DEEPFACE_CONFIG };
+        } else {
+          this.myFaceConfig = parsed;
+          this.deepFaceConfig = parsed.deepface || { ...DEFAULT_DEEPFACE_CONFIG };
+        }
+        console.log('[myface.ini] 설정 로드 완료:', { beauty: this.myFaceConfig, deepface: this.deepFaceConfig });
       }
     } catch (err) {
       console.warn('[myface.ini] 설정 로드 실패 (기본값 사용):', err);
@@ -1224,15 +1272,20 @@ export class VirtualAvatarManager {
   }
 
   /**
-   * 외부(소켓 브로드캐스트/호스트 슬라이더)에서 변경된 뷰티 설정을 즉시 갱신
+   * 외부(소켓 브로드캐스트/호스트 슬라이더)에서 변경된 뷰티 및 딥페이크 설정을 즉시 갱신
    */
   updateMyFaceConfig(newCfg) {
     if (!newCfg || typeof newCfg !== 'object') return;
-    this.myFaceConfig = {
-      ...(this.myFaceConfig || DEFAULT_MYFACE_CONFIG),
-      ...newCfg,
-    };
-    console.log('[myface.ini] 뷰티 필터 실시간 갱신:', this.myFaceConfig);
+    if (newCfg.beauty) {
+      this.myFaceConfig = { ...(this.myFaceConfig || DEFAULT_MYFACE_CONFIG), ...newCfg.beauty };
+    }
+    if (newCfg.deepface) {
+      this.deepFaceConfig = { ...(this.deepFaceConfig || DEFAULT_DEEPFACE_CONFIG), ...newCfg.deepface };
+    }
+    if (!newCfg.beauty && !newCfg.deepface) {
+      this.myFaceConfig = { ...(this.myFaceConfig || DEFAULT_MYFACE_CONFIG), ...newCfg };
+    }
+    console.log('[myface.ini] 뷰티 & 딥페이크 필터 실시간 갱신:', { beauty: this.myFaceConfig, deepface: this.deepFaceConfig });
   }
 
   /**

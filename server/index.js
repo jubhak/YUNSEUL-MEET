@@ -1420,10 +1420,10 @@ function attachRemoteControlSocket(socket) {
 }
 
 // ========================================================
-// myface.ini 뷰티 필터 설정 관리 API (호스트 슬라이더 바 연동)
+// myface.ini 뷰티 필터 및 딥페이크 설정 관리 API (호스트 슬라이더 바 연동)
 // ========================================================
 const MYFACE_INI_PATH = path.join(ROOT, 'myface.ini');
-const DEFAULT_MYFACE_CONFIG = {
+const DEFAULT_BEAUTY_CONFIG = {
   smooth_intensity: 0.63,
   edge_threshold: 17.0,
   blur_radius: 20,
@@ -1431,74 +1431,152 @@ const DEFAULT_MYFACE_CONFIG = {
   contrast_balance: 1.30,
 };
 
+const DEFAULT_DEEPFACE_CONFIG = {
+  swap_blend_ratio: 1.00,
+  detail_sharpen: 0.50,
+  border_feather: 15,
+  tone_matching: 0.80,
+  detection_threshold: 0.60,
+};
+
 function readMyFaceIni() {
   try {
-    if (!fs.existsSync(MYFACE_INI_PATH)) return { ...DEFAULT_MYFACE_CONFIG };
+    if (!fs.existsSync(MYFACE_INI_PATH)) {
+      return {
+        ...DEFAULT_BEAUTY_CONFIG,
+        beauty: { ...DEFAULT_BEAUTY_CONFIG },
+        deepface: { ...DEFAULT_DEEPFACE_CONFIG },
+      };
+    }
     const content = fs.readFileSync(MYFACE_INI_PATH, 'utf8');
-    const cfg = { ...DEFAULT_MYFACE_CONFIG };
+    const beauty = { ...DEFAULT_BEAUTY_CONFIG };
+    const deepface = { ...DEFAULT_DEEPFACE_CONFIG };
+    let currentSection = 'beauty';
+
     for (const line of content.split(/\r?\n/)) {
       const trimmed = line.trim();
-      if (!trimmed || trimmed.startsWith(';') || trimmed.startsWith('#') || trimmed.startsWith('[')) continue;
+      if (!trimmed || trimmed.startsWith(';') || trimmed.startsWith('#')) continue;
+      if (trimmed.startsWith('[') && trimmed.endsWith(']')) {
+        const sec = trimmed.slice(1, -1).trim().toLowerCase();
+        if (sec === 'deepface' || sec === 'deep_face') {
+          currentSection = 'deepface';
+        } else if (sec === 'beauty') {
+          currentSection = 'beauty';
+        }
+        continue;
+      }
       const eqIdx = trimmed.indexOf('=');
       if (eqIdx === -1) continue;
       const key = trimmed.slice(0, eqIdx).trim().toLowerCase();
       const val = parseFloat(trimmed.slice(eqIdx + 1).trim());
       if (isNaN(val)) continue;
-      if (key in cfg) {
-        cfg[key] = val;
+
+      if (currentSection === 'deepface') {
+        if (key in deepface) deepface[key] = val;
+      } else {
+        if (key in beauty) beauty[key] = val;
       }
     }
-    return cfg;
+    return {
+      ...beauty,
+      beauty,
+      deepface,
+    };
   } catch (err) {
     console.warn('[myface.ini] read failed:', err);
-    return { ...DEFAULT_MYFACE_CONFIG };
+    return {
+      ...DEFAULT_BEAUTY_CONFIG,
+      beauty: { ...DEFAULT_BEAUTY_CONFIG },
+      deepface: { ...DEFAULT_DEEPFACE_CONFIG },
+    };
   }
 }
 
 function writeMyFaceIni(newCfg) {
   const current = readMyFaceIni();
-  const merged = {
-    smooth_intensity: typeof newCfg.smooth_intensity === 'number' && !isNaN(newCfg.smooth_intensity)
-      ? Math.max(0, Math.min(1.0, newCfg.smooth_intensity))
-      : current.smooth_intensity,
-    edge_threshold: typeof newCfg.edge_threshold === 'number' && !isNaN(newCfg.edge_threshold)
-      ? Math.max(1.0, Math.min(100.0, newCfg.edge_threshold))
-      : current.edge_threshold,
-    blur_radius: typeof newCfg.blur_radius === 'number' && !isNaN(newCfg.blur_radius)
-      ? Math.max(1, Math.min(30, Math.round(newCfg.blur_radius)))
-      : current.blur_radius,
-    brightness_lift: typeof newCfg.brightness_lift === 'number' && !isNaN(newCfg.brightness_lift)
-      ? Math.max(0.5, Math.min(2.5, newCfg.brightness_lift))
-      : current.brightness_lift,
-    contrast_balance: typeof newCfg.contrast_balance === 'number' && !isNaN(newCfg.contrast_balance)
-      ? Math.max(0.5, Math.min(2.5, newCfg.contrast_balance))
-      : current.contrast_balance,
+  const inputBeauty = (newCfg.beauty && typeof newCfg.beauty === 'object') ? newCfg.beauty : newCfg;
+  const inputDeepface = (newCfg.deepface && typeof newCfg.deepface === 'object') ? newCfg.deepface : newCfg;
+
+  const mergedBeauty = {
+    smooth_intensity: typeof inputBeauty.smooth_intensity === 'number' && !isNaN(inputBeauty.smooth_intensity)
+      ? Math.max(0, Math.min(1.0, inputBeauty.smooth_intensity))
+      : current.beauty.smooth_intensity,
+    edge_threshold: typeof inputBeauty.edge_threshold === 'number' && !isNaN(inputBeauty.edge_threshold)
+      ? Math.max(1.0, Math.min(100.0, inputBeauty.edge_threshold))
+      : current.beauty.edge_threshold,
+    blur_radius: typeof inputBeauty.blur_radius === 'number' && !isNaN(inputBeauty.blur_radius)
+      ? Math.max(1, Math.min(30, Math.round(inputBeauty.blur_radius)))
+      : current.beauty.blur_radius,
+    brightness_lift: typeof inputBeauty.brightness_lift === 'number' && !isNaN(inputBeauty.brightness_lift)
+      ? Math.max(0.5, Math.min(2.5, inputBeauty.brightness_lift))
+      : current.beauty.brightness_lift,
+    contrast_balance: typeof inputBeauty.contrast_balance === 'number' && !isNaN(inputBeauty.contrast_balance)
+      ? Math.max(0.5, Math.min(2.5, inputBeauty.contrast_balance))
+      : current.beauty.contrast_balance,
+  };
+
+  const mergedDeepface = {
+    swap_blend_ratio: typeof inputDeepface.swap_blend_ratio === 'number' && !isNaN(inputDeepface.swap_blend_ratio)
+      ? Math.max(0, Math.min(1.0, inputDeepface.swap_blend_ratio))
+      : current.deepface.swap_blend_ratio,
+    detail_sharpen: typeof inputDeepface.detail_sharpen === 'number' && !isNaN(inputDeepface.detail_sharpen)
+      ? Math.max(0, Math.min(2.0, inputDeepface.detail_sharpen))
+      : current.deepface.detail_sharpen,
+    border_feather: typeof inputDeepface.border_feather === 'number' && !isNaN(inputDeepface.border_feather)
+      ? Math.max(1, Math.min(30, Math.round(inputDeepface.border_feather)))
+      : current.deepface.border_feather,
+    tone_matching: typeof inputDeepface.tone_matching === 'number' && !isNaN(inputDeepface.tone_matching)
+      ? Math.max(0, Math.min(1.0, inputDeepface.tone_matching))
+      : current.deepface.tone_matching,
+    detection_threshold: typeof inputDeepface.detection_threshold === 'number' && !isNaN(inputDeepface.detection_threshold)
+      ? Math.max(0.3, Math.min(0.85, inputDeepface.detection_threshold))
+      : current.deepface.detection_threshold,
   };
 
   const content = `; ========================================================
-; YUNSEUL-MEET 실물 웹캠 뷰티 필터 설정 (myface.ini)
+; YUNSEUL-MEET 실물 웹캠 및 딥페이크 설정 (myface.ini)
 ; 호스트 컨트롤 바 또는 메모장으로 수정한 후 저장 시 실시간 반영됩니다.
 ; ========================================================
 
 [beauty]
 ; 1. 스킨 스무딩 강도 (0.00 ~ 1.00)
-smooth_intensity = ${merged.smooth_intensity.toFixed(2)}
+smooth_intensity = ${mergedBeauty.smooth_intensity.toFixed(2)}
 
 ; 2. 엣지(윤곽선) 보존 민감도 (1.0 ~ 100.0)
-edge_threshold = ${merged.edge_threshold.toFixed(1)}
+edge_threshold = ${mergedBeauty.edge_threshold.toFixed(1)}
 
 ; 3. 블러 퍼짐 반경 (1 ~ 30)
-blur_radius = ${Math.round(merged.blur_radius)}
+blur_radius = ${Math.round(mergedBeauty.blur_radius)}
 
 ; 4. 피부 톤업 밝기 (0.50 ~ 2.50)
-brightness_lift = ${merged.brightness_lift.toFixed(2)}
+brightness_lift = ${mergedBeauty.brightness_lift.toFixed(2)}
 
 ; 5. 입체감 대비 균형 (0.50 ~ 2.50)
-contrast_balance = ${merged.contrast_balance.toFixed(2)}
+contrast_balance = ${mergedBeauty.contrast_balance.toFixed(2)}
+
+[Deepface]
+; 1. AI 합성 혼합 비율 (0.00 ~ 1.00)
+swap_blend_ratio = ${mergedDeepface.swap_blend_ratio.toFixed(2)}
+
+; 2. 디테일 선명도 (0.00 ~ 2.00)
+detail_sharpen = ${mergedDeepface.detail_sharpen.toFixed(2)}
+
+; 3. 경계면 페더링 반경 (1 ~ 30)
+border_feather = ${Math.round(mergedDeepface.border_feather)}
+
+; 4. 피부톤/조명 일치 (0.00 ~ 1.00)
+tone_matching = ${mergedDeepface.tone_matching.toFixed(2)}
+
+; 5. 얼굴 인식 민감도 (0.30 ~ 0.85)
+detection_threshold = ${mergedDeepface.detection_threshold.toFixed(2)}
 `;
 
   fs.writeFileSync(MYFACE_INI_PATH, content, 'utf8');
-  return merged;
+  return {
+    ...mergedBeauty,
+    beauty: mergedBeauty,
+    deepface: mergedDeepface,
+  };
 }
 
 app.get('/api/myface-config', (_req, res) => {

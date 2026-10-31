@@ -130,6 +130,45 @@ HOST = os.environ.get("FACE_SWAP_HOST", "0.0.0.0")
 # 소스 사진 임베딩 캐시: { "superman": Face, "batman": Face, ... }
 SOURCE_FACE_CACHE = {}
 
+# ── myface.ini [Deepface] 설정 자동 연동 ─────────────────────────
+_DEEPFACE_CONFIG = {
+    "swap_blend_ratio": 1.0,
+    "detail_sharpen": 0.5,
+    "border_feather": 15,
+    "tone_matching": 0.8,
+    "detection_threshold": 0.6,
+}
+_LAST_INI_MTIME = 0
+
+
+def get_deepface_config():
+    global _DEEPFACE_CONFIG, _LAST_INI_MTIME
+    ini_path = ROOT_DIR / "myface.ini"
+    try:
+        if ini_path.exists():
+            mtime = ini_path.stat().st_mtime
+            if mtime != _LAST_INI_MTIME:
+                _LAST_INI_MTIME = mtime
+                import configparser
+                cp = configparser.ConfigParser()
+                cp.read(str(ini_path), encoding="utf-8")
+                target_sec = None
+                for s in cp.sections():
+                    if s.strip().lower() in ("deepface", "deep_face"):
+                        target_sec = s
+                        break
+                if target_sec:
+                    for k in _DEEPFACE_CONFIG:
+                        if cp.has_option(target_sec, k):
+                            try:
+                                _DEEPFACE_CONFIG[k] = float(cp.get(target_sec, k))
+                            except ValueError:
+                                pass
+                logger.info(f"[myface.ini] Deepface config reloaded: {_DEEPFACE_CONFIG}")
+    except Exception as e:
+        logger.warning(f"Failed to read myface.ini: {e}")
+    return _DEEPFACE_CONFIG
+
 
 def load_source_face(source_name_or_path: str):
     """지정된 이름이나 경로의 소스 얼굴을 로드하고 캐시합니다."""
@@ -697,6 +736,15 @@ def process_frame(source_name: str, frame_bytes: bytes, n_clients: int = 0,
 
         frame_s, restore_size = _downscale_for_load(frame, n_clients)
 
+        # myface.ini [Deepface] 실시간 옵션 적용
+        df_cfg = get_deepface_config()
+        try:
+            modules.globals.poisson_blend = (df_cfg.get("tone_matching", 0.8) >= 0.4)
+            modules.globals.opacity = float(df_cfg.get("swap_blend_ratio", 1.0))
+            modules.globals.face_detector_score = float(df_cfg.get("detection_threshold", 0.6))
+        except Exception:
+            pass
+
         target_faces = _track_faces(frame_s, client_key)
         if not target_faces:
             return (_cache_get(client_key, source_key)
@@ -728,6 +776,16 @@ def process_frame(source_name: str, frame_bytes: bytes, n_clients: int = 0,
                         logger.warning(f"Face swap diff too low ({diff:.2f}) - swap not applied")
             except Exception as swap_err:
                 logger.warning(f"Face swap error on target face: {swap_err}")
+
+        # [Deepface 옵션 후처리] 디테일 언샵 마스크 및 원본 블렌딩
+        if successful_swaps > 0:
+            sharpen_amt = float(df_cfg.get("detail_sharpen", 0.5))
+            if sharpen_amt > 0.01:
+                blurred = cv2.GaussianBlur(swapped, (0, 0), 1.5)
+                swapped = cv2.addWeighted(swapped, 1.0 + sharpen_amt * 0.45, blurred, -sharpen_amt * 0.45, 0)
+            blend_ratio = float(df_cfg.get("swap_blend_ratio", 1.0))
+            if blend_ratio < 0.99:
+                swapped = cv2.addWeighted(frame_s, 1.0 - blend_ratio, swapped, blend_ratio, 0)
 
         # 스왑 성공 0건이면 원본 반환 금지 (직전 스왑 프레임 → 얼굴 블러)
         if successful_swaps == 0:

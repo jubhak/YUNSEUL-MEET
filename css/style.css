@@ -4671,6 +4671,43 @@ body.is-presenting .host-participants-view.is-overflowing .host-participants-gri
   border-bottom: 1px solid rgba(255, 255, 255, 0.12);
 }
 
+/* 모드 전환 탭 버튼 (원본 뷰티 vs 딥페이크) */
+.solo-beauty-tabs {
+  display: flex;
+  background: rgba(0, 0, 0, 0.35);
+  padding: 3px;
+  border-radius: 8px;
+  gap: 4px;
+}
+
+.solo-beauty-tab-btn {
+  flex: 1;
+  background: transparent;
+  border: none;
+  color: #94a3b8;
+  font-size: 0.78rem;
+  font-weight: 600;
+  padding: 5px 8px;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+}
+
+.solo-beauty-tab-btn:hover {
+  color: #f1f5f9;
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.solo-beauty-tab-btn.active {
+  background: #2563eb;
+  color: #ffffff;
+  box-shadow: 0 2px 8px rgba(37, 99, 235, 0.4);
+}
+
 .solo-beauty-box-title {
   display: flex;
   align-items: center;

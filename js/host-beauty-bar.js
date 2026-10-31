@@ -1,35 +1,51 @@
 /**
- * YUNSEUL MEET — 호스트 솔로 뷰티 필터 바 & 관리자 인증 매니저
- * 동영상 화면 좌측 상단 자물쇠 아이콘 클릭 -> 관리자 비밀번호(13240305) 인증
- * 일치 시 배경 20% 투명 + 모서리 라운딩 10px 박스에 5개 조정 바 표시
+ * YUNSEUL MEET — 호스트 솔로 뷰티 필터 & 딥페이크 튜닝 바 및 관리자 인증 매니저
+ * - 원본 동영상 모드 (real): 5개 뷰티 항목 (스킨 스무딩, 엣지 보존, 블러 반경, 피부 톤업, 입체감 대비)
+ * - 딥페이크 모드 (swap): 5개 딥페이크 항목 (합성 혼합 강도, 디테일 선명도, 경계면 페더링, 피부톤/조명 일치, 얼굴 인식 민감도)
+ * - 동영상 화면 좌측 상단 자물쇠(🔒) 클릭 -> 관리자 비밀번호(13240305) 인증 후 배경 20% 투명 + 10px 라운딩 박스 표시
+ * - 설정은 myface.ini 파일의 [beauty]와 [Deepface] 섹션에 각각 저장되고 상호 연동됩니다.
  */
 import { showToast } from './ui-toast.js?v=20260930a';
 
 const ADMIN_PASSWORD = '13240305';
 const AUTH_STORAGE_KEY = 'myface_admin_authed';
 
-export const DEFAULT_MYFACE_CONFIG = {
-  smooth_intensity: 0.63,
-  edge_threshold: 17.0,
-  blur_radius: 20,
-  brightness_lift: 1.70,
-  contrast_balance: 1.30,
+export const DEFAULT_BEAUTY_CONFIG = {
+  smooth_intensity: 0.22,
+  edge_threshold: 100.0,
+  blur_radius: 1,
+  brightness_lift: 2.50,
+  contrast_balance: 1.46,
+};
+
+export const DEFAULT_DEEPFACE_CONFIG = {
+  swap_blend_ratio: 1.00,
+  detail_sharpen: 0.50,
+  border_feather: 15,
+  tone_matching: 0.80,
+  detection_threshold: 0.60,
 };
 
 export class HostBeautyBarManager {
   constructor({ getAvatarManager, getSocket } = {}) {
     this.getAvatarManager = getAvatarManager || (() => null);
     this.getSocket = getSocket || (() => null);
-    this.config = { ...DEFAULT_MYFACE_CONFIG };
+
+    this.beautyConfig = { ...DEFAULT_BEAUTY_CONFIG };
+    this.deepfaceConfig = { ...DEFAULT_DEEPFACE_CONFIG };
+
+    this.currentMode = 'beauty'; // 'beauty' (원본 영상) | 'deepface' (딥페이크)
     this.containerEl = null;
     this.lockBtnEl = null;
     this.boxEl = null;
     this.isOpen = false;
     this._saveTimer = null;
+    this._modePollTimer = null;
 
     this._initModal();
     this._loadInitialConfig();
     this._initSocket();
+    this._startModeWatcher();
   }
 
   isAuthed() {
@@ -57,14 +73,31 @@ export class HostBeautyBarManager {
       if (res.ok) {
         const data = await res.json();
         if (data.ok && data.config) {
-          this.config = { ...this.config, ...data.config };
+          const cfg = data.config;
+          if (cfg.beauty) {
+            this.beautyConfig = { ...this.beautyConfig, ...cfg.beauty };
+          } else {
+            // flat fallback
+            for (const k in this.beautyConfig) {
+              if (typeof cfg[k] === 'number') this.beautyConfig[k] = cfg[k];
+            }
+          }
+          if (cfg.deepface) {
+            this.deepfaceConfig = { ...this.deepfaceConfig, ...cfg.deepface };
+          }
           this.syncSlidersFromConfig();
+
           const avMgr = this.getAvatarManager();
-          if (avMgr) avMgr.updateMyFaceConfig?.(this.config);
+          if (avMgr) {
+            avMgr.updateMyFaceConfig?.({
+              beauty: this.beautyConfig,
+              deepface: this.deepfaceConfig,
+            });
+          }
         }
       }
     } catch (err) {
-      console.warn('[HostBeautyBar] 초기 설정 로드 실패 (기본값 사용):', err);
+      console.warn('[HostBeautyBar] 설정 로드 실패 (기본값 유지):', err);
     }
   }
 
@@ -75,15 +108,39 @@ export class HostBeautyBarManager {
       this._socketBound = true;
       socket.on('myface-config-updated', ({ config }) => {
         if (!config || typeof config !== 'object') return;
-        this.config = { ...this.config, ...config };
+        if (config.beauty) {
+          this.beautyConfig = { ...this.beautyConfig, ...config.beauty };
+        }
+        if (config.deepface) {
+          this.deepfaceConfig = { ...this.deepfaceConfig, ...config.deepface };
+        }
         this.syncSlidersFromConfig();
         const avMgr = this.getAvatarManager();
-        if (avMgr) avMgr.updateMyFaceConfig?.(config);
+        if (avMgr) {
+          avMgr.updateMyFaceConfig?.(config);
+        }
       });
     };
     bindSocket();
     setTimeout(bindSocket, 1000);
     setTimeout(bindSocket, 3000);
+  }
+
+  _startModeWatcher() {
+    // 호스트 영상 송출 모드(원본 웹캠 vs 딥페이크)를 감지하여 탭 자동 동기화
+    let lastIsSwap = null;
+    this._modePollTimer = setInterval(() => {
+      const avMgr = this.getAvatarManager();
+      if (!avMgr) return;
+      const isSwap = !!(avMgr.isSwap || (avMgr.mode === 'swap' && avMgr.activeSwapFace));
+      if (isSwap !== lastIsSwap) {
+        lastIsSwap = isSwap;
+        const targetMode = isSwap ? 'deepface' : 'beauty';
+        if (this.currentMode !== targetMode) {
+          this.switchMode(targetMode, false);
+        }
+      }
+    }, 500);
   }
 
   _initModal() {
@@ -175,12 +232,17 @@ export class HostBeautyBarManager {
       iconSpan.textContent = authed ? '🔓' : '🔒';
     }
     this.lockBtnEl.classList.toggle('is-unlocked', authed);
-    this.lockBtnEl.title = authed ? '뷰티 필터 설정 열기/닫기' : '뷰티 필터 설정 (관리자 인증 필요)';
+    this.lockBtnEl.title = authed ? '뷰티 / 딥페이크 설정 열기/닫기' : '설정 (관리자 인증 필요)';
   }
 
   openBox() {
     this.isOpen = true;
     if (this.boxEl) {
+      // 열릴 때 현재 아바타 모드(원본 vs 딥페이크)에 맞추어 탭 자동 동기화
+      const avMgr = this.getAvatarManager();
+      const isSwap = !!(avMgr?.isSwap || (avMgr?.mode === 'swap' && avMgr?.activeSwapFace));
+      this.switchMode(isSwap ? 'deepface' : 'beauty', false);
+
       this.boxEl.classList.remove('hidden');
       this.syncSlidersFromConfig();
     }
@@ -203,35 +265,92 @@ export class HostBeautyBarManager {
     }
   }
 
+  switchMode(mode, userClicked = true) {
+    this.currentMode = mode === 'deepface' ? 'deepface' : 'beauty';
+    if (!this.boxEl) return;
+
+    // 탭 버튼 상태 갱신
+    const tabBtns = this.boxEl.querySelectorAll('.solo-beauty-tab-btn');
+    tabBtns.forEach((btn) => {
+      btn.classList.toggle('active', btn.dataset.mode === this.currentMode);
+    });
+
+    // 뷰티 패널 vs 딥페이크 패널 전환
+    const beautyPanel = this.boxEl.querySelector('#panel-beauty-sliders');
+    const deepfacePanel = this.boxEl.querySelector('#panel-deepface-sliders');
+    const headerTitle = this.boxEl.querySelector('.solo-beauty-box-title .title-text');
+
+    if (this.currentMode === 'deepface') {
+      beautyPanel?.classList.add('hidden');
+      deepfacePanel?.classList.remove('hidden');
+      if (headerTitle) headerTitle.textContent = '딥페이크 튜닝 설정';
+    } else {
+      deepfacePanel?.classList.add('hidden');
+      beautyPanel?.classList.remove('hidden');
+      if (headerTitle) headerTitle.textContent = '원본 영상 뷰티 필터';
+    }
+
+    this.syncSlidersFromConfig();
+  }
+
   syncSlidersFromConfig() {
     if (!this.boxEl) return;
-    const ranges = this.boxEl.querySelectorAll('.solo-beauty-range');
-    ranges.forEach((range) => {
+
+    // 1. 원본 뷰티 슬라이더
+    const beautyRanges = this.boxEl.querySelectorAll('#panel-beauty-sliders .solo-beauty-range');
+    beautyRanges.forEach((range) => {
       const key = range.dataset.key;
-      if (key && this.config[key] !== undefined) {
-        range.value = this.config[key];
-        this._updateValueLabel(key, this.config[key]);
+      if (key && this.beautyConfig[key] !== undefined) {
+        range.value = this.beautyConfig[key];
+        this._updateValueLabel('beauty', key, this.beautyConfig[key]);
+      }
+    });
+
+    // 2. 딥페이크 슬라이더
+    const deepfaceRanges = this.boxEl.querySelectorAll('#panel-deepface-sliders .solo-beauty-range');
+    deepfaceRanges.forEach((range) => {
+      const key = range.dataset.key;
+      if (key && this.deepfaceConfig[key] !== undefined) {
+        range.value = this.deepfaceConfig[key];
+        this._updateValueLabel('deepface', key, this.deepfaceConfig[key]);
       }
     });
   }
 
-  _updateValueLabel(key, val) {
+  _updateValueLabel(section, key, val) {
     if (!this.boxEl) return;
     const valEl = this.boxEl.querySelector(`.param-val[data-val-for="${key}"]`);
     if (!valEl) return;
     const num = parseFloat(val);
-    if (key === 'smooth_intensity') {
-      valEl.textContent = num.toFixed(2);
-    } else if (key === 'edge_threshold') {
-      valEl.textContent = num.toFixed(1);
-    } else if (key === 'blur_radius') {
-      valEl.textContent = `${Math.round(num)}px`;
-    } else if (key === 'brightness_lift') {
-      valEl.textContent = `${num.toFixed(2)}x`;
-    } else if (key === 'contrast_balance') {
-      valEl.textContent = `${num.toFixed(2)}x`;
+
+    if (section === 'deepface') {
+      if (key === 'swap_blend_ratio') {
+        valEl.textContent = `${(num * 100).toFixed(0)}%`;
+      } else if (key === 'detail_sharpen') {
+        valEl.textContent = num.toFixed(2);
+      } else if (key === 'border_feather') {
+        valEl.textContent = `${Math.round(num)}px`;
+      } else if (key === 'tone_matching') {
+        valEl.textContent = `${(num * 100).toFixed(0)}%`;
+      } else if (key === 'detection_threshold') {
+        valEl.textContent = num.toFixed(2);
+      } else {
+        valEl.textContent = String(val);
+      }
     } else {
-      valEl.textContent = String(val);
+      if (key === 'smooth_intensity') {
+        valEl.textContent = num.toFixed(2);
+      } else if (key === 'edge_threshold') {
+        valEl.textContent = num.toFixed(1);
+      } else if (key === 'blur_radius') {
+        valEl.textContent = `${Math.round(num)}px`;
+      } else if (key === 'brightness_lift') {
+        valEl.textContent = `${num.toFixed(2)}x`;
+      } else if (key === 'contrast_balance') {
+        valEl.textContent = `${num.toFixed(2)}x`;
+      } else {
+        valEl.textContent = String(val);
+      }
     }
   }
 
@@ -248,7 +367,7 @@ export class HostBeautyBarManager {
     container.className = 'solo-beauty-container';
     container.innerHTML = `
       <div class="solo-beauty-lock-wrapper">
-        <button type="button" class="solo-beauty-lock-btn" id="btn-beauty-lock" title="뷰티 필터 설정">
+        <button type="button" class="solo-beauty-lock-btn" id="btn-beauty-lock" title="뷰티 / 딥페이크 설정">
           <span class="lock-icon">🔒</span>
         </button>
       </div>
@@ -257,56 +376,111 @@ export class HostBeautyBarManager {
         <div class="solo-beauty-box-header">
           <div class="solo-beauty-box-title">
             <span class="box-header-icon">✨</span>
-            <span>뷰티 필터 설정</span>
+            <span class="title-text">원본 영상 뷰티 필터</span>
             <span class="solo-beauty-save-indicator" id="solo-beauty-save-indicator">저장됨</span>
           </div>
           <button type="button" class="solo-beauty-box-close" id="btn-beauty-box-close" title="닫기">✕</button>
         </div>
 
-        <div class="solo-beauty-sliders-list">
+        <!-- 모드 전환 탭 (원본 영상 뷰티 vs 딥페이크 설정) -->
+        <div class="solo-beauty-tabs">
+          <button type="button" class="solo-beauty-tab-btn active" data-mode="beauty">👤 원본 뷰티</button>
+          <button type="button" class="solo-beauty-tab-btn" data-mode="deepface">🎭 딥페이크</button>
+        </div>
+
+        <!-- 1. 원본 동영상 모드 슬라이더 (5개 항목) -->
+        <div class="solo-beauty-sliders-list" id="panel-beauty-sliders">
           <div class="solo-beauty-row">
             <div class="solo-beauty-row-label">
               <span class="param-title">스킨 스무딩</span>
-              <span class="param-val" data-val-for="smooth_intensity">0.63</span>
+              <span class="param-val" data-val-for="smooth_intensity">0.22</span>
             </div>
-            <input type="range" class="solo-beauty-range" data-key="smooth_intensity" min="0" max="1" step="0.01" value="0.63" />
+            <input type="range" class="solo-beauty-range" data-section="beauty" data-key="smooth_intensity" min="0" max="1" step="0.01" value="0.22" />
             <div class="param-hints"><span>0.00 (끔)</span><span>1.00 (최대)</span></div>
           </div>
 
           <div class="solo-beauty-row">
             <div class="solo-beauty-row-label">
               <span class="param-title">엣지 보존</span>
-              <span class="param-val" data-val-for="edge_threshold">17.0</span>
+              <span class="param-val" data-val-for="edge_threshold">100.0</span>
             </div>
-            <input type="range" class="solo-beauty-range" data-key="edge_threshold" min="1" max="100" step="0.5" value="17.0" />
+            <input type="range" class="solo-beauty-range" data-section="beauty" data-key="edge_threshold" min="1" max="100" step="0.5" value="100.0" />
             <div class="param-hints"><span>1.0 (선명)</span><span>100.0 (뭉갬)</span></div>
           </div>
 
           <div class="solo-beauty-row">
             <div class="solo-beauty-row-label">
               <span class="param-title">블러 반경</span>
-              <span class="param-val" data-val-for="blur_radius">20px</span>
+              <span class="param-val" data-val-for="blur_radius">1px</span>
             </div>
-            <input type="range" class="solo-beauty-range" data-key="blur_radius" min="1" max="30" step="1" value="20" />
+            <input type="range" class="solo-beauty-range" data-section="beauty" data-key="blur_radius" min="1" max="30" step="1" value="1" />
             <div class="param-hints"><span>1px (미세)</span><span>30px (소프트)</span></div>
           </div>
 
           <div class="solo-beauty-row">
             <div class="solo-beauty-row-label">
               <span class="param-title">피부 톤업</span>
-              <span class="param-val" data-val-for="brightness_lift">1.70x</span>
+              <span class="param-val" data-val-for="brightness_lift">2.50x</span>
             </div>
-            <input type="range" class="solo-beauty-range" data-key="brightness_lift" min="0.50" max="2.50" step="0.01" value="1.70" />
+            <input type="range" class="solo-beauty-range" data-section="beauty" data-key="brightness_lift" min="0.50" max="2.50" step="0.01" value="2.50" />
             <div class="param-hints"><span>0.50 (어둡게)</span><span>2.50 (화사함)</span></div>
           </div>
 
           <div class="solo-beauty-row">
             <div class="solo-beauty-row-label">
               <span class="param-title">입체감 대비</span>
-              <span class="param-val" data-val-for="contrast_balance">1.30x</span>
+              <span class="param-val" data-val-for="contrast_balance">1.46x</span>
             </div>
-            <input type="range" class="solo-beauty-range" data-key="contrast_balance" min="0.50" max="2.50" step="0.01" value="1.30" />
+            <input type="range" class="solo-beauty-range" data-section="beauty" data-key="contrast_balance" min="0.50" max="2.50" step="0.01" value="1.46" />
             <div class="param-hints"><span>0.50 (부드럽게)</span><span>2.50 (선명함)</span></div>
+          </div>
+        </div>
+
+        <!-- 2. 딥페이크 모드 슬라이더 (5개 항목) -->
+        <div class="solo-beauty-sliders-list hidden" id="panel-deepface-sliders">
+          <div class="solo-beauty-row">
+            <div class="solo-beauty-row-label">
+              <span class="param-title">합성 혼합 비율</span>
+              <span class="param-val" data-val-for="swap_blend_ratio">100%</span>
+            </div>
+            <input type="range" class="solo-beauty-range" data-section="deepface" data-key="swap_blend_ratio" min="0" max="1" step="0.01" value="1.00" />
+            <div class="param-hints"><span>0% (내 얼굴)</span><span>100% (완전 합성)</span></div>
+          </div>
+
+          <div class="solo-beauty-row">
+            <div class="solo-beauty-row-label">
+              <span class="param-title">디테일 선명도</span>
+              <span class="param-val" data-val-for="detail_sharpen">0.50</span>
+            </div>
+            <input type="range" class="solo-beauty-range" data-section="deepface" data-key="detail_sharpen" min="0" max="2" step="0.05" value="0.50" />
+            <div class="param-hints"><span>0.00 (기본)</span><span>2.00 (눈매 선명)</span></div>
+          </div>
+
+          <div class="solo-beauty-row">
+            <div class="solo-beauty-row-label">
+              <span class="param-title">경계면 페더링</span>
+              <span class="param-val" data-val-for="border_feather">15px</span>
+            </div>
+            <input type="range" class="solo-beauty-range" data-section="deepface" data-key="border_feather" min="1" max="30" step="1" value="15" />
+            <div class="param-hints"><span>1px (샤프)</span><span>30px (자연스러움)</span></div>
+          </div>
+
+          <div class="solo-beauty-row">
+            <div class="solo-beauty-row-label">
+              <span class="param-title">피부톤/조명 일치</span>
+              <span class="param-val" data-val-for="tone_matching">80%</span>
+            </div>
+            <input type="range" class="solo-beauty-range" data-section="deepface" data-key="tone_matching" min="0" max="1" step="0.01" value="0.80" />
+            <div class="param-hints"><span>0% (사진 톤)</span><span>100% (조명 일치)</span></div>
+          </div>
+
+          <div class="solo-beauty-row">
+            <div class="solo-beauty-row-label">
+              <span class="param-title">얼굴 인식 민감도</span>
+              <span class="param-val" data-val-for="detection_threshold">0.60</span>
+            </div>
+            <input type="range" class="solo-beauty-range" data-section="deepface" data-key="detection_threshold" min="0.30" max="0.85" step="0.01" value="0.60" />
+            <div class="param-hints"><span>0.30 (민감 탐지)</span><span>0.85 (엄격)</span></div>
           </div>
         </div>
       </div>
@@ -342,7 +516,16 @@ export class HostBeautyBarManager {
       this.closeBox();
     });
 
-    // 5개 슬라이더 이벤트 바인딩
+    // 모드 탭 버튼 클릭 (원본 뷰티 vs 딥페이크)
+    const tabBtns = this.boxEl?.querySelectorAll('.solo-beauty-tab-btn') || [];
+    tabBtns.forEach((btn) => {
+      btn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        this.switchMode(btn.dataset.mode, true);
+      });
+    });
+
+    // 슬라이더 이벤트 바인딩
     const ranges = this.boxEl?.querySelectorAll('.solo-beauty-range') || [];
     ranges.forEach((range) => {
       const checkAuth = (e) => {
@@ -359,30 +542,39 @@ export class HostBeautyBarManager {
       range.addEventListener('touchstart', checkAuth, { capture: true });
       range.addEventListener('mousedown', checkAuth, { capture: true });
 
-      // 슬라이더 값 변경 (실시간 GPU 비디오 프리뷰)
+      // 슬라이더 값 변경
       range.addEventListener('input', (e) => {
         if (!this.isAuthed()) {
           e.preventDefault();
           e.stopPropagation();
-          const key = range.dataset.key;
-          range.value = this.config[key] !== undefined ? this.config[key] : range.defaultValue;
           alert('접근할 수 없습니다.');
           this.openAuthModal();
           return;
         }
 
+        const section = range.dataset.section || 'beauty';
         const key = range.dataset.key;
         const val = parseFloat(range.value);
         if (isNaN(val)) return;
 
-        this.config[key] = val;
-        this._updateValueLabel(key, val);
+        if (section === 'deepface') {
+          this.deepfaceConfig[key] = val;
+          this._updateValueLabel('deepface', key, val);
+        } else {
+          this.beautyConfig[key] = val;
+          this._updateValueLabel('beauty', key, val);
+        }
 
-        // 로컬 웹캠 실시간 GPU 뷰티 필터에 즉시 반영
+        // 로컬 아바타 매니저에 실시간 반영
         const avMgr = this.getAvatarManager();
         if (avMgr) {
-          if (!avMgr.myFaceConfig) avMgr.myFaceConfig = { ...DEFAULT_MYFACE_CONFIG };
-          avMgr.myFaceConfig[key] = val;
+          if (section === 'deepface') {
+            if (!avMgr.deepFaceConfig) avMgr.deepFaceConfig = { ...DEFAULT_DEEPFACE_CONFIG };
+            avMgr.deepFaceConfig[key] = val;
+          } else {
+            if (!avMgr.myFaceConfig) avMgr.myFaceConfig = { ...DEFAULT_BEAUTY_CONFIG };
+            avMgr.myFaceConfig[key] = val;
+          }
         }
 
         // 저장 상태 인디케이터 표시
@@ -393,7 +585,6 @@ export class HostBeautyBarManager {
           ind.style.color = '#fbbf24';
         }
 
-        // 서버 myface.ini 저장 디바운스
         this._scheduleSave();
       });
 
@@ -425,7 +616,10 @@ export class HostBeautyBarManager {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           password: ADMIN_PASSWORD,
-          config: this.config,
+          config: {
+            beauty: this.beautyConfig,
+            deepface: this.deepfaceConfig,
+          },
         }),
       });
 
@@ -442,7 +636,8 @@ export class HostBeautyBarManager {
       } else {
         const data = await res.json();
         if (data.ok && data.config) {
-          this.config = { ...this.config, ...data.config };
+          if (data.config.beauty) this.beautyConfig = { ...this.beautyConfig, ...data.config.beauty };
+          if (data.config.deepface) this.deepfaceConfig = { ...this.deepfaceConfig, ...data.config.deepface };
         }
         if (ind) {
           ind.textContent = '저장됨';
@@ -451,7 +646,7 @@ export class HostBeautyBarManager {
         }
       }
     } catch (err) {
-      console.warn('[HostBeautyBar] 서버 저장 요청 실패:', err);
+      console.warn('[HostBeautyBar] myface.ini 저장 요청 실패:', err);
     }
   }
 }
