@@ -348,10 +348,10 @@ function appendRoomLog(room, fileName, line) {
   }
 }
 
-function logRoomJoin(room, { role, name, clientId }) {
+function logRoomJoin(room, { role, name, clientId, ip }) {
   const { datetime } = kstParts();
   const safeName = String(name || '').replace(/[\r\n\t]+/g, ' ').trim() || '-';
-  const line = [datetime, role || 'viewer', safeName, clientId || '-'].join('\t');
+  const line = [datetime, role || 'viewer', safeName, clientId || '-', ip || '-'].join('\t');
   appendRoomLog(room, 'join_member.log', line);
 }
 
@@ -366,6 +366,8 @@ function logRoomChat(room, { role, name, text, clientId }) {
 function roomPath(code) {
   return path.join(ROOMS_DIR, `${code}.json`);
 }
+
+const lastPersistSignature = new Map();
 
 function persistRoom(room) {
   const normMode = normalizeInteractionMode(room.interactionMode);
@@ -398,7 +400,12 @@ function persistRoom(room) {
       [...room.viewers.entries()].map(([id, v]) => [id, { name: v.name, lastSeen: v.lastSeen }])
     ),
   };
-  fs.writeFileSync(roomPath(room.code), JSON.stringify(data), 'utf8');
+  // 같은 내용을 반복 기록하지 않는다(스윕·중복 이벤트에서 발생하던 무의미한 디스크 IO 제거)
+  const json = JSON.stringify(data);
+  if (lastPersistSignature.get(room.code) === json) return;
+  if (lastPersistSignature.size > 512) lastPersistSignature.clear();
+  lastPersistSignature.set(room.code, json);
+  fs.writeFileSync(roomPath(room.code), json, 'utf8');
 }
 
 function loadRoomFromDisk(code) {
@@ -1750,15 +1757,20 @@ io.on('connection', (socket) => {
       socket.data.clientId = clientId;
       socket.data.hostToken = hostToken;
 
-      const remote = socket.handshake?.address || socket.conn?.remoteAddress || '?';
+      const rawIp = socket.handshake?.headers?.['x-forwarded-for']
+        || socket.handshake?.address
+        || socket.conn?.remoteAddress
+        || '';
+      const clientIp = String(rawIp).split(',')[0].trim().replace(/^::ffff:/, '') || '-';
+
       console.log(
-        `[join] room=${code} role=${role} name=${name} client=${String(clientId).slice(0, 8)} remote=${remote} stream=${!!room.streamActive} viewers=${room.viewers.size}`
+        `[join] room=${code} role=${role} name=${name} client=${String(clientId).slice(0, 8)} IP=${clientIp} remote=${rawIp} stream=${!!room.streamActive} viewers=${room.viewers.size}`
       );
 
       cancelEmptyRoomDispose(room);
       persistRoom(room);
       broadcastViewerCount(io, room);
-      logRoomJoin(room, { role, name, clientId });
+      logRoomJoin(room, { role, name, clientId, ip: clientIp });
 
       const payload = {
         clientId,

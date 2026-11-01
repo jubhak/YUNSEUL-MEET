@@ -1,6 +1,6 @@
 import { TRACK_KIND } from './config.js';
 import { SfuClient } from './sfu-client.js?v=20261006a';
-import { VirtualAvatarManager, openWebcamFlexible, faceModeForRoomCount } from '../virtual-avatar-manager.js?v=20261030k';
+import { VirtualAvatarManager, openWebcamFlexible, faceModeForRoomCount } from '../virtual-avatar-manager.js?v=20261101c';
 import { FaceCompositor } from './face-compositor.js?v=20261016a';
 
 /**
@@ -192,6 +192,8 @@ export class HostPublisher {
   _startProducerResync() {
     if (this._resyncTimer) return;
     this._resyncTimer = setInterval(() => {
+      // 백그라운드 탭에서는 재동기화를 멈춰 서버 sfu-get-producers 호출을 줄인다
+      if (typeof document !== 'undefined' && document.hidden) return;
       if (this.interactionMode === 'unidirectional' && !this.voiceFloorId && !this.allowAllVoice) return;
       const sfu = this.sfu;
       if (!sfu || sfu._closed || !sfu.recvTransport || sfu.recvTransport.closed) {
@@ -670,7 +672,8 @@ export class HostPublisher {
         this.rawCameraStream = null;
         hadExisting = true;
       }
-      if (this.cameraStream && this.cameraStream !== this.rawCameraStream) {
+      const avOut = this.avatarManager?.outputStream;
+      if (this.cameraStream && this.cameraStream !== this.rawCameraStream && this.cameraStream !== avOut) {
         this.cameraStream.getTracks().forEach((t) => {
           try { t.stop(); } catch { /* ignore */ }
         });
@@ -694,7 +697,9 @@ export class HostPublisher {
       }
 
       this.rawCameraStream = stream;
-      const mode = faceModeForRoomCount(this._faceRoomCount || 1);
+      const mode = (this._manualFaceMode && this._manualFaceMode !== 'auto')
+        ? this._manualFaceMode
+        : (this.interactionMode === 'unidirectional' ? 'solo' : faceModeForRoomCount(this._faceRoomCount || 1));
       this.avatarManager.setFaceMode(mode);
       this.avatarManager.setWebcamStream(stream);
       if (this.hasMic && this._micTracks?.[0]) {
@@ -847,11 +852,55 @@ export class HostPublisher {
    * 방 인원 수에 따라 얼굴 송출 화질 자동 전환
    * 2~6명: 960×540 / 7~12명: 640×360 / 13~20명: 512×288 / 21~30명: 384×216 / 31명+: 320×180
    */
+  async setManualFaceMode(mode = 'auto') {
+    this._manualFaceMode = mode;
+    if (!this.avatarManager) return;
+    const effectiveMode = (mode && mode !== 'auto')
+      ? mode
+      : (this.interactionMode === 'unidirectional' ? 'solo' : faceModeForRoomCount(this._faceRoomCount || 1));
+
+    // 카메라가 비활성 상태(사용자가 켜지 않음)일 때는 canvas 출력 스트림을 생성/재할당하지 않고 프로파일만 갱신
+    if (!this.cameraWanted || !this.cameraStream || !this.rawCameraStream) {
+      this.avatarManager.setFaceMode(effectiveMode);
+      const idleProfile = this.avatarManager.getFaceProfile();
+      if (this.sfu) {
+        await this.sfu.updateCameraEncodings?.('camera', idleProfile).catch(() => {});
+      }
+      return;
+    }
+
+    this.avatarManager.setFaceMode(effectiveMode);
+    const profile = this.avatarManager.getFaceProfile();
+    // 새 해상도의 캔버스 캡처 스트림을 생성하여 화면 및 송출에 즉시 실제 화질 변경 반영
+    const outgoing = this.avatarManager.recreateFreshStream();
+    this.cameraStream = outgoing;
+    const nextTrack = outgoing?.getVideoTracks?.()[0] || null;
+    if (this.cameraWanted && this.sfu && nextTrack) {
+      try {
+        await this.sfu.publishStream(outgoing, {
+          source: 'camera',
+          trackKind: TRACK_KIND.CAMERA,
+        });
+        await this.sfu.updateCameraEncodings?.('camera', profile);
+      } catch (err) {
+        console.warn('[HostPublisher] manual face quality switch', err);
+      }
+    } else if (this.sfu) {
+      await this.sfu.updateCameraEncodings?.('camera', profile).catch(() => {});
+    }
+    // 로컬 화면 비디오 요소에도 새 스트림 바인딩하여 해상도 변경 효과가 즉시 시각적으로 확인되도록 함
+    this.onCameraChange?.({ active: true, stream: outgoing });
+  }
+
   async setFaceQualityByRoomSize(totalPeople = 1) {
     const count = Math.max(1, Number(totalPeople) || 1);
     this._faceRoomCount = count;
     this._applyDisplayBudget(count);
     if (!this.avatarManager) return;
+    // 수동 모드가 설정되어 있으면(auto가 아니면) 인원수 자동 변경을 스킵하고 수동 모드 유지
+    if (this._manualFaceMode && this._manualFaceMode !== 'auto') {
+      return;
+    }
     // 단방향: 호스트 얼굴은 호스트 화면(카드) 캡처로만 전달되므로 인원과 무관하게 640×360 유지
     const mode = this.interactionMode === 'unidirectional' ? 'solo' : faceModeForRoomCount(count);
     // 카메라가 비활성 상태(사용자가 켜지 않음)일 때는 canvas 출력 스트림을 생성/재할당하지 않음
@@ -907,7 +956,8 @@ export class HostPublisher {
       this.rawCameraStream = null;
     }
     this.avatarManager?.setWebcamStream(null);
-    if (this.cameraStream && this.cameraStream !== this.rawCameraStream) {
+    const avOutStop = this.avatarManager?.outputStream;
+    if (this.cameraStream && this.cameraStream !== this.rawCameraStream && this.cameraStream !== avOutStop) {
       this.cameraStream.getTracks().forEach((t) => {
         try { t.stop(); } catch { /* ignore */ }
       });

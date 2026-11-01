@@ -4,8 +4,9 @@
  * 1) img/ 디렉토리 내 180종 고품질 타로카드 이미지 인용
  * 2) 접속자 간 중복 없는 타로카드 자동 배정 (Non-duplication Deck)
  * 3) 카드 본체는 가림 없이 100% 온전히 표시 + 카드 바로 아래 정확히 7px 간격 사용자 아이디 배치
- * 4) 4x2 정중앙 반응형 카드 배치 (8명 시 상단 4장 + 하단 4장)
- * 5) 5, 4, 3, 2, 1 카운트다운 및 황금빛 발광 소멸(Dissolve) 연출
+ * 4) 화면 크기에 따라 한 줄에 최대한 채우고 넘치면 다음 줄로 떨어지는 완전 반응형 카드 배치 (Flex-Wrap)
+ * 5) 호스트 전용 "테스트 모드": 가상 접속자 수를 위아래 조정하여 카드 배치 반응형 동작 사전 검증 지원
+ * 6) 5, 4, 3, 2, 1 카운트다운 및 황금빛 발광 소멸(Dissolve) 연출
  */
 
 import { TAROT_IMAGES } from './tarot-images.js?v=20260918img1';
@@ -63,13 +64,11 @@ function assignUniqueCards(participants) {
 
   if (!total) return cardMap;
 
-  // 카드별 사용 횟수 추적 (공평한 중복 분배용)
   const usageCount = new Array(total).fill(0);
 
   participants.forEach((p) => {
     const baseIdx = hashString(p.id) % total;
 
-    // 1순위: 아직 한 번도 쓰이지 않은 미사용 카드 탐색 (중복 절대 없음)
     let chosenIdx = -1;
     for (let step = 0; step < total; step++) {
       const idx = (baseIdx + step) % total;
@@ -79,8 +78,6 @@ function assignUniqueCards(participants) {
       }
     }
 
-    // 2순위: 180장의 모든 카드가 이미 배정되어 200명 이상 초과 접속한 경우에만 중복 허용
-    // 사용 횟수가 가장 적은 카드들 중에서 배정하여 특정 카드만 몰리지 않게 고르게 분배
     if (chosenIdx === -1) {
       let minUsage = Infinity;
       for (let step = 0; step < total; step++) {
@@ -99,6 +96,18 @@ function assignUniqueCards(participants) {
   return cardMap;
 }
 
+// 테스트 모드용 다채로운 랜덤 닉네임 풀
+const SIMULATED_NICKNAMES = [
+  '별빛소녀', '코딩마스터', '루나_Alice', '스카이_Sky', '해피바이러스',
+  '블루베리', '화이트스노우', '초코쿠키', '사이버펑크', '골든라이트',
+  '새벽공기', '윈드체이서', '미스티블루', '체리블라썸', '네오매트릭스',
+  '스타더스트', '레인보우', '블랙스완', '달빛천사', '오로라_Aurora',
+  '슈퍼샤이니', '선샤인_Sun', '파도소리', '은하수_Milky', '민트초코',
+  '로맨틱홀리', '크리스탈', '에메랄드', '사파이어', '루비레드',
+  '모닝커피', '벨벳스카이', '원더랜드', '스마일러', '아쿠아마린',
+  '선셋글로우', '라이트닝', '섀도우댄서', '피스메이커', '코스모스'
+];
+
 export class TarotLoungeManager {
   constructor({ containerId = 'tarot-waiting-lounge', isHost = false } = {}) {
     this.container = document.getElementById(containerId);
@@ -109,6 +118,16 @@ export class TarotLoungeManager {
     this.isActive = false;
     this._isCountingDown = false;
     this._countdownTimer = null;
+
+    // 테스트 모드 상태
+    this.isTestMode = false;
+    this.testCount = 8;
+    this._lastRealParticipants = [];
+    this.testContainer = null;
+
+    if (this.isHost) {
+      this._ensureTestModeUI();
+    }
   }
 
   show() {
@@ -117,6 +136,14 @@ export class TarotLoungeManager {
     this.container.style.display = '';
     this.container.classList.remove('hidden');
     document.body.classList.add('is-in-tarot-lounge');
+
+    if (this.isHost) {
+      this._ensureTestModeUI();
+      if (this.testContainer) {
+        this.testContainer.style.display = '';
+        this.testContainer.classList.remove('hidden');
+      }
+    }
   }
 
   hide() {
@@ -135,6 +162,217 @@ export class TarotLoungeManager {
       this.countdownOverlay.classList.add('hidden');
     }
     document.body.classList.remove('is-in-tarot-lounge');
+    this.disableTestMode(false);
+  }
+
+  /**
+   * 호스트 전용: 카드 배치 테스트 모드 UI 생성 및 바인딩
+   */
+  _ensureTestModeUI() {
+    if (this.testContainer || !this.container) return;
+
+    const el = document.createElement('div');
+    el.className = 'tarot-test-mode-container';
+    el.id = 'tarot-test-mode-container';
+    el.innerHTML = `
+      <button type="button" class="tarot-test-toggle-btn" id="btn-tarot-test-toggle" title="카드 배치 테스트 모드 열기/닫기">
+        <span class="test-icon">🧪</span>
+        <span class="test-btn-text">테스트 모드</span>
+      </button>
+
+      <div class="tarot-test-panel hidden" id="tarot-test-panel">
+        <div class="tarot-test-panel-header">
+          <div class="tarot-test-panel-title">
+            <span class="test-icon">🧪</span>
+            <span>가상 접속자 카드 배치 테스트</span>
+          </div>
+          <button type="button" class="tarot-test-close-btn" id="btn-tarot-test-close" title="테스트 모드 종료">✕</button>
+        </div>
+
+        <div class="tarot-test-body">
+          <div class="tarot-test-stepper">
+            <span class="tarot-test-label">가상 접속자 수:</span>
+            <button type="button" class="tarot-test-step-btn" id="btn-tarot-test-minus" title="1명 감소">▼</button>
+            <input type="number" class="tarot-test-count-input" id="input-tarot-test-count" min="1" max="60" value="${this.testCount}" />
+            <span class="tarot-test-unit">명</span>
+            <button type="button" class="tarot-test-step-btn" id="btn-tarot-test-plus" title="1명 증가">▲</button>
+          </div>
+
+          <input type="range" class="tarot-test-slider" id="slider-tarot-test-count" min="1" max="60" value="${this.testCount}" />
+
+          <div class="tarot-test-presets">
+            <button type="button" class="tarot-test-preset-btn" data-count="1">1명(솔로)</button>
+            <button type="button" class="tarot-test-preset-btn" data-count="4">4명</button>
+            <button type="button" class="tarot-test-preset-btn" data-count="8">8명</button>
+            <button type="button" class="tarot-test-preset-btn" data-count="12">12명</button>
+            <button type="button" class="tarot-test-preset-btn" data-count="20">20명</button>
+            <button type="button" class="tarot-test-preset-btn" data-count="35">35명</button>
+          </div>
+
+          <div class="tarot-test-hint">
+            💡 접속자 숫자를 위아래로 조절하면 한 줄에 카드가 최대로 배치되고 넘치는 줄로 떨어지는 <strong>반응형 배치</strong>를 미리 보실 수 있습니다.
+          </div>
+        </div>
+      </div>
+    `;
+
+    this.container.appendChild(el);
+    this.testContainer = el;
+    this._bindTestEvents();
+  }
+
+  _bindTestEvents() {
+    if (!this.testContainer) return;
+
+    const btnToggle = this.testContainer.querySelector('#btn-tarot-test-toggle');
+    const panel = this.testContainer.querySelector('#tarot-test-panel');
+    const btnClose = this.testContainer.querySelector('#btn-tarot-test-close');
+    const btnMinus = this.testContainer.querySelector('#btn-tarot-test-minus');
+    const btnPlus = this.testContainer.querySelector('#btn-tarot-test-plus');
+    const inputCount = this.testContainer.querySelector('#input-tarot-test-count');
+    const sliderCount = this.testContainer.querySelector('#slider-tarot-test-count');
+    const presetBtns = this.testContainer.querySelectorAll('.tarot-test-preset-btn');
+
+    btnToggle?.addEventListener('click', (e) => {
+      e.stopPropagation();
+      if (this.isTestMode) {
+        this.disableTestMode();
+      } else {
+        this.enableTestMode();
+      }
+    });
+
+    btnClose?.addEventListener('click', (e) => {
+      e.stopPropagation();
+      this.disableTestMode();
+    });
+
+    btnMinus?.addEventListener('click', (e) => {
+      e.stopPropagation();
+      this.setTestCount(this.testCount - 1);
+    });
+
+    btnPlus?.addEventListener('click', (e) => {
+      e.stopPropagation();
+      this.setTestCount(this.testCount + 1);
+    });
+
+    inputCount?.addEventListener('input', (e) => {
+      const val = parseInt(e.target.value, 10);
+      if (!isNaN(val)) this.setTestCount(val);
+    });
+
+    sliderCount?.addEventListener('input', (e) => {
+      const val = parseInt(e.target.value, 10);
+      if (!isNaN(val)) this.setTestCount(val);
+    });
+
+    presetBtns.forEach((btn) => {
+      btn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const cnt = parseInt(btn.dataset.count, 10);
+        if (!isNaN(cnt)) this.setTestCount(cnt);
+      });
+    });
+
+    // 레이어 팝업 헤더 드래그 이동 기능 (뒤의 카드 배치를 가리지 않도록 자유롭게 이동 가능)
+    const header = this.testContainer.querySelector('.tarot-test-panel-header');
+    if (header && panel) {
+      let isDragging = false;
+      let startX = 0, startY = 0, initialLeft = 0, initialTop = 0;
+
+      header.addEventListener('mousedown', (e) => {
+        if (e.target.closest('#btn-tarot-test-close')) return;
+        isDragging = true;
+        startX = e.clientX;
+        startY = e.clientY;
+        const rect = panel.getBoundingClientRect();
+        initialLeft = rect.left;
+        initialTop = rect.top;
+        header.style.cursor = 'grabbing';
+        document.body.style.userSelect = 'none';
+      });
+
+      window.addEventListener('mousemove', (e) => {
+        if (!isDragging) return;
+        const dx = e.clientX - startX;
+        const dy = e.clientY - startY;
+        panel.style.position = 'fixed';
+        panel.style.left = Math.max(10, Math.min(window.innerWidth - panel.offsetWidth - 10, initialLeft + dx)) + 'px';
+        panel.style.top = Math.max(10, Math.min(window.innerHeight - panel.offsetHeight - 10, initialTop + dy)) + 'px';
+        panel.style.margin = '0';
+      });
+
+      window.addEventListener('mouseup', () => {
+        if (isDragging) {
+          isDragging = false;
+          header.style.cursor = 'grab';
+          document.body.style.userSelect = '';
+        }
+      });
+    }
+  }
+
+  enableTestMode() {
+    this.isTestMode = true;
+    const panel = this.testContainer?.querySelector('#tarot-test-panel');
+    const btnToggle = this.testContainer?.querySelector('#btn-tarot-test-toggle');
+    panel?.classList.remove('hidden');
+    btnToggle?.classList.add('is-active');
+    this._renderSimulated();
+  }
+
+  disableTestMode(reRender = true) {
+    this.isTestMode = false;
+    const panel = this.testContainer?.querySelector('#tarot-test-panel');
+    const btnToggle = this.testContainer?.querySelector('#btn-tarot-test-toggle');
+    panel?.classList.add('hidden');
+    btnToggle?.classList.remove('is-active');
+    if (reRender) {
+      this._doRenderParticipants(this._lastRealParticipants);
+    }
+  }
+
+  setTestCount(count) {
+    this.testCount = Math.max(1, Math.min(60, Number(count) || 1));
+    const inputCount = this.testContainer?.querySelector('#input-tarot-test-count');
+    const sliderCount = this.testContainer?.querySelector('#slider-tarot-test-count');
+    if (inputCount) inputCount.value = this.testCount;
+    if (sliderCount) sliderCount.value = this.testCount;
+    if (this.isTestMode) {
+      this._renderSimulated();
+    }
+  }
+
+  /**
+   * 가상 접속자 목록을 랜덤 닉네임으로 생성하여 렌더링
+   */
+  _renderSimulated() {
+    const n = this.testCount;
+    const simulated = [];
+
+    // 1번: 항상 호스트 (방장)
+    simulated.push({
+      id: 'local',
+      clientId: 'local',
+      name: '호스트',
+      role: 'host',
+    });
+
+    // 2 ~ N번: 가상 시청자 (랜덤 닉네임 배정)
+    for (let i = 1; i < n; i++) {
+      const nickBase = SIMULATED_NICKNAMES[(i * 7 + 11) % SIMULATED_NICKNAMES.length];
+      const randomNum = String((i * 37) % 99 + 1).padStart(2, '0');
+      const randomName = `${nickBase}_${randomNum}`;
+      simulated.push({
+        id: `sim-user-${i}`,
+        clientId: `sim-user-${i}`,
+        name: randomName,
+        role: 'viewer',
+      });
+    }
+
+    this._doRenderParticipants(simulated);
   }
 
   /**
@@ -142,6 +380,15 @@ export class TarotLoungeManager {
    * @param {Array<{ id: string, name: string, role: string }>} participants
    */
   renderParticipants(participants = []) {
+    this._lastRealParticipants = Array.isArray(participants) ? participants : Object.values(participants || {});
+    if (this.isTestMode) {
+      this._renderSimulated();
+      return;
+    }
+    this._doRenderParticipants(this._lastRealParticipants);
+  }
+
+  _doRenderParticipants(participants = []) {
     if (!this.grid || this._isCountingDown) return;
 
     const list = Array.isArray(participants) ? participants : Object.values(participants || {});
@@ -149,7 +396,6 @@ export class TarotLoungeManager {
     // 중복 제거 및 호스트를 맨 앞으로 정렬
     const unique = [];
     const seen = new Set();
-    // 마이크 확인 대기(admitted === false) 중인 참가자는 아직 입장 전이므로 카드를 배정하지 않는다
     const hosts = list.filter((p) => p && p.role === 'host');
     const viewers = list.filter((p) => p && p.role !== 'host' && p.admitted !== false);
     [...hosts, ...viewers].forEach((p) => {
@@ -183,7 +429,7 @@ export class TarotLoungeManager {
 
       const el = document.createElement('div');
       el.className = `tarot-card-item${isUserHost ? ' is-host-card' : ''}`;
-      el.style.animationDelay = `${idx * 0.08}s`;
+      el.style.animationDelay = `${idx * 0.05}s`;
 
       el.innerHTML = `
         <!-- 고화질 타로카드 이미지 본체 (그림 가림 없이 100% 노출) -->
@@ -216,15 +462,13 @@ export class TarotLoungeManager {
       return;
     }
     this._isCountingDown = true;
+    this.disableTestMode(false);
 
-    // 대기실 전체 섬광/폭풍 이펙트 클래스 활성화
     this.container.classList.add('is-dissolving-storm');
 
-    // 1. 각 카드마다 하드웨어 가속 3D 전방위(360도) 랜덤 비행 및 섬광 폭발 연출
     const cardItems = this.container.querySelectorAll('.tarot-card-item');
     const totalCards = cardItems.length;
 
-    // 카드가 배치된 순서에 상관없이 사방팔방으로 흩어지도록 셔플된 방향 인덱스 배열 생성
     const dirIndices = Array.from({ length: totalCards }, (_, i) => i);
     for (let i = dirIndices.length - 1; i > 0; i--) {
       const j = Math.floor(Math.random() * (i + 1));
@@ -232,131 +476,58 @@ export class TarotLoungeManager {
     }
 
     cardItems.forEach((card, idx) => {
-      // 360도 전 방향으로 자연스러운 흩어짐 (위, 아래, 좌, 우, 대각선 등 사방팔방)
       const dirSlot = dirIndices[idx] ?? idx;
       const angleStep = (Math.PI * 2) / Math.max(1, totalCards);
       const angle = (dirSlot * angleStep) + (Math.random() - 0.5) * (angleStep * 0.6);
 
-      // 화면 안에서 카드가 사방으로 날아가는 모습을 충분히 감상할 수 있는 적정 비행 거리 (350px ~ 600px)
       const dist = 350 + Math.random() * 250;
       const flyX = Math.round(Math.cos(angle) * dist);
       const flyY = Math.round(Math.sin(angle) * dist);
       const flyZ = Math.round(60 + (Math.random() - 0.5) * 120);
 
-      // 3D 회전각 (-180도 ~ +180도 부드러운 공중 텀블링)
       const rotZ = Math.round((Math.random() - 0.5) * 360);
       const rotY = Math.round((Math.random() - 0.5) * 180);
       const rotX = Math.round((Math.random() - 0.5) * 180);
       const endScale = (0.5 + Math.random() * 0.3).toFixed(2);
-      const delayMs = Math.round((idx % 6) * 50 + Math.random() * 60); // 0 ~ 360ms 미세 시차
-      const durationMs = Math.round(3800 + Math.random() * 300); // 3.8초 ~ 4.1초 동안 5초 카운트다운에 맞춰 여유롭게 비행
 
-      // 기존 transition 및 float 애니메이션 간섭 완전 차단
-      card.style.transition = 'none';
-      card.style.animation = 'none';
-      card.classList.add('is-dissolving');
-
-      // Web Animations API: 5초 카운트다운 동안 카드가 서서히 사방으로 흩어지며 빛과 함께 사라짐
-      if (typeof card.animate === 'function') {
-        try {
-          const anim = card.animate([
-            {
-              transform: 'perspective(1200px) translate3d(0px, 0px, 0px) rotateX(0deg) rotateY(0deg) rotateZ(0deg) scale(1)',
-              opacity: 1,
-              filter: 'brightness(1) drop-shadow(0 4px 12px rgba(0,0,0,0.5))',
-            },
-            {
-              offset: 0.15,
-              // 0.6초: 카드가 서서히 떠오르며 황금빛을 발산
-              transform: `perspective(1200px) translate3d(${Math.round(flyX * 0.15)}px, ${Math.round(flyY * 0.15)}px, 80px) rotateX(${Math.round(rotX * 0.2)}deg) rotateY(${Math.round(rotY * 0.2)}deg) rotateZ(${Math.round(rotZ * 0.2)}deg) scale(1.08)`,
-              opacity: 1,
-              filter: 'brightness(1.35) drop-shadow(0 0 20px rgba(250, 204, 21, 0.7))',
-            },
-            {
-              offset: 0.55,
-              // 2.2초: 360도 사방으로 부드럽게 흩어져 비행 중 (여전히 선명하게 보임)
-              transform: `perspective(1200px) translate3d(${Math.round(flyX * 0.6)}px, ${Math.round(flyY * 0.6)}px, ${flyZ}px) rotateX(${Math.round(rotX * 0.6)}deg) rotateY(${Math.round(rotY * 0.6)}deg) rotateZ(${Math.round(rotZ * 0.6)}deg) scale(0.95)`,
-              opacity: 0.95,
-              filter: 'brightness(1.2) drop-shadow(0 0 16px rgba(250, 204, 21, 0.5))',
-            },
-            {
-              offset: 0.82,
-              // 3.3초: 카운트다운 2~1초 구간, 점차 빛과 함께 소멸 시작
-              transform: `perspective(1200px) translate3d(${Math.round(flyX * 0.88)}px, ${Math.round(flyY * 0.88)}px, ${flyZ + 40}px) rotateX(${Math.round(rotX * 0.88)}deg) rotateY(${Math.round(rotY * 0.88)}deg) rotateZ(${Math.round(rotZ * 0.88)}deg) scale(0.75)`,
-              opacity: 0.6,
-              filter: 'brightness(1.5) drop-shadow(0 0 25px rgba(255, 255, 255, 0.8))',
-            },
-            {
-              offset: 1,
-              // 4.0초: 미팅 시작 직전 사방으로 흩어지며 완전히 소멸
-              transform: `perspective(1200px) translate3d(${flyX}px, ${flyY}px, ${flyZ + 80}px) rotateX(${rotX}deg) rotateY(${rotY}deg) rotateZ(${rotZ}deg) scale(${endScale})`,
-              opacity: 0,
-              filter: 'brightness(1.8) drop-shadow(0 0 30px rgba(250, 204, 21, 0.9))',
-            }
-          ], {
-            duration: durationMs,
-            delay: delayMs,
-            easing: 'cubic-bezier(0.25, 0.1, 0.25, 1)',
-            fill: 'forwards',
-          });
-
-          anim.onfinish = () => {
-            card.style.opacity = '0';
-            card.style.visibility = 'hidden';
-          };
-        } catch (animErr) {
-          console.warn('[tarot] card.animate error:', animErr);
-          card.style.opacity = '0';
-          card.style.visibility = 'hidden';
-        }
-      } else {
-        card.style.opacity = '0';
-        card.style.visibility = 'hidden';
-      }
+      card.style.setProperty('--fly-x', `${flyX}px`);
+      card.style.setProperty('--fly-y', `${flyY}px`);
+      card.style.setProperty('--fly-z', `${flyZ}px`);
+      card.style.setProperty('--rot-x', `${rotX}deg`);
+      card.style.setProperty('--rot-y', `${rotY}deg`);
+      card.style.setProperty('--rot-z', `${rotZ}deg`);
+      card.style.setProperty('--end-scale', endScale);
+      card.classList.add('is-dissolving-card');
     });
 
-    // 2. 카운트다운 오버레이 활성화
-    if (this.countdownOverlay) {
+    if (this.countdownOverlay && this.countdownNum) {
       this.countdownOverlay.classList.remove('hidden');
       this.countdownOverlay.classList.add('is-active');
-    }
+      let remain = Number(duration) || 5;
+      this.countdownNum.textContent = String(remain);
 
-    let remaining = duration;
-    if (this.countdownNum) {
-      this.countdownNum.textContent = String(remaining);
-    }
-
-    if (this._countdownTimer) {
-      clearInterval(this._countdownTimer);
-    }
-
-    this._countdownTimer = setInterval(() => {
-      remaining -= 1;
-      if (remaining > 0) {
-        if (this.countdownNum) {
-          this.countdownNum.textContent = String(remaining);
-          // 리펄스 트리거
-          this.countdownNum.style.animation = 'none';
+      this._countdownTimer = setInterval(() => {
+        remain--;
+        if (remain > 0) {
+          this.countdownNum.textContent = String(remain);
+          this.countdownNum.classList.remove('pulse-tick');
           void this.countdownNum.offsetWidth;
-          this.countdownNum.style.animation = '';
+          this.countdownNum.classList.add('pulse-tick');
+        } else {
+          clearInterval(this._countdownTimer);
+          this._countdownTimer = null;
+          this.container.classList.add('is-fading-out');
+          setTimeout(() => {
+            this.hide();
+            onComplete?.();
+          }, 800);
         }
-      } else {
-        clearInterval(this._countdownTimer);
-        this._countdownTimer = null;
-
-        // 대기실 전체 페이드아웃 후 닫기
-        this.container.classList.add('is-fading-out');
-        setTimeout(() => {
-          this._isCountingDown = false;
-          this.hide();
-          this.container.classList.remove('is-fading-out', 'is-dissolving-storm');
-          if (this.countdownOverlay) {
-            this.countdownOverlay.classList.remove('is-active');
-            this.countdownOverlay.classList.add('hidden');
-          }
-          onComplete?.();
-        }, 600);
-      }
-    }, 1000);
+      }, 1000);
+    } else {
+      setTimeout(() => {
+        this.hide();
+        onComplete?.();
+      }, (Number(duration) || 5) * 1000);
+    }
   }
 }

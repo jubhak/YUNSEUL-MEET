@@ -24,3 +24,5 @@ dist/
 deep-live-cam/models/
 packages/
 *.whl
+
+scratch/

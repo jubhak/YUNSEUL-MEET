@@ -262,6 +262,9 @@ function hideRotateHint() {
 }
 
 export function setupDisplayMode({ autoPromptMobile = false } = {}) {
+  if (isMobile()) {
+    document.body.classList.add('is-mobile-device');
+  }
   const btn = document.getElementById('btn-fullscreen');
   const gate = document.getElementById('mobile-fs-gate');
   const gateBtn = document.getElementById('btn-mobile-fs');
@@ -332,6 +335,11 @@ export function setupDisplayMode({ autoPromptMobile = false } = {}) {
 
   // 줌/뷰포트 변화 후에도 상태 유지
   const keepChromeState = () => {
+    if (isMobile()) {
+      document.body.classList.add('is-mobile-device');
+    } else {
+      document.body.classList.remove('is-mobile-device');
+    }
     if (!document.body.classList.contains('is-fullscreen')) return;
     if (isHostPage() && !isMobile()) {
       applyChromeVisibility(true);

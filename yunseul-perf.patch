@@ -1,0 +1,211 @@
+From f355ee9d5d31fddf1e5d9c777819f6c1bed24560 Mon Sep 17 00:00:00 2001
+From: perf <perf@local>
+Date: Sun, 1 Nov 2026 00:53:40 +0000
+Subject: [PATCH] perf: reduce redundant timers, polling, log IO and
+ per-request work
+
+- server/sfu.js: cache client RTP capabilities per router (no deep clone per transport)
+- server/sfu.js: gate per-resync get-producers log behind SFU_DEBUG
+- server/index.js: skip persisting identical room JSON (drop redundant sync disk writes)
+- js/sync.js: heartbeat 4s -> 15s (Socket.IO keepalive already covers liveness)
+- js/host.js: get-room polling 3s -> 15s while socket is connected
+- js/speaking-indicator.js: skip DOM scan when no audio source, reuse spotlight measurement
+- js/webrtc/mic-pipeline.js: compute output RMS once per tick
+- js/webrtc/{host-publisher,viewer-subscriber}.js: pause 4s producer resync while tab hidden
+---
+ js/host.js                     |  5 ++++-
+ js/speaking-indicator.js       |  9 +++++++--
+ js/sync.js                     |  5 +++--
+ js/webrtc/host-publisher.js    |  2 ++
+ js/webrtc/mic-pipeline.js      |  6 ++++--
+ js/webrtc/viewer-subscriber.js |  2 ++
+ server/index.js                |  9 ++++++++-
+ server/sfu.js                  | 12 +++++++++---
+ 8 files changed, 39 insertions(+), 11 deletions(-)
+
+diff --git a/js/host.js b/js/host.js
+index a24defe..7ad9eba 100644
+--- a/js/host.js
++++ b/js/host.js
+@@ -2357,8 +2357,11 @@ setInterval(() => {
+   }
+ }, 5000);
+ 
+-// 폴링 백업 (참가자 수)
++// 폴링 백업 (참가자 수) — 소켓이 살아 있으면 15초에 한 번만 확인
++let roomPollTick = 0;
+ setInterval(() => {
++  roomPollTick += 1;
++  if (sync?.socket?.connected && roomPollTick % 5 !== 0) return;
+   fetch('api/get-room?code=' + encodeURIComponent(roomCode))
+     .then((r) => r.json())
+     .then((state) => {
+diff --git a/js/speaking-indicator.js b/js/speaking-indicator.js
+index 2d29567..e94b5cd 100644
+--- a/js/speaking-indicator.js
++++ b/js/speaking-indicator.js
+@@ -165,6 +165,7 @@ class SpeakingIndicatorManager {
+ 
+   _tick() {
+     if (typeof document === 'undefined') return;
++    if (this.sources.size === 0) return; // 분석할 소스가 없으면 DOM 조회 자체를 생략
+     const now = performance.now();
+     const els = document.querySelectorAll('[data-speak-id]');
+     const cache = new Map();
+@@ -210,8 +211,12 @@ class SpeakingIndicatorManager {
+ 
+     if (this.onSpotlightVoice && this._currentSpotlightId) {
+       const spId = this._currentSpotlightId;
+-      const s = this.sources.get(spId);
+-      const m = s ? this._measure(spId, s, now) : null;
++      let m = cache.get(spId);
++      if (m === undefined) {
++        const s = this.sources.get(spId);
++        m = s ? this._measure(spId, s, now) : null;
++        cache.set(spId, m);
++      }
+       try { this.onSpotlightVoice(!!(m && m.speaking), m?.level || 0); } catch { /* ignore */ }
+     }
+     if (this.onSpeakingChange) {
+diff --git a/js/sync.js b/js/sync.js
+index da35b88..581436b 100644
+--- a/js/sync.js
++++ b/js/sync.js
+@@ -88,14 +88,15 @@ export class RoomSync {
+       this._rejoin();
+     });
+ 
+-    // 4초 주기 고속 하트비트 및 소켓 생존 모니터링
++    // 하트비트: 소켓 생존 확인용. Socket.IO 자체 ping(25s)이 있어 15초면 충분하다.
++    // (4초 → 15초: 참가자 수 × 초당 메시지 3.75배 절감)
+     this.heartbeatTimer = setInterval(() => {
+       if (this.socket?.connected) {
+         this.socket.emit('heartbeat');
+       } else if (this.socket && !this.socket.connected) {
+         try { this.socket.connect(); } catch { /* ignore */ }
+       }
+-    }, 4000);
++    }, 15000);
+ 
+     return data;
+   }
+diff --git a/js/webrtc/host-publisher.js b/js/webrtc/host-publisher.js
+index 57f1a15..c45ca0c 100644
+--- a/js/webrtc/host-publisher.js
++++ b/js/webrtc/host-publisher.js
+@@ -192,6 +192,8 @@ export class HostPublisher {
+   _startProducerResync() {
+     if (this._resyncTimer) return;
+     this._resyncTimer = setInterval(() => {
++      // 백그라운드 탭에서는 재동기화를 멈춰 서버 sfu-get-producers 호출을 줄인다
++      if (typeof document !== 'undefined' && document.hidden) return;
+       if (this.interactionMode === 'unidirectional' && !this.voiceFloorId && !this.allowAllVoice) return;
+       const sfu = this.sfu;
+       if (!sfu || sfu._closed || !sfu.recvTransport || sfu.recvTransport.closed) {
+diff --git a/js/webrtc/mic-pipeline.js b/js/webrtc/mic-pipeline.js
+index f1682ee..1b73d77 100644
+--- a/js/webrtc/mic-pipeline.js
++++ b/js/webrtc/mic-pipeline.js
+@@ -176,6 +176,8 @@ export class VoicePipeline {
+     if (this._closed) return;
+     if (this.ctx.state === 'suspended') this._ensureRunning();
+     const inRms = this._rms(this.inAnalyser, this._inBuf);
++    let outRmsCache = -1;
++    const readOut = () => (outRmsCache < 0 ? (outRmsCache = this._rms(this.outAnalyser, this._outBuf)) : outRmsCache);
+ 
+     if (this.mode === 'fallback' || this.mode === 'bypass') {
+       // 워크릿이 없거나 bypass 일 때: 메인 스레드에서 레벨/발화 판정(+대체 체인은 느슨한 게이트)
+@@ -185,7 +187,7 @@ export class VoicePipeline {
+       if (this.mode === 'fallback' && this.fbGate) {
+         try { this.fbGate.gain.setTargetAtTime(open ? 1 : 0.2, this.ctx.currentTime, open ? 0.02 : 0.12); } catch { /* ignore */ }
+       }
+-      const outRms = this._rms(this.outAnalyser, this._outBuf);
++      const outRms = readOut();
+       const db = 20 * Math.log10(outRms + 1e-6);
+       const speech = open && inRms > 0.02;
+       if (speech) this._fbSpeechHold = now + 280;
+@@ -198,7 +200,7 @@ export class VoicePipeline {
+ 
+     // 안전장치: 입력은 크게 들어오는데 출력이 계속 무음 → 원본 직결(bypass)
+     if (this.mode !== 'bypass' && this.hasInput) {
+-      const outRms = this._rms(this.outAnalyser, this._outBuf);
++      const outRms = readOut();
+       if (inRms > 0.03 && outRms < 0.0015) {
+         this._silentOutMs += 100;
+         if (this._silentOutMs >= 2500) this._enterBypass('출력 무음 감지');
+diff --git a/js/webrtc/viewer-subscriber.js b/js/webrtc/viewer-subscriber.js
+index 86caa93..17b6b02 100644
+--- a/js/webrtc/viewer-subscriber.js
++++ b/js/webrtc/viewer-subscriber.js
+@@ -280,6 +280,8 @@ export class ViewerSubscriber {
+   _startProducerResync() {
+     if (this._resyncTimer) return;
+     this._resyncTimer = setInterval(() => {
++      // 백그라운드 탭에서는 재동기화를 멈춰 서버 부하를 줄인다
++      if (typeof document !== 'undefined' && document.hidden) return;
+       if (this.interactionMode === 'unidirectional' && !this.allowAllVoice) return;
+       if (!this.sfu || this.sfu._closed) return;
+       this.sfu.consumeExistingProducers?.().catch(() => {});
+diff --git a/server/index.js b/server/index.js
+index c0345c0..93eb569 100644
+--- a/server/index.js
++++ b/server/index.js
+@@ -367,6 +367,8 @@ function roomPath(code) {
+   return path.join(ROOMS_DIR, `${code}.json`);
+ }
+ 
++const lastPersistSignature = new Map();
++
+ function persistRoom(room) {
+   const normMode = normalizeInteractionMode(room.interactionMode);
+   const data = {
+@@ -398,7 +400,12 @@ function persistRoom(room) {
+       [...room.viewers.entries()].map(([id, v]) => [id, { name: v.name, lastSeen: v.lastSeen }])
+     ),
+   };
+-  fs.writeFileSync(roomPath(room.code), JSON.stringify(data), 'utf8');
++  // 같은 내용을 반복 기록하지 않는다(스윕·중복 이벤트에서 발생하던 무의미한 디스크 IO 제거)
++  const json = JSON.stringify(data);
++  if (lastPersistSignature.get(room.code) === json) return;
++  if (lastPersistSignature.size > 512) lastPersistSignature.clear();
++  lastPersistSignature.set(room.code, json);
++  fs.writeFileSync(roomPath(room.code), json, 'utf8');
+ }
+ 
+ function loadRoomFromDisk(code) {
+diff --git a/server/sfu.js b/server/sfu.js
+index e7a1b77..8f71ffa 100644
+--- a/server/sfu.js
++++ b/server/sfu.js
+@@ -357,12 +357,15 @@ function transportKey(direction, purpose) {
+  * (video-orientation ↔ transport-wide-cc)
+  */
+ function clientRtpCapabilities(router) {
++  // router.rtpCapabilities 는 불변이므로 매 transport 생성마다 깊은 복사할 필요가 없다
++  if (router.__ymClientCaps) return router.__ymClientCaps;
+   const caps = JSON.parse(JSON.stringify(router.rtpCapabilities));
+   const deny = new Set([
+     'urn:3gpp:video-orientation',
+     'urn:ietf:params:rtp-hdrext:toffset',
+   ]);
+   caps.headerExtensions = (caps.headerExtensions || []).filter((ext) => !deny.has(ext.uri));
++  router.__ymClientCaps = caps;
+   return caps;
+ }
+ 
+@@ -998,9 +1001,12 @@ function attachSfuHandlers(socket, ctx) {
+       if (!code) return cb?.({ ok: true, producers: [] });
+       const room = await getOrCreateRoom(code);
+       const producers = listProducers(room, { excludeClientId: clientId, forRole: ctx.getRole() || 'viewer' });
+-      console.log(
+-        `[sfu] get-producers room=${code} peer=${String(clientId || '').slice(0, 8)} count=${producers.length}`
+-      );
++      // 4초 주기 resync 마다 찍히면 로그 IO가 폭증한다 → 필요할 때만
++      if (process.env.SFU_DEBUG === '1') {
++        console.log(
++          `[sfu] get-producers room=${code} peer=${String(clientId || '').slice(0, 8)} count=${producers.length}`
++        );
++      }
+       cb?.({ ok: true, producers });
+     } catch (err) {
+       cb?.({ error: err.message || 'sfu-error' });

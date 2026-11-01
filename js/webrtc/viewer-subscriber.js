@@ -280,6 +280,8 @@ export class ViewerSubscriber {
   _startProducerResync() {
     if (this._resyncTimer) return;
     this._resyncTimer = setInterval(() => {
+      // 백그라운드 탭에서는 재동기화를 멈춰 서버 부하를 줄인다
+      if (typeof document !== 'undefined' && document.hidden) return;
       if (this.interactionMode === 'unidirectional' && !this.allowAllVoice) return;
       if (!this.sfu || this.sfu._closed) return;
       this.sfu.consumeExistingProducers?.().catch(() => {});

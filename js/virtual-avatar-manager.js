@@ -96,6 +96,12 @@ export const FACE_OUT_FPS_HD = 30;
 export const FACE_OUT_W_HQ = 960;
 export const FACE_OUT_H_HQ = 540;
 export const FACE_OUT_FPS_HQ = 30;
+export const FACE_OUT_W_720P = 1280;
+export const FACE_OUT_H_720P = 720;
+export const FACE_OUT_FPS_720P = 30;
+export const FACE_OUT_W_FHD = 1920;
+export const FACE_OUT_H_FHD = 1080;
+export const FACE_OUT_FPS_FHD = 30;
 export const FACE_OUT_W_CROWD = 512;
 export const FACE_OUT_H_CROWD = 288;
 export const FACE_OUT_FPS_CROWD = 20;
@@ -107,6 +113,8 @@ export const FACE_OUT_H_MASS = 180;
 export const FACE_OUT_FPS_MASS = 10;
 
 /** 호스트만 개별 얼굴을 받고, 클라이언트는 합성 화면 1장만 받는다. */
+export const FACE_PROFILE_FHD = { mode: 'fhd', width: 1920, height: 1080, fps: 30, maxBitrate: 2_500_000 };
+export const FACE_PROFILE_720P = { mode: '720p', width: 1280, height: 720, fps: 30, maxBitrate: 1_500_000 };
 export const FACE_PROFILE_HIGH = { mode: 'high', width: FACE_OUT_W_HQ, height: FACE_OUT_H_HQ, fps: FACE_OUT_FPS_HQ, maxBitrate: 900_000 };
 export const FACE_PROFILE_SOLO = { mode: 'solo', width: FACE_OUT_W_HD, height: FACE_OUT_H_HD, fps: FACE_OUT_FPS_HD, maxBitrate: 350_000 };
 export const FACE_PROFILE_MULTI = { mode: 'multi', width: FACE_OUT_W, height: FACE_OUT_H, fps: FACE_OUT_FPS, maxBitrate: 180_000 };
@@ -124,12 +132,15 @@ export function faceModeForRoomCount(totalPeople = 1) {
 }
 
 export function faceProfileForMode(mode) {
-  if (mode === 'high') return FACE_PROFILE_HIGH;
-  if (mode === 'solo') return FACE_PROFILE_SOLO;
-  if (mode === 'crowd') return FACE_PROFILE_CROWD;
-  if (mode === 'pack') return FACE_PROFILE_PACK;
-  if (mode === 'mass') return FACE_PROFILE_MASS;
-  return FACE_PROFILE_MULTI;
+  if (mode === 'fhd' || mode === '1080p') return FACE_PROFILE_FHD;
+  if (mode === '720p' || mode === 'hd') return FACE_PROFILE_720P;
+  if (mode === 'high' || mode === '540p') return FACE_PROFILE_HIGH;
+  if (mode === 'solo' || mode === '360p') return FACE_PROFILE_SOLO;
+  if (mode === 'crowd' || mode === '288p') return FACE_PROFILE_CROWD;
+  if (mode === 'pack' || mode === '216p') return FACE_PROFILE_PACK;
+  if (mode === 'mass' || mode === '180p') return FACE_PROFILE_MASS;
+  if (mode === 'multi' || mode === '270p') return FACE_PROFILE_MULTI;
+  return FACE_PROFILE_HIGH;
 }
 
 function _isDeniedCameraError(err) {
@@ -534,20 +545,20 @@ export class VirtualAvatarManager {
   }
 
   _softApplyWebcamConstraints(profile) {
-    try {
-      const vt = this.rawWebcamStream?.getVideoTracks?.()[0];
-      if (!vt) return;
-      // ideal만 — max 하드 리밋으로 OverconstrainedError 내지 않음
-      vt.applyConstraints?.({
-        width: { ideal: profile.width },
-        height: { ideal: profile.height },
-        frameRate: { ideal: profile.fps },
-      }).catch(() => {
-        // 장비가 해당 해상도를 못 내면 장치 기본 유지 → 캔버스에서 다운스케일
-      });
-    } catch { /* ignore */ }
+    // 하드웨어 웹캠 센서 해상도는 직접 변경하지 않습니다.
+    // (드라이버가 디지털 줌을 하거나 화각이 왜곡되는 문제를 원천 방지)
   }
 
+  recreateFreshStream() {
+    const fps = this.captureFps || FACE_OUT_FPS;
+    if (this.outputStream) {
+      this.outputStream.getTracks().forEach((t) => {
+        try { t.stop(); } catch { /* ignore */ }
+      });
+    }
+    this.outputStream = this.canvas.captureStream(fps);
+    return this.outputStream;
+  }
   _recreateOutputStream() {
     const fps = this.captureFps || FACE_OUT_FPS;
     // 이미 라이브 출력 스트림이 유지되고 있다면 트랙을 강제로 죽이지 않음 (WebRTC 송출 및 비디오 재생 중단 방지)
@@ -658,7 +669,7 @@ export class VirtualAvatarManager {
    * WebRTC 송출용 캡처 스트림 반환
    */
   getOutputStream() {
-    if (!this.outputStream || this.outputStream.getVideoTracks().every((t) => t.readyState === 'ended')) {
+    if (!this.outputStream || !this.outputStream.getVideoTracks().some((t) => t && t.readyState === 'live')) {
       this.outputStream = this.canvas.captureStream(this.captureFps || FACE_OUT_FPS);
     }
     return this.outputStream;
@@ -1310,13 +1321,27 @@ export class VirtualAvatarManager {
     }
     const bctx = this._beautyCtx;
 
-    // 1) 웹캠 원본 좌우 반전 캡처 (GPU 텍스처 복사)
+    // 1) 웹캠 원본 종횡비 유지(Aspect Cover) 및 좌우 반전 캡처
+    // 어떤 해상도에서도 얼굴이 확대(줌인)되거나 찌그러지지 않고 완벽한 고정 화각 유지
+    const vw = video.videoWidth || w;
+    const vh = video.videoHeight || h;
+    const vAspect = vw / vh;
+    const cAspect = w / h;
+    let sx = 0, sy = 0, sw = vw, sh = vh;
+    if (vAspect > cAspect) {
+      sw = vh * cAspect;
+      sx = (vw - sw) / 2;
+    } else {
+      sh = vw / cAspect;
+      sy = (vh - sh) / 2;
+    }
+
     bctx.save();
     bctx.setTransform(1, 0, 0, 1, 0, 0);
     bctx.clearRect(0, 0, w, h);
     bctx.translate(w, 0);
     bctx.scale(-1, 1);
-    bctx.drawImage(video, 0, 0, w, h);
+    bctx.drawImage(video, sx, sy, sw, sh, 0, 0, w, h);
     bctx.restore();
 
     // 2) 1단계: 원본 초고화질 베이스 렌더링 (화면이 절대 까맣게 나오지 않도록 보장)
@@ -1747,15 +1772,13 @@ export class VirtualAvatarManager {
 
   /** 서버가 권고한 max_w 와 방 인원 프로파일을 함께 반영한 전송 해상도 */
   _swapSendSize() {
-    // 호스트에는 서버 직송(face-feed)으로 이 해상도 그대로 표시되므로, 방 인원과 무관하게
-    // 서버가 허용하는 최대 폭(기본 640)까지 보낸다. (서버가 과부하면 throttle 메시지의 max_w 로 자동 축소)
     const outW = this.width || 640;
     const outH = this.height || 360;
-    let w = 640;
-    if (this._serverMaxW) w = Math.min(w, this._serverMaxW);
-    w = Math.min(w, 640, this._uploadLimits().w);
-    w = Math.max(320, Math.round(w / 16) * 16);
-    const h = Math.max(180, Math.round((w * outH) / outW / 2) * 2);
+    let targetW = Math.min(outW, 768);
+    if (this._serverMaxW) targetW = Math.min(targetW, this._serverMaxW);
+    targetW = Math.min(targetW, this._uploadLimits().w);
+    const w = Math.max(256, Math.round(targetW / 16) * 16);
+    const h = Math.max(144, Math.round((w * outH) / outW / 2) * 2);
     return { w, h };
   }
 

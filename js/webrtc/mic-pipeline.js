@@ -176,6 +176,8 @@ export class VoicePipeline {
     if (this._closed) return;
     if (this.ctx.state === 'suspended') this._ensureRunning();
     const inRms = this._rms(this.inAnalyser, this._inBuf);
+    let outRmsCache = -1;
+    const readOut = () => (outRmsCache < 0 ? (outRmsCache = this._rms(this.outAnalyser, this._outBuf)) : outRmsCache);
 
     if (this.mode === 'fallback' || this.mode === 'bypass') {
       // 워크릿이 없거나 bypass 일 때: 메인 스레드에서 레벨/발화 판정(+대체 체인은 느슨한 게이트)
@@ -185,7 +187,7 @@ export class VoicePipeline {
       if (this.mode === 'fallback' && this.fbGate) {
         try { this.fbGate.gain.setTargetAtTime(open ? 1 : 0.2, this.ctx.currentTime, open ? 0.02 : 0.12); } catch { /* ignore */ }
       }
-      const outRms = this._rms(this.outAnalyser, this._outBuf);
+      const outRms = readOut();
       const db = 20 * Math.log10(outRms + 1e-6);
       const speech = open && inRms > 0.02;
       if (speech) this._fbSpeechHold = now + 280;
@@ -198,7 +200,7 @@ export class VoicePipeline {
 
     // 안전장치: 입력은 크게 들어오는데 출력이 계속 무음 → 원본 직결(bypass)
     if (this.mode !== 'bypass' && this.hasInput) {
-      const outRms = this._rms(this.outAnalyser, this._outBuf);
+      const outRms = readOut();
       if (inRms > 0.03 && outRms < 0.0015) {
         this._silentOutMs += 100;
         if (this._silentOutMs >= 2500) this._enterBypass('출력 무음 감지');

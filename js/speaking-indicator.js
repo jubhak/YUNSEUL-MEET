@@ -165,6 +165,7 @@ class SpeakingIndicatorManager {
 
   _tick() {
     if (typeof document === 'undefined') return;
+    if (this.sources.size === 0) return; // 분석할 소스가 없으면 DOM 조회 자체를 생략
     const now = performance.now();
     const els = document.querySelectorAll('[data-speak-id]');
     const cache = new Map();
@@ -210,8 +211,12 @@ class SpeakingIndicatorManager {
 
     if (this.onSpotlightVoice && this._currentSpotlightId) {
       const spId = this._currentSpotlightId;
-      const s = this.sources.get(spId);
-      const m = s ? this._measure(spId, s, now) : null;
+      let m = cache.get(spId);
+      if (m === undefined) {
+        const s = this.sources.get(spId);
+        m = s ? this._measure(spId, s, now) : null;
+        cache.set(spId, m);
+      }
       try { this.onSpotlightVoice(!!(m && m.speaking), m?.level || 0); } catch { /* ignore */ }
     }
     if (this.onSpeakingChange) {

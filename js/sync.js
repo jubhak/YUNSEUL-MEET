@@ -88,14 +88,15 @@ export class RoomSync {
       this._rejoin();
     });
 
-    // 4초 주기 고속 하트비트 및 소켓 생존 모니터링
+    // 하트비트: 소켓 생존 확인용. Socket.IO 자체 ping(25s)이 있어 15초면 충분하다.
+    // (4초 → 15초: 참가자 수 × 초당 메시지 3.75배 절감)
     this.heartbeatTimer = setInterval(() => {
       if (this.socket?.connected) {
         this.socket.emit('heartbeat');
       } else if (this.socket && !this.socket.connected) {
         try { this.socket.connect(); } catch { /* ignore */ }
       }
-    }, 4000);
+    }, 15000);
 
     return data;
   }

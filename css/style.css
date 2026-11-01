@@ -3383,10 +3383,11 @@ body.viewer-page.is-unidirectional #btn-av-cam {
 /* 미팅 준비중 헤더 (상단 툴바 및 모바일 노치와 충분한 안전 여백 확보) */
 .tarot-lounge-header {
   text-align: center;
-  margin-top: clamp(2.2rem, 5.5vh, 4.2rem);
-  margin-bottom: 1.2rem;
+  margin-top: clamp(1.8rem, 4.5vh, 3.2rem);
+  margin-bottom: 1.85rem; /* 버튼 아래와 카드 사이 명확한 안전 간격 */
   padding: 0.4rem 1rem 0;
-  z-index: 2;
+  z-index: 10; /* 카드보다 항상 위에 오도록 z-index 상향 */
+  position: relative;
   flex-shrink: 0;
   max-width: 100%;
   box-sizing: border-box;
@@ -3507,45 +3508,49 @@ body.is-fullscreen.fs-chrome-open .tarot-lounge-header {
 /* 타로카드 본체 영역 래퍼 */
 .tarot-body-area {
   position: relative;
-  width: 100%;
+  width: 100% !important;
+  max-width: 100% !important;
   flex: 1 1 auto;
   display: flex;
+  flex-direction: column;
   align-items: center;
-  justify-content: center;
-  min-height: 290px;
+  justify-content: flex-start; /* 카드가 많아져도 위 글자/버튼 영역으로 침범하지 않고 아래로만 자연스럽게 배치 */
+  min-height: 0;
+  padding: 0 0 3.5rem 0 !important; /* 좌우 상자 여백 완전 삭제 */
+  margin: 0 !important;
+  box-sizing: border-box;
 }
 
-/* 타로카드 컨테이너 & 그리드 */
+/* 타로카드 컨테이너 & 그리드 - 카드 감싸는 상자 좌우 여백 삭제 */
 .tarot-card-container {
   display: flex;
-  align-items: center;
+  align-items: flex-start; /* 상단 정렬 */
   justify-content: center;
-  width: 100%;
-  max-width: 1000px;
-  padding: 0 1rem;
+  width: 100% !important;
+  max-width: 100% !important; /* 화면 가로폭 전체 100% 활용 */
+  padding: 0 !important; /* 카드 감싸는 상자 좌우 여백 완전 삭제 */
+  margin: 0 !important;
   box-sizing: border-box;
   z-index: 2;
-  min-height: 290px;
+  min-height: 0;
 }
 
-.tarot-card-grid {
-  --tarot-cols: 4;
-  display: grid;
-  gap: 0.85rem;
-  justify-content: center;
-  align-items: center;
-  width: 100%;
-  transition: all 0.3s ease;
-}
-
-/* 1~4명: 가로 1열 정중앙 */
-.tarot-card-grid.grid-single-row {
-  grid-template-columns: repeat(auto-fit, minmax(130px, 145px));
-}
-
-/* 5~8명: 위쪽 4장 + 아래쪽 4장 (4x2) 정중앙 */
+/* 타로카드 그리드: 한 줄에 최대한 배치하고 넘치면 다음 줄로 떨어지는 완전 반응형(Flex-Wrap) */
+.tarot-card-grid,
+.tarot-card-grid.grid-single-row,
 .tarot-card-grid.grid-double-row {
-  grid-template-columns: repeat(4, 145px);
+  display: flex !important;
+  flex-wrap: wrap !important;
+  justify-content: center !important;
+  align-items: flex-start !important; /* 상단 기준 정렬로 상단 버튼 침범 원천 차단 */
+  align-content: flex-start !important; /* 여러 줄로 떨어져도 윗줄부터 순서대로 아래로 배치 */
+  gap: 1.35rem 1rem !important;
+  width: 100% !important;
+  max-width: 100% !important; /* 대화면/모니터 폭에 맞춰 한 줄에 카드가 끝까지 꽉 차게 배치 */
+  padding: 0 !important; /* 카드 감싸는 상자 좌우 여백 완전 삭제 */
+  margin: 0 auto !important;
+  box-sizing: border-box !important;
+  transition: all 0.3s ease;
 }
 
 /* 개별 타로카드 아이템 래퍼 (카드 + 하단 7px 사용자 아이디) */
@@ -3584,7 +3589,7 @@ body.is-fullscreen.fs-chrome-open .tarot-lounge-header {
 .tarot-card-img {
   width: 100%;
   height: 100%;
-  object-fit: cover;
+  object-fit: contain; /* 그림 테두리/내용이 짤리지 않고 온전히 전부 보이도록 설정 */
   display: block;
   border-radius: 10px;
   pointer-events: none;
@@ -3844,17 +3849,24 @@ body.is-fullscreen.fs-chrome-open .tarot-lounge-header {
   transform: translateY(-2px);
 }
 
-/* 모바일 반응형 대응 */
-@media (max-width: 720px) {
+/* 모바일 반응형 대응 (일반 모드 및 전체화면 모드, 가로/세로 전체화면 완벽 대응) */
+@media (max-width: 768px),
+       (max-height: 550px) and (max-width: 1024px),
+       (pointer: coarse) and (max-width: 1024px) {
   .tarot-waiting-lounge {
-    padding: max(0.45rem, env(safe-area-inset-top, 0px)) 0.7rem 0.8rem;
+    padding: max(0.45rem, env(safe-area-inset-top, 0px)) 0 0.8rem 0 !important; /* 상자 좌우 여백 삭제 */
+    width: 100% !important;
+    box-sizing: border-box !important;
   }
-  .tarot-lounge-header {
-    margin-top: 0.15rem;
-    margin-bottom: 0.45rem;
-    padding: 0;
-    position: relative;
-    z-index: 4;
+  .tarot-lounge-header,
+  body.is-fullscreen .tarot-lounge-header,
+  body.is-fullscreen.fs-chrome-open .tarot-lounge-header {
+    margin-top: 0.25rem !important;
+    margin-bottom: 0 !important; /* 전체화면이어도 헤더 하단 마진 0 강제 */
+    padding: 0 0.5rem !important;
+    position: relative !important;
+    z-index: 10 !important;
+    flex-shrink: 0 !important;
   }
   .tarot-lounge-title {
     font-size: 1.28rem;
@@ -3865,43 +3877,134 @@ body.is-fullscreen.fs-chrome-open .tarot-lounge-header {
     font-size: 0.78rem;
     line-height: 1.35;
   }
+  /* 1. 두 버튼 사이 간격 10px + 2. 미팅 시작하기 버튼 아래 정확히 10px 간격 유지 (전체화면 포함) */
   .tarot-lounge-host-actions {
-    margin-top: 0.45rem;
+    margin-top: 0.35rem !important;
+    margin-bottom: 10px !important; /* 미팅 시작하기 버튼 아래 10px 간격만 두고 바로 카드 배치 */
+    gap: 10px !important; /* 윈도우 화면 공유 버튼과 미팅 시작하기 버튼 사이 간격 10px */
+    display: flex !important;
+    justify-content: center !important;
+    align-items: center !important;
+    flex-wrap: nowrap !important; /* 모바일에서 버튼이 줄바꿈되어 카드를 덮치는 현상 방지 */
   }
+  .tarot-lounge-host-actions .btn-tarot-share,
+  .tarot-lounge-host-actions .btn-meeting-start-hero {
+    padding: 0.38rem 0.72rem !important;
+    font-size: 0.80rem !important;
+    white-space: nowrap !important;
+    flex-shrink: 0 !important;
+  }
+  /* 3. 카드가 2줄 이상이어도 상단 버튼과 첫 번째 줄 카드의 10px 간격 절대 불변 */
   .tarot-body-area,
   .tarot-card-container {
-    align-items: flex-start;
-    justify-content: center;
-    min-height: 0;
-    width: 100%;
-    max-width: 100%;
-    padding: 0;
+    align-items: flex-start !important;
+    justify-content: center !important;
+    min-height: 0 !important;
+    width: 100% !important;
+    max-width: 100% !important;
+    padding: 0 !important;
+    margin: 0 !important;
   }
   .tarot-card-grid,
   .tarot-card-grid.grid-single-row,
   .tarot-card-grid.grid-double-row {
-    width: max-content;
-    max-width: 100%;
-    margin: 0 auto;
-    display: grid;
-    grid-template-columns: repeat(var(--tarot-cols, 2), 135px);
-    column-gap: 10px;
-    row-gap: 20px;
-    justify-content: center;
-    justify-items: center;
-    align-content: start;
+    display: flex !important;
+    flex-wrap: wrap !important;
+    justify-content: center !important;
+    align-items: flex-start !important;
+    align-content: flex-start !important;
+    column-gap: 10px !important; /* 수평 카드와 카드 사이 간격 10px */
+    row-gap: 12px !important;
+    gap: 12px 10px !important; /* 상하 12px, 좌우 카드 간격 10px */
+    width: 100% !important;
+    max-width: 100% !important;
+    padding: 0 !important;
+    margin: 0 auto !important;
   }
+  /* 모바일 화면 (전체화면 포함): 카드 크기 50px x 86px로 항상 동일하게 축소 */
   .tarot-card-item {
-    width: 135px;
+    width: 50px !important;
+    min-width: 50px !important;
+    max-width: 50px !important;
     animation: tarotEntrance 0.5s cubic-bezier(0.16, 1, 0.3, 1) backwards;
   }
+  /* 50px에 맞춘 145:250 비율 높이 (86px) */
   .tarot-card {
-    width: 135px;
-    height: 183px;
+    width: 50px !important;
+    height: 86px !important;
+    aspect-ratio: 145 / 250 !important;
+    border-radius: 5px !important;
+    border-width: 1px !important;
+  }
+  /* 카드 그림이 짤리지 않고 온전히 다 보이도록 축소 */
+  .tarot-card-img {
+    width: 100% !important;
+    height: 100% !important;
+    object-fit: contain !important;
+    border-radius: 4px !important;
+  }
+  /* 하단 유저명 뱃지도 카드 크기(50px)에 맞게 컴팩트화 */
+  .tarot-card-user-badge {
+    margin-top: 3px !important;
+    padding: 1px 2px !important;
+    font-size: 0.58rem !important;
+    border-radius: 3px !important;
+    letter-spacing: 0 !important;
+    max-width: 54px !important;
   }
   .tarot-countdown-number {
     font-size: 6rem;
   }
+}
+
+/* is-mobile-device 클래스 기반 강제 보장 (전체화면 전환 시 해상도 변화로 인한 스타일 누락 완전 방지) */
+body.is-mobile-device .tarot-waiting-lounge {
+  padding: max(0.45rem, env(safe-area-inset-top, 0px)) 0 0.8rem 0 !important;
+}
+body.is-mobile-device .tarot-lounge-header,
+body.is-mobile-device.is-fullscreen .tarot-lounge-header,
+body.is-mobile-device.is-fullscreen.fs-chrome-open .tarot-lounge-header {
+  margin-top: 0.25rem !important;
+  margin-bottom: 0 !important;
+}
+body.is-mobile-device .tarot-lounge-host-actions {
+  margin-top: 0.35rem !important;
+  margin-bottom: 10px !important;
+  gap: 10px !important;
+  flex-wrap: nowrap !important;
+}
+body.is-mobile-device .tarot-lounge-host-actions .btn-tarot-share,
+body.is-mobile-device .tarot-lounge-host-actions .btn-meeting-start-hero {
+  padding: 0.38rem 0.72rem !important;
+  font-size: 0.80rem !important;
+  white-space: nowrap !important;
+  flex-shrink: 0 !important;
+}
+body.is-mobile-device .tarot-card-grid {
+  column-gap: 10px !important;
+  row-gap: 12px !important;
+  gap: 12px 10px !important;
+}
+body.is-mobile-device .tarot-card-item {
+  width: 50px !important;
+  min-width: 50px !important;
+  max-width: 50px !important;
+}
+body.is-mobile-device .tarot-card {
+  width: 50px !important;
+  height: 86px !important;
+  aspect-ratio: 145 / 250 !important;
+}
+body.is-mobile-device .tarot-card-img {
+  width: 100% !important;
+  height: 100% !important;
+  object-fit: contain !important;
+}
+body.is-mobile-device .tarot-card-user-badge {
+  margin-top: 3px !important;
+  padding: 1px 2px !important;
+  font-size: 0.58rem !important;
+  max-width: 54px !important;
 }
 
 /* ============================================================
@@ -4648,6 +4751,207 @@ body.is-presenting .host-participants-view.is-overflowing .host-participants-gri
   animation: beautyBoxFadeIn 0.2s cubic-bezier(0.16, 1, 0.3, 1);
 }
 
+/* 패널 래퍼: 왼쪽 뷰티 상자 + 오른쪽 해상도 상자 나란히 배치 */
+.solo-panels-wrapper {
+  display: flex;
+  flex-direction: row;
+  align-items: flex-start;
+  gap: 12px;
+  max-width: calc(100vw - 32px);
+  pointer-events: auto;
+}
+
+@media (max-width: 820px) {
+  .solo-panels-wrapper {
+    flex-direction: column;
+    max-height: calc(100vh - 80px);
+    overflow-y: auto;
+  }
+}
+
+/* 해상도 제어 박스 (동일한 20% 투명 + 10px 라운딩) */
+.solo-res-box {
+  width: min(340px, calc(100vw - 40px));
+  background: rgba(15, 23, 42, 0.80) !important; /* 배경 20% 투명 */
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+  border-radius: 10px !important; /* 모서리 라운딩 처리 10px */
+  border: 1.5px solid rgba(255, 255, 255, 0.18);
+  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.7), 0 0 20px rgba(56, 189, 248, 0.15);
+  padding: 13px 15px;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  animation: beautyBoxFadeIn 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.solo-res-box.hidden {
+  display: none !important;
+}
+
+.solo-res-box-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding-bottom: 7px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.10);
+}
+
+.solo-res-box-title {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  color: #f8fafc;
+  font-size: 0.92rem;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+}
+
+.solo-res-current-badge {
+  font-size: 0.70rem;
+  padding: 2px 7px;
+  border-radius: 12px;
+  background: rgba(56, 189, 248, 0.18);
+  border: 1px solid rgba(56, 189, 248, 0.45);
+  color: #38bdf8;
+  font-weight: 600;
+}
+
+.solo-res-guide {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  background: rgba(59, 130, 246, 0.12);
+  border: 1px solid rgba(59, 130, 246, 0.25);
+  border-radius: 8px;
+  padding: 8px 10px;
+  font-size: 0.75rem;
+  line-height: 1.35;
+  color: #cbd5e1;
+}
+
+.solo-res-guide .guide-icon {
+  font-size: 1rem;
+  line-height: 1;
+}
+
+.solo-res-guide .guide-text strong {
+  display: block;
+  color: #93c5fd;
+  margin-bottom: 2px;
+}
+
+.solo-res-guide .guide-text p {
+  margin: 0;
+  color: #94a3b8;
+}
+
+.solo-res-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 270px;
+  overflow-y: auto;
+  padding-right: 2px;
+}
+
+.solo-res-list::-webkit-scrollbar {
+  width: 4px;
+}
+.solo-res-list::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.22);
+  border-radius: 4px;
+}
+
+.solo-res-item {
+  width: 100%;
+  text-align: left;
+  background: rgba(30, 41, 59, 0.65);
+  border: 1px solid rgba(255, 255, 255, 0.10);
+  border-radius: 8px;
+  padding: 7px 10px;
+  color: #e2e8f0;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.solo-res-item:hover {
+  background: rgba(51, 65, 85, 0.85);
+  border-color: rgba(56, 189, 248, 0.5);
+  transform: translateY(-1px);
+}
+
+.solo-res-item.active {
+  background: rgba(14, 165, 233, 0.22);
+  border-color: #38bdf8;
+  box-shadow: 0 0 10px rgba(56, 189, 248, 0.35);
+}
+
+.solo-res-item .res-item-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.solo-res-item .res-item-title {
+  font-size: 0.82rem;
+  font-weight: 700;
+  color: #f8fafc;
+}
+
+.solo-res-item .res-item-title small {
+  font-size: 0.72rem;
+  font-weight: 500;
+  color: #94a3b8;
+  margin-left: 4px;
+}
+
+.solo-res-item.active .res-item-title {
+  color: #38bdf8;
+}
+
+.solo-res-item .res-item-badge {
+  font-size: 0.66rem;
+  font-weight: 600;
+  padding: 1px 6px;
+  border-radius: 6px;
+}
+
+.badge-auto { background: rgba(168, 85, 247, 0.2); color: #c084fc; border: 1px solid rgba(168, 85, 247, 0.4); }
+.badge-fhd { background: rgba(234, 179, 8, 0.2); color: #facc15; border: 1px solid rgba(234, 179, 8, 0.4); }
+.badge-hd { background: rgba(56, 189, 248, 0.2); color: #38bdf8; border: 1px solid rgba(56, 189, 248, 0.4); }
+.badge-default { background: rgba(34, 197, 94, 0.2); color: #4ade80; border: 1px solid rgba(34, 197, 94, 0.4); }
+.badge-sd { background: rgba(148, 163, 184, 0.2); color: #cbd5e1; border: 1px solid rgba(148, 163, 184, 0.3); }
+.badge-low { background: rgba(251, 146, 60, 0.2); color: #fb923c; border: 1px solid rgba(251, 146, 60, 0.4); }
+.badge-pack { background: rgba(248, 113, 113, 0.2); color: #f87171; border: 1px solid rgba(248, 113, 113, 0.4); }
+.badge-min { background: rgba(244, 63, 94, 0.2); color: #fb7185; border: 1px solid rgba(244, 63, 94, 0.4); }
+
+.solo-res-item .res-item-desc {
+  font-size: 0.70rem;
+  color: #94a3b8;
+  line-height: 1.25;
+}
+
+.solo-res-status-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 4px;
+  background: rgba(0, 0, 0, 0.35);
+  border-radius: 6px;
+  padding: 5px 8px;
+  font-size: 0.68rem;
+  color: #94a3b8;
+}
+
+.solo-res-status-bar .status-pill {
+  white-space: nowrap;
+}
+
 .solo-beauty-box.hidden {
   display: none !important;
 }
@@ -4883,4 +5187,216 @@ body.is-presenting .host-participants-view.is-overflowing .host-participants-gri
 
 .btn-myface-confirm:hover {
   background: #1d4ed8 !important;
+}
+
+
+/* ============================================================
+   타로 라운지 호스트 전용 카드 배치 테스트 모드 플로팅 컨트롤
+   - 20% 투명 + 10px 라운딩 글래스모피즘
+   ============================================================ */
+.tarot-test-mode-container {
+  position: absolute !important; /* 타로 대기실 좌상단에 항상 선명하게 표시되는 플로팅 레이어 */
+  top: 18px !important;
+  left: 18px !important;
+  z-index: 10000 !important;
+  display: flex !important;
+  flex-direction: column !important;
+  align-items: flex-start !important;
+  gap: 10px !important;
+  user-select: none !important;
+  pointer-events: auto !important;
+}
+
+.tarot-test-toggle-btn {
+  pointer-events: auto !important;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 8px 14px;
+  border-radius: 10px;
+  background: rgba(15, 23, 42, 0.80); /* 20% 투명 */
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border: 1.5px solid rgba(250, 204, 21, 0.45);
+  color: #fef08a;
+  font-size: 0.88rem;
+  font-weight: 700;
+  cursor: pointer;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.6), 0 0 15px rgba(234, 179, 8, 0.2);
+  transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.tarot-test-toggle-btn:hover {
+  background: rgba(30, 41, 59, 0.88);
+  border-color: #facc15;
+  transform: translateY(-1px);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.7), 0 0 20px rgba(250, 204, 21, 0.35);
+}
+
+.tarot-test-toggle-btn.is-active {
+  background: rgba(234, 179, 8, 0.25);
+  border-color: #facc15;
+  color: #fff;
+}
+
+.tarot-test-panel {
+  pointer-events: auto !important;
+  width: min(340px, calc(100vw - 36px));
+  background: rgba(15, 23, 42, 0.80) !important; /* 20% 투명 */
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+  border-radius: 10px !important; /* 10px 라운딩 */
+  border: 1.5px solid rgba(250, 204, 21, 0.35);
+  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.75), 0 0 25px rgba(234, 179, 8, 0.2);
+  padding: 14px 16px;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  animation: tarotTestFadeIn 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.tarot-test-panel.hidden {
+  display: none !important;
+}
+
+@keyframes tarotTestFadeIn {
+  from { opacity: 0; transform: scale(0.96) translateY(-6px); }
+  to { opacity: 1; transform: scale(1) translateY(0); }
+}
+
+.tarot-test-panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding-bottom: 8px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.12);
+  cursor: grab;
+}
+
+.tarot-test-panel-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: #fef08a;
+  font-size: 0.90rem;
+  font-weight: 700;
+}
+
+.tarot-test-close-btn {
+  background: transparent;
+  border: none;
+  color: #94a3b8;
+  font-size: 1rem;
+  cursor: pointer;
+  padding: 2px 6px;
+  border-radius: 4px;
+  transition: all 0.15s ease;
+}
+
+.tarot-test-close-btn:hover {
+  color: #fff;
+  background: rgba(255, 255, 255, 0.1);
+}
+
+.tarot-test-body {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.tarot-test-stepper {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  justify-content: space-between;
+  background: rgba(0, 0, 0, 0.35);
+  padding: 6px 10px;
+  border-radius: 8px;
+}
+
+.tarot-test-label {
+  font-size: 0.82rem;
+  color: #e2e8f0;
+  font-weight: 600;
+}
+
+.tarot-test-step-btn {
+  width: 32px;
+  height: 32px;
+  border-radius: 6px;
+  background: rgba(30, 41, 59, 0.85);
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  color: #f8fafc;
+  font-size: 0.85rem;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.15s ease;
+}
+
+.tarot-test-step-btn:hover {
+  background: rgba(234, 179, 8, 0.25);
+  border-color: #facc15;
+  color: #fef08a;
+}
+
+.tarot-test-count-input {
+  width: 55px;
+  height: 32px;
+  text-align: center;
+  background: rgba(15, 23, 42, 0.8);
+  border: 1px solid rgba(250, 204, 21, 0.4);
+  border-radius: 6px;
+  color: #fef08a;
+  font-size: 1.05rem;
+  font-weight: 700;
+  outline: none;
+}
+
+.tarot-test-unit {
+  font-size: 0.82rem;
+  color: #94a3b8;
+}
+
+.tarot-test-slider {
+  width: 100%;
+  accent-color: #facc15;
+  cursor: pointer;
+  margin: 4px 0;
+}
+
+.tarot-test-presets {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 6px;
+}
+
+.tarot-test-preset-btn {
+  padding: 5px 4px;
+  border-radius: 6px;
+  background: rgba(30, 41, 59, 0.7);
+  border: 1px solid rgba(255, 255, 255, 0.10);
+  color: #cbd5e1;
+  font-size: 0.72rem;
+  cursor: pointer;
+  text-align: center;
+  transition: all 0.15s ease;
+}
+
+.tarot-test-preset-btn:hover {
+  background: rgba(234, 179, 8, 0.2);
+  border-color: #facc15;
+  color: #fef08a;
+}
+
+.tarot-test-hint {
+  font-size: 0.72rem;
+  color: #94a3b8;
+  line-height: 1.35;
+  background: rgba(234, 179, 8, 0.08);
+  border: 1px solid rgba(234, 179, 8, 0.2);
+  border-radius: 6px;
+  padding: 6px 8px;
 }

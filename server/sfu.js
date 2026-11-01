@@ -357,12 +357,15 @@ function transportKey(direction, purpose) {
  * (video-orientation ↔ transport-wide-cc)
  */
 function clientRtpCapabilities(router) {
+  // router.rtpCapabilities 는 불변이므로 매 transport 생성마다 깊은 복사할 필요가 없다
+  if (router.__ymClientCaps) return router.__ymClientCaps;
   const caps = JSON.parse(JSON.stringify(router.rtpCapabilities));
   const deny = new Set([
     'urn:3gpp:video-orientation',
     'urn:ietf:params:rtp-hdrext:toffset',
   ]);
   caps.headerExtensions = (caps.headerExtensions || []).filter((ext) => !deny.has(ext.uri));
+  router.__ymClientCaps = caps;
   return caps;
 }
 
@@ -998,9 +1001,12 @@ function attachSfuHandlers(socket, ctx) {
       if (!code) return cb?.({ ok: true, producers: [] });
       const room = await getOrCreateRoom(code);
       const producers = listProducers(room, { excludeClientId: clientId, forRole: ctx.getRole() || 'viewer' });
-      console.log(
-        `[sfu] get-producers room=${code} peer=${String(clientId || '').slice(0, 8)} count=${producers.length}`
-      );
+      // 4초 주기 resync 마다 찍히면 로그 IO가 폭증한다 → 필요할 때만
+      if (process.env.SFU_DEBUG === '1') {
+        console.log(
+          `[sfu] get-producers room=${code} peer=${String(clientId || '').slice(0, 8)} count=${producers.length}`
+        );
+      }
       cb?.({ ok: true, producers });
     } catch (err) {
       cb?.({ error: err.message || 'sfu-error' });

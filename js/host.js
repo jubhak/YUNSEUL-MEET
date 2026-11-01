@@ -19,10 +19,10 @@ import { MicController } from './mic-controller.js?v=20261013f';
 import { speakingIndicator } from './speaking-indicator.js?v=20261002b';
 import { showToast } from './ui-toast.js?v=20260930a';
 import { RemoteControlHost } from './remote-control.js?v=20260930a';
-import { TarotLoungeManager } from './tarot-lounge-manager.js?v=20260930j';
+import { TarotLoungeManager } from './tarot-lounge-manager.js?v=20261101m';
 import { attachVideoFreezeWatchdog } from './webrtc/video-freeze-watchdog.js?v=20260930a';
 import { FaceFeedClient } from './face-feed-client.js?v=20260930c';
-import { HostBeautyBarManager } from './host-beauty-bar.js?v=20261030o';
+import { HostBeautyBarManager } from './host-beauty-bar.js?v=20261101c';
 
 const params = new URLSearchParams(window.location.search);
 const roomCode = (params.get('code') || sessionStorage.getItem('roomCode') || '').replace(/[^0-9]/g, '').slice(0, 4);
@@ -874,6 +874,7 @@ hostParticipantsGrid = new HostParticipantsGridManager({
 });
 const hostBeautyBar = new HostBeautyBarManager({
   getAvatarManager: () => webrtcPublisher?.avatarManager || null,
+  getPublisher: () => webrtcPublisher || null,
   getSocket: () => sync?.socket || null,
 });
 hostParticipantsGrid.updateVisibility();
@@ -2357,8 +2358,11 @@ setInterval(() => {
   }
 }, 5000);
 
-// 폴링 백업 (참가자 수)
+// 폴링 백업 (참가자 수) — 소켓이 살아 있으면 15초에 한 번만 확인
+let roomPollTick = 0;
 setInterval(() => {
+  roomPollTick += 1;
+  if (sync?.socket?.connected && roomPollTick % 5 !== 0) return;
   fetch('api/get-room?code=' + encodeURIComponent(roomCode))
     .then((r) => r.json())
     .then((state) => {
