@@ -19,7 +19,7 @@ import { MicController } from './mic-controller.js?v=20261013f';
 import { speakingIndicator } from './speaking-indicator.js?v=20261002b';
 import { showToast } from './ui-toast.js?v=20260930a';
 import { RemoteControlViewer } from './remote-control.js?v=20260930a';
-import { TarotLoungeManager } from './tarot-lounge-manager.js?v=20261101m';
+import { TarotLoungeManager } from './tarot-lounge-manager.js?v=20261103a';
 import { DrawCanvas } from './draw-canvas.js?v=20260918pen2';
 import { attachVideoFreezeWatchdog } from './webrtc/video-freeze-watchdog.js?v=20260930a';
 

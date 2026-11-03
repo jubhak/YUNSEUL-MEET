@@ -19,10 +19,10 @@ import { MicController } from './mic-controller.js?v=20261013f';
 import { speakingIndicator } from './speaking-indicator.js?v=20261002b';
 import { showToast } from './ui-toast.js?v=20260930a';
 import { RemoteControlHost } from './remote-control.js?v=20260930a';
-import { TarotLoungeManager } from './tarot-lounge-manager.js?v=20261101m';
+import { TarotLoungeManager } from './tarot-lounge-manager.js?v=20261103a';
 import { attachVideoFreezeWatchdog } from './webrtc/video-freeze-watchdog.js?v=20260930a';
 import { FaceFeedClient } from './face-feed-client.js?v=20260930c';
-import { HostBeautyBarManager } from './host-beauty-bar.js?v=20261101c';
+import { HostBeautyBarManager } from './host-beauty-bar.js?v=20261103a';
 
 const params = new URLSearchParams(window.location.search);
 const roomCode = (params.get('code') || sessionStorage.getItem('roomCode') || '').replace(/[^0-9]/g, '').slice(0, 4);
