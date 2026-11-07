@@ -516,6 +516,31 @@ class PortNoticeDialog(QDialog):
             event.accept()
 
 
+class MeetingLockWorker(QThread):
+    """미팅 생성 잠금 상태를 서버에 반영(POST /api/meeting-lock)하는 워커."""
+    result_signal = pyqtSignal(bool, dict)
+
+    def __init__(self, port=3000, locked=False):
+        super().__init__()
+        self.port = port
+        self.locked = bool(locked)
+
+    def run(self):
+        url = f"http://127.0.0.1:{self.port}/api/meeting-lock"
+        body = json.dumps({"locked": self.locked}).encode("utf-8")
+        try:
+            req = urllib.request.Request(
+                url, data=body, method="POST",
+                headers={"Content-Type": "application/json", "User-Agent": "YUNSEUL-MEET-Widget"},
+            )
+            with urllib.request.urlopen(req, timeout=2.0) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+                self.result_signal.emit(bool(data.get("ok")), data)
+                return
+        except Exception as exc:
+            self.result_signal.emit(False, {"error": str(exc)})
+
+
 class HealthCheckWorker(QThread):
     status_signal = pyqtSignal(bool, dict)
 
@@ -556,7 +581,7 @@ class MeetWidget(QWidget):
         # 프레임리스 창 설정 및 투명 배경 (둥근 모서리 효과용)
         self.setWindowFlags(Qt.WindowType.FramelessWindowHint | Qt.WindowType.Window)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
-        self.setFixedSize(460, 260)
+        self.setFixedSize(460, 312)
         self.setWindowTitle("YUNSEUL MEET Controller")
 
         ico_path = str(get_base_dir() / "app_icon.ico")
@@ -837,7 +862,118 @@ class MeetWidget(QWidget):
         btn_layout.addWidget(self.btn_host, 2)
 
         card_layout.addLayout(btn_layout)
+
+        # --- 4. 미팅 생성 잠금 토글 (관리자) ---
+        self.lock_box = QFrame()
+        self.lock_box.setStyleSheet("""
+            QFrame#meetingLockBox {
+                background-color: #1e293b;
+                border-radius: 12px;
+                border: 1px solid #334155;
+            }
+        """)
+        self.lock_box.setObjectName("meetingLockBox")
+        lock_layout = QHBoxLayout(self.lock_box)
+        lock_layout.setContentsMargins(14, 8, 12, 8)
+        lock_layout.setSpacing(10)
+
+        lock_text = QVBoxLayout()
+        lock_text.setSpacing(1)
+        self.lbl_lock_title = QLabel("🔒 미팅 생성 잠금")
+        self.lbl_lock_title.setStyleSheet(
+            "font-size: 12px; font-weight: bold; color: #e2e8f0; font-family: 'Segoe UI', sans-serif;")
+        lock_text.addWidget(self.lbl_lock_title)
+        self.lbl_lock_sub = QLabel("켜면 진행 중인 미팅이 있는 동안 새 방 생성이 차단됩니다.")
+        self.lbl_lock_sub.setStyleSheet("font-size: 10px; color: #94a3b8;")
+        self.lbl_lock_sub.setWordWrap(True)
+        lock_text.addWidget(self.lbl_lock_sub)
+        lock_layout.addLayout(lock_text, 1)
+
+        self.btn_lock = QPushButton("잠금")
+        self.btn_lock.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+        self.btn_lock.setFixedSize(72, 30)
+        self.btn_lock.setCheckable(True)
+        self.btn_lock.setToolTip("새 미팅(방) 생성을 잠급니다. 진행 중인 미팅이 있을 때만 차단됩니다.")
+        self.btn_lock.clicked.connect(self.on_toggle_lock)
+        self._style_lock_button(False)
+        lock_layout.addWidget(self.btn_lock)
+
+        card_layout.addWidget(self.lock_box)
         root_layout.addWidget(self.card)
+
+        self.meeting_locked = False
+        self.lock_busy = False
+
+    def _style_lock_button(self, locked):
+        if locked:
+            self.btn_lock.setText("잠김")
+            self.btn_lock.setStyleSheet("""
+                QPushButton {
+                    background-color: #7c2d12;
+                    color: #fed7aa;
+                    font-size: 11px;
+                    font-weight: bold;
+                    border-radius: 8px;
+                    border: 1px solid #f59e0b;
+                }
+                QPushButton:hover { background-color: #9a3412; color: #ffffff; }
+            """)
+        else:
+            self.btn_lock.setText("잠금")
+            self.btn_lock.setStyleSheet("""
+                QPushButton {
+                    background-color: #0f172a;
+                    color: #94a3b8;
+                    font-size: 11px;
+                    font-weight: bold;
+                    border-radius: 8px;
+                    border: 1px solid #334155;
+                }
+                QPushButton:hover { background-color: #1e293b; color: #e2e8f0; border: 1px solid #475569; }
+            """)
+
+    def on_toggle_lock(self):
+        """잠금 토글: 서버에 상태를 반영하고 결과로 UI 를 확정한다."""
+        if self.lock_busy:
+            return
+        if not self.is_running:
+            self.btn_lock.setChecked(self.meeting_locked)
+            self.lbl_lock_sub.setText("서버가 정지 상태입니다. 서버를 먼저 시작해 주세요.")
+            return
+        target = bool(self.btn_lock.isChecked())
+        self.lock_busy = True
+        self.btn_lock.setEnabled(False)
+        self.lbl_lock_sub.setText("설정을 적용하는 중...")
+        self.lock_worker = MeetingLockWorker(self.port, target)
+        self.lock_worker.result_signal.connect(self.on_lock_applied)
+        self.lock_worker.start()
+
+    def on_lock_applied(self, ok, data):
+        self.lock_busy = False
+        self.btn_lock.setEnabled(True)
+        if not ok:
+            self.btn_lock.setChecked(self.meeting_locked)
+            self.lbl_lock_sub.setText(data.get("error") or "잠금 설정을 적용하지 못했습니다.")
+            return
+        self.apply_lock_state(bool(data.get("locked", False)), int(data.get("activeMeetings", 0) or 0))
+
+    def apply_lock_state(self, locked, active_count=None):
+        self.meeting_locked = bool(locked)
+        self.btn_lock.setChecked(self.meeting_locked)
+        self._style_lock_button(self.meeting_locked)
+        if active_count is None:
+            self.lbl_lock_sub.setText(
+                "새 미팅 생성이 잠겼습니다. 진행 중인 미팅이 끝나면 자동 해제됩니다."
+                if self.meeting_locked else
+                "켜면 진행 중인 미팅이 있는 동안 새 방 생성이 차단됩니다.")
+        else:
+            if self.meeting_locked:
+                self.lbl_lock_sub.setText(
+                    f"잠금 켜짐 · 진행 중 {active_count}개 — 새 미팅 생성이 차단됩니다."
+                    if active_count > 0 else
+                    "잠금 켜짐 · 진행 중인 미팅 없음 — 지금은 생성이 허용됩니다.")
+            else:
+                self.lbl_lock_sub.setText("잠금 꺼짐 — 누구나 새 미팅을 만들 수 있습니다.")
 
     def set_indicator_color(self, hex_color):
         self.indicator_dot.setStyleSheet(f"""
@@ -1009,6 +1145,9 @@ class MeetWidget(QWidget):
             self.lbl_status_main.setStyleSheet("font-size: 15px; font-weight: bold; color: #22c55e; font-family: 'Segoe UI', sans-serif;")
 
             rooms_cnt = data.get("rooms", 0)
+            if not self.lock_busy:
+                self.apply_lock_state(bool(data.get("meetingCreationLocked", False)),
+                                      int(data.get("activeMeetings", 0) or 0))
             engine = data.get("engine", "node")
             self.lbl_status_sub.setText(f"실시간 스트리밍 대기 중 | 활성 방: {rooms_cnt}개")
             self.lbl_badge_extra.setText(f"{engine}")
@@ -1076,6 +1215,9 @@ class MeetWidget(QWidget):
                 }
             """)
             self.act_tray_toggle.setText("서버 시작")
+            if not self.lock_busy:
+                self._style_lock_button(False)
+                self.lbl_lock_sub.setText("서버가 정지 상태입니다. 서버를 먼저 시작해 주세요.")
 
     def toggle_server(self):
         if self.is_running:

@@ -154,14 +154,125 @@ speakingIndicator.onSpotlightVoice = (isSpeaking, level) => {
   floatingSpeakerManager?.updateVoice(isSpeaking, level);
 };
 
+/* ─────────────────────────────────────────────────────────────
+   PC 화면 공유 모드 ↔ 영상 미팅(얼굴 화면) 전환 처리
+   · 공유 중: 참가자 카메라를 강제로 끄지 않고, 최초 대기 상태의 카드 배치를 유지한다.
+   · 복귀 시: 새 프레임이 실제로 도착할 때까지 정지된 화면을 감광/블러 처리하고
+     "영상 미팅 상태로 전환 중" 오버레이를 띄운 뒤, 프레임 도착 즉시 둘 다 걷어낸다.
+   ───────────────────────────────────────────────────────────── */
+let _faceSwitchEl = null;
+let _faceSwitchFailSafe = null;
+
+function getLounge() {
+  try { return tarotLounge; } catch { return null; }
+}
+function currentShareStageParticipants() {
+  try { return Array.isArray(currentViewers) ? currentViewers : []; } catch { return []; }
+}
+
+function ensureFaceSwitchOverlay() {
+  if (_faceSwitchEl) return _faceSwitchEl;
+  const el = document.createElement('div');
+  el.id = 'face-switch-overlay';
+  el.className = 'face-switch-overlay hidden';
+  el.setAttribute('role', 'status');
+  el.setAttribute('aria-live', 'polite');
+  el.innerHTML = `
+    <div class="face-switch-card">
+      <span class="face-switch-ring" aria-hidden="true"></span>
+      <div class="face-switch-text">
+        <strong>영상 미팅 상태로 전환 중</strong>
+        <span>호스트 얼굴 화면을 다시 연결하고 있습니다. 잠시만 기다려 주세요.</span>
+      </div>
+    </div>`;
+  document.body.appendChild(el);
+  _faceSwitchEl = el;
+  return el;
+}
+
+function showFaceSwitchOverlay() {
+  const el = ensureFaceSwitchOverlay();
+  document.body.classList.add('is-face-switching');
+  el.classList.remove('hidden');
+  // 다음 프레임에 is-in 을 걸어야 트랜지션이 재생된다
+  requestAnimationFrame(() => el.classList.add('is-in'));
+  clearTimeout(_faceSwitchFailSafe);
+  // 안전장치: 12초 안에 프레임이 오지 않아도 감광은 절대 남겨두지 않는다(오버레이는 유지).
+  _faceSwitchFailSafe = setTimeout(() => {
+    document.body.classList.remove('is-face-switching');
+  }, 12000);
+}
+
+function hideFaceSwitchOverlay() {
+  clearTimeout(_faceSwitchFailSafe);
+  _faceSwitchFailSafe = null;
+  document.body.classList.remove('is-face-switching');
+  if (!_faceSwitchEl) return;
+  _faceSwitchEl.classList.remove('is-in');
+  _faceSwitchEl.classList.add('hidden');
+}
+
+/** 실제 새 프레임이 도착하는 순간에만 오버레이를 제거한다(타이머 아님). */
+function armFaceSwitchFrameWatch() {
+  const video = liveVideo;
+  if (!video) { hideFaceSwitchOverlay(); return; }
+  const t0 = (typeof performance !== 'undefined' ? performance.now() : Date.now());
+  let done = false;
+  const finish = () => {
+    if (done) return;
+    done = true;
+    video.removeEventListener('playing', finish);
+    video.removeEventListener('loadeddata', finish);
+    video.removeEventListener('resize', finish);
+    hideFaceSwitchOverlay();
+  };
+  video.addEventListener('playing', finish);
+  video.addEventListener('loadeddata', finish);
+  video.addEventListener('resize', finish);
+
+  const watchFrame = () => {
+    if (done) return;
+    if (video.readyState >= 2 && !video.paused && video.videoWidth > 0) {
+      // showFaceSwitchOverlay() 이후 최소 1프레임 이상 그려졌는지 확인
+      const elapsed = (typeof performance !== 'undefined' ? performance.now() : Date.now()) - t0;
+      if (elapsed > 120) { finish(); return; }
+    }
+    try { video.requestVideoFrameCallback(watchFrame); } catch { /* 미지원 */ }
+  };
+  try {
+    if (typeof video.requestVideoFrameCallback === 'function') video.requestVideoFrameCallback(watchFrame);
+  } catch { /* ignore */ }
+}
+
 function applyDisplayMode(mode) {
+  const prev = currentDisplayMode;
   const next = mode === 'screen' ? 'screen' : 'face';
   currentDisplayMode = next;
   document.body.classList.toggle('display-mode-screen', next === 'screen');
   document.body.classList.toggle('display-mode-face', next === 'face');
   viewerZoom?.setEnabled?.(next === 'screen');
-  subscriber?.setCameraIdle?.(next === 'screen');
-  floatingSpeakerManager?.setSharingActive(next === 'screen');
+
+  if (next === 'screen') {
+    // 화면 공유로 보는 참가자 입장에서 "모두 카메라 off" 로 보이던 혼선 제거:
+    // 참가자 카메라를 강제로 끄지 않고(호스트만 디코드를 잠시 멈춤), 최초 대기 화면의 카드 배치를 유지한다.
+    subscriber?.setCameraIdle?.(false);
+    floatingSpeakerManager?.setSharingActive(false);
+    hideFaceSwitchOverlay();
+    const lounge = getLounge();
+    if (isMeetingStarted && lounge?.showShareStage) {
+      // 공유 무대로 쓰던 컨테이너를 그대로 재사용하므로 hide() 는 호출하지 않는다
+      lounge.showShareStage(currentShareStageParticipants());
+    }
+  } else {
+    floatingSpeakerManager?.setSharingActive(true);
+    const lounge = getLounge();
+    if (lounge?.hideShareStage) lounge.hideShareStage();
+    if (prev === 'screen') {
+      // 정지된(직전 화면공유 잔상) 프레임이 보이는 구간을 감광 + 안내 오버레이로 가린다.
+      showFaceSwitchOverlay();
+      armFaceSwitchFrameWatch();
+    }
+  }
 }
 
 applyDisplayMode(currentDisplayMode);
@@ -374,6 +485,7 @@ function showLive() {
     return;
   }
   if (!tarotLounge._isCountingDown) {
+    if (tarotLounge?.isShareStage) tarotLounge.hideShareStage();
     tarotLounge.hide();
   }
   waitingPanel?.classList.remove('is-self-sharing');
@@ -1223,6 +1335,10 @@ function handleEvent(type, data) {
         }
       }
       if (tarotLounge.isActive && !tarotLounge._isCountingDown && !isMeetingStarted) {
+        tarotLounge.renderParticipants(currentViewers);
+      }
+      // PC 화면 공유 모드에서도 카드 배치(참석자 이름/자리)는 최신 상태로 유지한다
+      if (tarotLounge?.isShareStage) {
         tarotLounge.renderParticipants(currentViewers);
       }
       break;

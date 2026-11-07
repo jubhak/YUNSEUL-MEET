@@ -859,6 +859,13 @@ export class HostPublisher {
       ? mode
       : (this.interactionMode === 'unidirectional' ? 'solo' : faceModeForRoomCount(this._faceRoomCount || 1));
 
+    // ★ 혼자 접속(1명)에서 해상도/화질을 바꿔도 아무 변화가 없던 원인:
+    //   얼굴 송출은 avatarManager 트랙이 아니라 "합성 캔버스(display)" 로 나가는데,
+    //   합성 캔버스는 1920×1080 고정이고 인코딩 비트레이트도 인원수 자동값에 묶여 있었다.
+    //   → 선택한 모드의 해상도·fps·비트레이트를 합성 캔버스와 인코더에 그대로 적용한다.
+    const manualProfile = faceProfileForMode(effectiveMode);
+    this._applyManualFaceProfile(manualProfile);
+
     // 카메라가 비활성 상태(사용자가 켜지 않음)일 때는 canvas 출력 스트림을 생성/재할당하지 않고 프로파일만 갱신
     if (!this.cameraWanted || !this.cameraStream || !this.rawCameraStream) {
       this.avatarManager.setFaceMode(effectiveMode);
@@ -866,13 +873,17 @@ export class HostPublisher {
       if (this.sfu) {
         await this.sfu.updateCameraEncodings?.('camera', idleProfile).catch(() => {});
       }
+      this._emitFaceQuality(idleProfile, effectiveMode);
       return;
     }
 
     this.avatarManager.setFaceMode(effectiveMode);
     const profile = this.avatarManager.getFaceProfile();
+    this._faceProfile = profile;
     // 새 해상도의 캔버스 캡처 스트림을 생성하여 화면 및 송출에 즉시 실제 화질 변경 반영
     const outgoing = this.avatarManager.recreateFreshStream();
+    // 캔버스 캡처 스트림은 생성 시점의 fps 로 고정되므로, 반드시 새 트랙으로 교체한다.
+    // (기존 트랙을 그대로 쓰면 fps/해상도 변경이 전혀 반영되지 않는다)
     this.cameraStream = outgoing;
     const nextTrack = outgoing?.getVideoTracks?.()[0] || null;
     if (this.cameraWanted && this.sfu && nextTrack) {
@@ -890,6 +901,68 @@ export class HostPublisher {
     }
     // 로컬 화면 비디오 요소에도 새 스트림 바인딩하여 해상도 변경 효과가 즉시 시각적으로 확인되도록 함
     this.onCameraChange?.({ active: true, stream: outgoing });
+    this._emitFaceQuality(profile, effectiveMode);
+  }
+
+  /**
+   * 실제 적용된 송출 스펙(해상도/fps/비트레이트 상한)을 UI 로 알린다.
+   * 참가자 카드에 표시하면 "품질을 바꿨는데 똑같아 보인다"는 혼선이 사라진다.
+   */
+  _emitFaceQuality(profile = {}, mode = '') {
+    const out = {
+      mode: profile.mode || mode || 'auto',
+      width: profile.width || 0,
+      height: profile.height || 0,
+      fps: profile.fps || 0,
+      maxBitrate: profile.maxBitrate || 0,
+      cameraWanted: !!this.cameraWanted,
+    };
+    this._lastFaceQuality = out;
+    try { this.onFaceQualityChange?.(out); } catch { /* ignore */ }
+  }
+
+  /**
+   * 수동 화질 선택을 "합성 캔버스(실제 송출 영상)" + "인코더 상한" 양쪽에 반영한다.
+   * 이 함수가 없으면 UI 숫자만 바뀌고 실제로 나가는 영상은 그대로였다.
+   */
+  _applyManualFaceProfile(profile = {}) {
+    if (!profile || !profile.width) return;
+    const n = Math.max(1, Number(this._faceRoomCount) || 1);
+    // 합성 캔버스 해상도: 선택한 모드 그대로. 단 카드 글씨가 뭉개지지 않도록 최소 480×270 은 보장.
+    const targetW = Math.max(480, Math.min(1920, Math.round(profile.width)));
+    const targetH = Math.max(270, Math.round((targetW * profile.height) / profile.width / 2) * 2);
+    const fps = Math.max(8, Math.min(30, Math.round(profile.fps || 30)));
+
+    if (this._compositor) {
+      try {
+        if (this._compositor.canvas && this._compositor.canvas.width !== targetW) {
+          this._compositor.canvas.width = targetW;
+          this._compositor.canvas.height = targetH;
+        }
+        this._compositor.width = targetW;
+        this._compositor.height = targetH;
+        this._compositor.setFps?.(fps);
+      } catch (err) {
+        console.warn('[HostPublisher] composite resize', err);
+      }
+    }
+    // 화면(공유/얼굴) 인코더 상한도 선택한 모드에 맞춰 즉시 조정
+    const maxBitrate = Math.max(80_000, Math.round(profile.maxBitrate || 900_000));
+    const startBitrate = Math.round(maxBitrate * 0.7);
+    this.sfu?.setDisplayEncodeBudget?.({ maxBitrate, startBitrate })?.catch?.(() => {});
+    // 카메라 트랙(호스트 얼굴 원본) 인코더도 동일 프로파일로 맞춘다
+    this.sfu?.updateCameraEncodings?.('camera', profile)?.catch?.(() => {});
+    // 화면 정지 구간에서도 해상도가 유지되도록 detail 우선으로 되돌린다
+    this.sfu?.setDisplayMotion?.(n > 1)?.catch?.(() => {});
+    this._lastFaceQuality = {
+      mode: profile.mode,
+      width: targetW,
+      height: targetH,
+      fps,
+      maxBitrate,
+      cameraWanted: !!this.cameraWanted,
+    };
+    try { this.onFaceQualityChange?.(this._lastFaceQuality); } catch { /* ignore */ }
   }
 
   async setFaceQualityByRoomSize(totalPeople = 1) {

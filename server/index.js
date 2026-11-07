@@ -199,6 +199,56 @@ for (const dir of [DATA_DIR, ROOMS_DIR, UPLOADS_DIR, LOGS_DIR, PHOTO_DIR]) {
 /** @type {Map<string, object>} */
 const rooms = new Map();
 
+// ── 미팅 생성 잠금 (관리자) ──────────────────────────────────
+// 서버 데스크톱 위젯(exe)에서 켜고 끈다. 잠긴 동안에는 새 방 생성 요청을 423 으로 거절하고,
+// 프런트에서는 alert 대신 예쁜 안내 모달을 띄운다.
+const MEETING_LOCK_PATH = path.join(DATA_DIR, 'meeting-lock.json');
+let meetingCreationLocked = false;
+try {
+  if (fs.existsSync(MEETING_LOCK_PATH)) {
+    const raw = JSON.parse(fs.readFileSync(MEETING_LOCK_PATH, 'utf8') || '{}');
+    meetingCreationLocked = !!raw.locked;
+  }
+} catch (err) {
+  console.warn('[meeting-lock] read failed:', err?.message || err);
+}
+
+function persistMeetingLock() {
+  try {
+    fs.writeFileSync(MEETING_LOCK_PATH, JSON.stringify({ locked: !!meetingCreationLocked, updatedAt: Date.now() }, null, 2));
+  } catch (err) {
+    console.warn('[meeting-lock] write failed:', err?.message || err);
+  }
+}
+
+/** 진행 중(호스트 접속 or 참가자 존재)인 방 개수 */
+function activeMeetingCount() {
+  let n = 0;
+  for (const room of rooms.values()) {
+    if (!room || room.ended) continue;
+    const hasViewers = room.viewers && room.viewers.size > 0;
+    const hasGrace = room._peerGraceTimers && room._peerGraceTimers.size > 0;
+    if (room.hostConnected || hasViewers || hasGrace) n += 1;
+  }
+  return n;
+}
+
+function meetingCreationBlocked() {
+  return !!(meetingCreationLocked && activeMeetingCount() > 0);
+}
+
+/** 새 방 생성 공통 가드 — 잠금 상태면 안내 메시지와 함께 거절 */
+function rejectIfMeetingLocked(res) {
+  if (!meetingCreationBlocked()) return false;
+  res.status(423).json({
+    ok: false,
+    locked: true,
+    error: '관리자가 새로운 미팅 생성을 허용하지 않은 상태입니다.',
+    detail: '진행 중인 미팅이 끝난 뒤 다시 시도해 주세요.',
+  });
+  return true;
+}
+
 function roomCode(raw) {
   return String(raw || '').replace(/[^0-9]/g, '');
 }
@@ -872,12 +922,39 @@ const upload = multer({
   },
 });
 
+app.get('/api/meeting-lock', requireLocalAdmin, (_req, res) => {
+  res.setHeader('Cache-Control', 'no-store');
+  res.json({
+    ok: true,
+    locked: !!meetingCreationLocked,
+    activeMeetings: activeMeetingCount(),
+    blocked: meetingCreationBlocked(),
+  });
+});
+
+app.post('/api/meeting-lock', requireLocalAdmin, (req, res) => {
+  const next = req.body?.locked;
+  if (typeof next !== 'boolean') {
+    return res.status(400).json({ ok: false, error: 'locked 값은 true/false 여야 합니다.' });
+  }
+  meetingCreationLocked = next;
+  persistMeetingLock();
+  res.json({
+    ok: true,
+    locked: meetingCreationLocked,
+    activeMeetings: activeMeetingCount(),
+    blocked: meetingCreationBlocked(),
+  });
+});
+
 app.get('/api/health', (req, res) => {
   const body = {
     ok: true,
     engine: 'node-socket.io+sfu',
     media: 'sfu',
     port: PORT,
+    meetingCreationLocked: !!meetingCreationLocked,
+    activeMeetings: activeMeetingCount(),
   };
   if (isLocalAdmin(req)) {
     body.rtcPort = getRtcPort();
@@ -1128,6 +1205,7 @@ app.post('/api/create-room', (req, res) => {
   if (!isLocalAdmin(req) && !allowRate(`create:${publicClientKey(req)}`, 8, 10 * 60 * 1000)) {
     return res.status(429).json({ error: '방 생성이 너무 잦습니다. 잠시 후 다시 시도해 주세요.' });
   }
+  if (rejectIfMeetingLocked(res)) return;
   const rawCode = String(req.body?.code ?? '').trim();
   let code = '';
   if (rawCode) {
@@ -1311,6 +1389,7 @@ app.post('/api/create-room.php', (req, res) => {
   if (!isLocalAdmin(req) && !allowRate(`create:${publicClientKey(req)}`, 8, 10 * 60 * 1000)) {
     return res.status(429).json({ error: '방 생성이 너무 잦습니다. 잠시 후 다시 시도해 주세요.' });
   }
+  if (rejectIfMeetingLocked(res)) return;
   const rawCode = String(req.body?.code ?? '').trim();
   let code = '';
   if (rawCode) {

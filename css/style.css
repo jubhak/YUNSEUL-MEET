@@ -5400,3 +5400,173 @@ body.is-presenting .host-participants-view.is-overflowing .host-participants-gri
   border-radius: 6px;
   padding: 6px 8px;
 }
+
+
+/* ═══════════════════════════════════════════════════════════════
+   PC 화면 공유 모드 — 최초 미팅 대기 상태의 카드 배치 유지
+   (참가자 영상 박스가 전부 꺼져 검게 비는 혼선을 없앤다)
+   ═══════════════════════════════════════════════════════════════ */
+.tarot-waiting-lounge.is-share-stage {
+  position: absolute !important;
+  inset: 0 !important;
+  display: block !important;
+  background: radial-gradient(120% 90% at 50% 0%, #131a2b 0%, #0a0e17 58%, #05070c 100%) !important;
+  z-index: 3 !important;
+}
+.tarot-waiting-lounge.is-share-stage .tarot-lounge-header {
+  padding-top: .4rem;
+  opacity: .82;
+}
+.tarot-waiting-lounge.is-share-stage .tarot-lounge-host-actions,
+.tarot-waiting-lounge.is-share-stage .tarot-test-mode-container {
+  display: none !important;
+}
+.tarot-waiting-lounge.is-share-stage .tarot-card-grid {
+  opacity: .92;
+  filter: saturate(.92) brightness(.94);
+}
+.tarot-waiting-lounge.is-share-stage .tarot-card-item {
+  animation: none !important;
+}
+/* 공유 중임을 알리는 상단 배지 */
+body.is-share-stage::after,
+body.is-host-share-stage .stage-area::after {
+  content: '🖥️ PC 화면 공유 중 — 영상 미팅으로 돌아가면 얼굴 화면이 다시 나타납니다';
+  position: fixed;
+  top: 12px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 9200;
+  padding: 7px 16px;
+  border-radius: 999px;
+  font-size: .78rem;
+  font-weight: 600;
+  letter-spacing: -.01em;
+  color: #e2e8f0;
+  background: rgba(15, 23, 42, .82);
+  border: 1px solid rgba(56, 189, 248, .38);
+  box-shadow: 0 8px 26px rgba(0, 0, 0, .45), inset 0 0 0 1px rgba(255, 255, 255, .04);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  pointer-events: none;
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   PC 화면 → 영상 미팅 전환: 정지된 잔상 감광 + 오버레이
+   ═══════════════════════════════════════════════════════════════ */
+body.is-face-switching .live-stage .live-video {
+  filter: blur(14px) saturate(.45) brightness(.42) !important;
+  opacity: .5 !important;
+  transform: scale(1.035);
+  transition: filter .5s ease, opacity .5s ease, transform .5s ease;
+}
+body.is-face-switching .live-stage::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: radial-gradient(circle at 50% 45%, rgba(12, 22, 40, .55) 0%, rgba(3, 6, 12, .88) 78%);
+  z-index: 5;
+  pointer-events: none;
+}
+.live-video {
+  transition: filter .45s ease, opacity .45s ease;
+}
+
+.face-switch-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 9400;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity .32s ease;
+}
+.face-switch-overlay.hidden { display: none !important; }
+.face-switch-overlay.is-in { opacity: 1; }
+
+.face-switch-card {
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  max-width: min(92vw, 520px);
+  padding: 22px 28px;
+  border-radius: 20px;
+  color: #e6edf7;
+  background: linear-gradient(160deg, rgba(23, 33, 56, .96) 0%, rgba(11, 17, 30, .97) 100%);
+  border: 1px solid rgba(99, 179, 237, .34);
+  box-shadow: 0 26px 70px rgba(0, 0, 0, .62), inset 0 1px 0 rgba(255, 255, 255, .06);
+  backdrop-filter: blur(18px) saturate(1.2);
+  -webkit-backdrop-filter: blur(18px) saturate(1.2);
+  transform: translateY(10px) scale(.985);
+  transition: transform .38s cubic-bezier(.22, 1, .36, 1);
+}
+.face-switch-overlay.is-in .face-switch-card { transform: translateY(0) scale(1); }
+
+.face-switch-ring {
+  flex: 0 0 auto;
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  background: conic-gradient(from 0deg, #38bdf8 0deg, #6366f1 140deg, rgba(56, 189, 248, .08) 300deg);
+  -webkit-mask: radial-gradient(farthest-side, transparent calc(100% - 4px), #000 calc(100% - 3px));
+  mask: radial-gradient(farthest-side, transparent calc(100% - 4px), #000 calc(100% - 3px));
+  animation: faceSwitchSpin 1s linear infinite;
+}
+@keyframes faceSwitchSpin { to { transform: rotate(360deg); } }
+
+.face-switch-text { display: flex; flex-direction: column; gap: 5px; }
+.face-switch-text strong {
+  font-size: .98rem;
+  font-weight: 700;
+  letter-spacing: -.01em;
+  color: #f1f5fb;
+}
+.face-switch-text span {
+  font-size: .79rem;
+  line-height: 1.45;
+  color: #9fb0c8;
+}
+
+@media (max-width: 640px) {
+  .face-switch-card { padding: 18px 20px; gap: 14px; border-radius: 16px; }
+  .face-switch-text strong { font-size: .9rem; }
+  .face-switch-text span { font-size: .74rem; }
+  body.is-share-stage::after,
+  body.is-host-share-stage .stage-area::after { font-size: .68rem; padding: 6px 12px; max-width: 92vw; }
+}
+
+/* 호스트 송출 스펙 칩 (혼자 접속 시 품질 변경이 실제로 먹었는지 즉시 확인) */
+.host-send-spec {
+  position: fixed;
+  left: 16px;
+  bottom: 16px;
+  z-index: 9100;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 13px;
+  border-radius: 12px;
+  font-size: .74rem;
+  font-weight: 600;
+  letter-spacing: -.01em;
+  color: #cfe3f7;
+  background: rgba(9, 14, 24, .84);
+  border: 1px solid rgba(56, 189, 248, .32);
+  box-shadow: 0 10px 30px rgba(0, 0, 0, .45);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  pointer-events: none;
+  transition: opacity .25s ease, transform .25s ease;
+}
+.host-send-spec.is-flash {
+  transform: translateY(-4px);
+  border-color: rgba(56, 189, 248, .85);
+  box-shadow: 0 12px 36px rgba(56, 189, 248, .32);
+}
+.host-send-spec .dot {
+  width: 7px; height: 7px; border-radius: 50%; background: #22c55e;
+  box-shadow: 0 0 0 3px rgba(34, 197, 94, .18);
+}
+.host-send-spec .dot.off { background: #f59e0b; box-shadow: 0 0 0 3px rgba(245, 158, 11, .18); }

@@ -6,6 +6,87 @@
   <title>YUNSEUL MEET - 실시간 화상 미팅 솔루션</title>
   <link rel="stylesheet" href="css/style.css?v=20261018a">
   <link rel="stylesheet" href="css/av-extras.css?v=20260930k">
+  <style>
+    /* 관리자 미팅 생성 잠금 안내 모달 */
+    .meeting-lock-gate {
+      position: fixed;
+      inset: 0;
+      z-index: 9600;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 24px;
+      background: radial-gradient(circle at 50% 40%, rgba(10, 16, 28, .72) 0%, rgba(2, 4, 9, .9) 80%);
+      backdrop-filter: blur(6px);
+      -webkit-backdrop-filter: blur(10px);
+      opacity: 0;
+      transition: opacity .26s ease;
+    }
+    .meeting-lock-gate.hidden { display: none !important; }
+    .meeting-lock-gate.is-in { opacity: 1; }
+
+    .meeting-lock-card {
+      width: min(94vw, 430px);
+      padding: 28px 26px 22px;
+      border-radius: 20px;
+      text-align: center;
+      color: #e6edf7;
+      background: linear-gradient(160deg, #16203a 0%, #0b1220 100%);
+      border: 1px solid rgba(99, 179, 237, .32);
+      box-shadow: 0 30px 80px rgba(0, 0, 0, .66), inset 0 1px 0 rgba(255, 255, 255, .06);
+      transform: translateY(14px) scale(.97);
+      transition: transform .34s cubic-bezier(.22, 1, .36, 1);
+    }
+    .meeting-lock-gate.is-in .meeting-lock-card { transform: translateY(0) scale(1); }
+
+    .meeting-lock-icon {
+      width: 54px;
+      height: 54px;
+      margin: 0 auto 14px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 26px;
+      border-radius: 16px;
+      background: rgba(245, 158, 11, .12);
+      border: 1px solid rgba(245, 158, 11, .38);
+      box-shadow: 0 0 0 6px rgba(245, 158, 11, .06);
+    }
+    .meeting-lock-card h3 {
+      margin: 0 0 8px;
+      font-size: 1.05rem;
+      font-weight: 700;
+      letter-spacing: -.02em;
+      color: #f8fafc;
+    }
+    .meeting-lock-msg {
+      margin: 0;
+      font-size: .86rem;
+      line-height: 1.6;
+      color: #cbd5e1;
+      word-break: keep-all;
+    }
+    .meeting-lock-detail {
+      margin: 10px 0 0;
+      padding: 9px 12px;
+      font-size: .78rem;
+      line-height: 1.5;
+      color: #9fb0c8;
+      border-radius: 10px;
+      background: rgba(56, 189, 248, .07);
+      border: 1px solid rgba(56, 189, 248, .18);
+      word-break: keep-all;
+    }
+    .meeting-lock-detail.hidden { display: none !important; }
+    .meeting-lock-ok {
+      margin-top: 18px;
+      width: 100%;
+      height: 44px;
+      font-size: .9rem;
+      font-weight: 700;
+      border-radius: 10px;
+    }
+  </style>
 </head>
 <body class="landing-page">
   <div class="landing-container">
@@ -112,6 +193,6 @@
 
   </div>
 
-  <script type="module" src="js/landing.js?v=20261018a"></script>
+  <script type="module" src="js/landing.js?v=20261107lock"></script>
 </body>
 </html>

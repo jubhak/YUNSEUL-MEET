@@ -636,7 +636,8 @@ class HostParticipantsGridManager {
   updateVisibility() {
     const isLoungeActive = typeof tarotLounge !== 'undefined' && tarotLounge && tarotLounge.isActive;
     // 단방향도 미팅이 시작되면 참가자 카드를 계속 깔아 둔다(호스트 화면 송출에 그대로 보임)
-    const shouldShow = isMeetingStarted && !isLoungeActive;
+    const shareStage = document.body.classList.contains('is-host-share-stage');
+    const shouldShow = isMeetingStarted && !isLoungeActive && !shareStage;
     const wasVisible = this.isVisible;
     this.isVisible = shouldShow;
     if (this.viewEl) {
@@ -885,6 +886,31 @@ if (!isMeetingStarted) {
   btnMeetingWait?.classList.remove('hidden');
 }
 
+
+/**
+ * 좌하단 송출 스펙 칩 — 혼자 접속 상태에서 화질을 바꿀 때
+ * "숫자만 바뀌고 화면은 그대로"라는 혼선을 없애기 위해 실제 적용값을 그대로 보여준다.
+ */
+let _specChipEl = null;
+let _specFlashTimer = null;
+function renderHostSendSpec(q) {
+  if (!q) return;
+  if (!_specChipEl) {
+    _specChipEl = document.createElement('div');
+    _specChipEl.className = 'host-send-spec';
+    _specChipEl.setAttribute('aria-live', 'polite');
+    document.body.appendChild(_specChipEl);
+  }
+  const w = q.width || 0;
+  const h = q.height || 0;
+  const fps = q.fps || 0;
+  const kbps = q.maxBitrate ? Math.round(q.maxBitrate / 1000) : 0;
+  _specChipEl.innerHTML = `<span class="dot${q.cameraWanted === false ? ' off' : ''}"></span>`
+    + `<span>송출 ${w}×${h} · ${fps}fps · 최대 ${kbps} kbps</span>`;
+  _specChipEl.classList.add('is-flash');
+  clearTimeout(_specFlashTimer);
+  _specFlashTimer = setTimeout(() => _specChipEl?.classList.remove('is-flash'), 900);
+}
 
 function clearCameraPipDecoders() {
   if (!camOverlayContainer) return;
@@ -1367,15 +1393,48 @@ function updateShareModeUi(mode) {
   if (pcBtn) pcBtn.setAttribute('aria-pressed', mode === 'screen' ? 'true' : 'false');
 }
 
+/**
+ * PC 화면 공유 모드 무대(Stage)
+ * - 참석자 영상 박스(호스트 화면에서 어차피 보이지 않는 클라이언트 박스 + 유일하게 보이던 호스트 얼굴 박스)를 감춘다.
+ * - 대신 최초 미팅 대기 상태에서 보였던 "카드 배치"를 그대로 보여준다.
+ * - 이때도 호스트 카메라 producer 는 계속 살아 있어, 클라이언트는 호스트 얼굴을 계속 수신한다.
+ */
+function enterShareStage() {
+  document.body.classList.add('is-host-share-stage');
+  if (typeof hostParticipantsView !== 'undefined' && hostParticipantsView) {
+    hostParticipantsView.classList.add('hidden');
+  }
+  if (typeof clearCameraPipDecoders === 'function') clearCameraPipDecoders();
+  try {
+    document.querySelectorAll('#cam-overlay-container .camera-pip-card, #cam-overlay-container .camera-pip')
+      .forEach((el) => el.remove());
+  } catch { /* ignore */ }
+  try { hostParticipantsGrid?.updateVisibility?.(); } catch { /* ignore */ }
+  if (isMeetingStarted && tarotLounge?.showShareStage) {
+    const list = (() => {
+      try { return hostParticipantsGrid?._participantList?.() || []; } catch { return []; }
+    })();
+    tarotLounge.showShareStage(list.length ? list : [{ id: 'local', name: hostName, role: 'host' }]);
+  }
+}
+
+function exitShareStage() {
+  document.body.classList.remove('is-host-share-stage');
+  try { tarotLounge?.hideShareStage?.(); } catch { /* ignore */ }
+  try { hostParticipantsGrid?.updateVisibility?.(); } catch { /* ignore */ }
+}
+
 function applyShareMode(mode) {
   const screen = mode === 'screen';
   const isHost = (!currentSpotlightSpeaker.id || currentSpotlightSpeaker.id === sync?.clientId || currentSpotlightSpeaker.role === 'host');
 
+  // 호스트 얼굴(카메라) 송출은 PC 화면 공유 중에도 절대 끊지 않는다.
+  // (클라이언트는 공유 화면과 별개로 호스트 얼굴을 계속 볼 수 있어야 한다)
   try {
     webrtcPublisher?.avatarManager?.setIdle?.(screen && !isHost);
   } catch { /* ignore */ }
 
-  webrtcPublisher?.sfu?.setVideoSourceActive?.('camera', !screen || isHost)?.catch?.(() => {});
+  webrtcPublisher?.sfu?.setVideoSourceActive?.('camera', screen ? !!webrtcPublisher?.cameraWanted : true)?.catch?.(() => {});
 
   for (const id of sfuCameraStreams.keys()) {
     if (screen) {
@@ -1396,6 +1455,9 @@ function applyShareMode(mode) {
   floatingSpeakerManager?.setSharingActive(screen && interactionMode !== 'unidirectional');
   if (screen) {
     updateFloatingSpeakerUi();
+    enterShareStage();
+  } else {
+    exitShareStage();
   }
 }
 
@@ -2148,6 +2210,7 @@ sync.start()
       webrtcPublisher.avatarManager.onAvatarChange = () => updateAvatarUi();
       webrtcPublisher.avatarManager.onModeChange = () => updateAvatarUi();
     }
+    webrtcPublisher.onFaceQualityChange = (q) => renderHostSendSpec(q);
     webrtcPublisher.onCameraChange = ({ active, stream }) => {
       hostParticipantsGrid.setStream('local', active ? stream : null);
       if (hostParticipantsGrid?.isVisible) {

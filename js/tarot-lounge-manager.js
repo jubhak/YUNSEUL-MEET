@@ -166,6 +166,46 @@ export class TarotLoungeManager {
   }
 
   /**
+   * PC 화면 공유 모드 전용: 최초 미팅 대기 상태와 같은 "참석자 카드 배치"만 유지해서 보여준다.
+   * - 카운트다운/테스트 패널/호스트 시작 버튼 없이 카드 그리드만 노출한다.
+   * - 영상 타일(참가자 카메라 박스)이 꺼져 검게 비는 대신, 익숙한 카드 배치가 자리를 지킨다.
+   */
+  showShareStage(participants = []) {
+    if (!this.container) return;
+    if (this._isCountingDown) return;
+    this.isActive = true;
+    this.container.style.display = '';
+    this.container.classList.remove('hidden', 'is-fading-out', 'is-dissolving-storm');
+    this.container.classList.add('is-share-stage');
+    document.body.classList.add('is-in-tarot-lounge');
+    document.body.classList.add('is-share-stage');
+    if (this.countdownOverlay) {
+      this.countdownOverlay.classList.remove('is-active');
+      this.countdownOverlay.classList.add('hidden');
+    }
+    if (this.isHost && this.testContainer) this.testContainer.style.display = 'none';
+    this.renderParticipants(Array.isArray(participants) ? participants : []);
+  }
+
+  /** 화면 공유 모드 카드 배치 해제 — 영상 미팅(얼굴 화면)으로 복귀할 때 호출 */
+  hideShareStage() {
+    if (!this.container) return;
+    this.container.classList.remove('is-share-stage');
+    document.body.classList.remove('is-share-stage');
+    if (!this._isCountingDown) {
+      this.isActive = false;
+      this.container.style.display = 'none';
+      this.container.classList.add('hidden');
+      document.body.classList.remove('is-in-tarot-lounge');
+    }
+  }
+
+  /** 화면 공유 모드 카드 배치가 현재 표시 중인지 */
+  get isShareStage() {
+    return !!(this.container && this.container.classList.contains('is-share-stage'));
+  }
+
+  /**
    * 호스트 전용: 카드 배치 테스트 모드 UI 생성 및 바인딩
    */
   _ensureTestModeUI() {

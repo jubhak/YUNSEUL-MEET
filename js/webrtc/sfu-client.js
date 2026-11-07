@@ -548,9 +548,15 @@ export class SfuClient {
         const maxFramerate = profile.fps || 20;
         params.encodings = params.encodings.map((enc) => ({
           ...enc,
+          active: enc.active !== false,
+          // 해상도 상한은 트랙 자체(캔버스)가 결정하므로 다운스케일은 쓰지 않는다.
+          // (scaleResolutionDownBy 를 남겨두면 이전 값이 남아 해상도 변경이 무시된다)
+          scaleResolutionDownBy: 1,
           maxBitrate,
           maxFramerate,
         }));
+        // 해상도 우선: 화질 설정을 낮췄다 올렸을 때 실제로 선명도/프레임이 바뀌도록 명시한다.
+        params.degradationPreference = profile.degradationPreference || 'balanced';
         await sender.setParameters(params);
       } catch { /* ignore */ }
     }

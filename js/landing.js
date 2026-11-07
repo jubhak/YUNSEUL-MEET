@@ -1,6 +1,42 @@
 import { runMicCheckDialog } from './mic-check.js?v=20260930a';
 
 /**
+ * 관리자 잠금 안내 모달 — alert() 대신 화면 흐름을 막지 않는 예쁜 카드로 보여준다.
+ * @param {{title?: string, message?: string, detail?: string}} opts
+ */
+function showMeetingLockModal({ title, message, detail } = {}) {
+  let gate = document.getElementById('meeting-lock-gate');
+  if (!gate) {
+    gate = document.createElement('div');
+    gate.id = 'meeting-lock-gate';
+    gate.className = 'meeting-lock-gate hidden';
+    gate.innerHTML = `
+      <div class="meeting-lock-card" role="dialog" aria-modal="true" aria-labelledby="meeting-lock-title">
+        <div class="meeting-lock-icon" aria-hidden="true">🔒</div>
+        <h3 id="meeting-lock-title"></h3>
+        <p class="meeting-lock-msg"></p>
+        <p class="meeting-lock-detail"></p>
+        <button type="button" class="btn btn-primary meeting-lock-ok">확인했습니다</button>
+      </div>`;
+    document.body.appendChild(gate);
+    const close = () => gate.classList.add('hidden');
+    gate.addEventListener('click', (e) => { if (e.target === gate) close(); });
+    gate.querySelector('.meeting-lock-ok')?.addEventListener('click', close);
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape' && !gate.classList.contains('hidden')) close();
+    });
+  }
+  gate.querySelector('#meeting-lock-title').textContent = title || '미팅 생성이 잠겨 있습니다';
+  gate.querySelector('.meeting-lock-msg').textContent = message
+    || '관리자가 새로운 미팅 생성을 허용하지 않은 상태입니다.';
+  const d = gate.querySelector('.meeting-lock-detail');
+  if (detail) { d.textContent = detail; d.classList.remove('hidden'); } else { d.classList.add('hidden'); }
+  gate.classList.remove('hidden');
+  requestAnimationFrame(() => gate.classList.add('is-in'));
+  gate.querySelector('.meeting-lock-ok')?.focus();
+}
+
+/**
  * Node 서버 API 경로 (`.php` 없이). 옛 캐시 대비 둘 다 시도 가능하게 유지.
  */
 function api(path) {
@@ -93,7 +129,15 @@ document.getElementById('btn-create-room').addEventListener('click', async () =>
       body: JSON.stringify({ code, interactionMode, requireMic, allowClientCamera, allowClientDeepfake, allowAllVoice }),
     });
     const data = await res.json().catch(() => ({}));
-    if (!res.ok) throw new Error(data.error || '방 생성 실패');
+    if (!res.ok) {
+      if (res.status === 423 || data.locked) {
+        const lockErr = new Error(data.error || '관리자가 새로운 미팅 생성을 허용하지 않은 상태입니다.');
+        lockErr.locked = true;
+        lockErr.detail = data.detail || '';
+        throw lockErr;
+      }
+      throw new Error(data.error || '방 생성 실패');
+    }
 
     const token = data.hostToken || '';
     const room = data.code || code;
@@ -130,11 +174,20 @@ document.getElementById('btn-create-room').addEventListener('click', async () =>
   } catch (err) {
     btn.disabled = false;
     btn.textContent = '새 방 만들기';
+    if (err?.locked) {
+      showMeetingLockModal({
+        title: '새 미팅을 만들 수 없습니다',
+        message: err.message || '관리자가 새로운 미팅 생성을 허용하지 않은 상태입니다.',
+        detail: err.detail || '진행 중인 미팅이 끝난 뒤 다시 시도해 주세요.',
+      });
+      if (errorEl) errorEl.classList.add('hidden');
+      return;
+    }
     if (errorEl) {
       errorEl.textContent = err.message || '방 생성에 실패했습니다.';
       errorEl.classList.remove('hidden');
     } else {
-      alert(err.message || '방 생성에 실패했습니다.');
+      showMeetingLockModal({ title: '방 생성 실패', message: err.message || '방 생성에 실패했습니다.' });
     }
     roomCodeEl?.focus();
     roomCodeEl?.select();

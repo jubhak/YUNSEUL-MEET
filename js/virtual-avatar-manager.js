@@ -1296,6 +1296,8 @@ export class VirtualAvatarManager {
     if (!newCfg.beauty && !newCfg.deepface) {
       this.myFaceConfig = { ...(this.myFaceConfig || DEFAULT_MYFACE_CONFIG), ...newCfg };
     }
+    // 렌더 루프가 같은 프레임에 바로 새 값을 쓰도록 스무딩 상태를 초기화하지 않고 값만 갱신한다.
+    this._deepfaceDirty = true;
     console.log('[myface.ini] 뷰티 & 딥페이크 필터 실시간 갱신:', { beauty: this.myFaceConfig, deepface: this.deepFaceConfig });
   }
 
@@ -1396,10 +1398,35 @@ export class VirtualAvatarManager {
     if (this.mode === 'swap') {
       this._advancePlayout();
       ctx.save();
-      if (this._lastBitmap) {
-        ctx.drawImage(this._lastBitmap, 0, 0, w, h);
-      } else if (this._lastSwappedImage && this._lastSwappedImage.complete && this._lastSwappedImage.naturalWidth) {
-        ctx.drawImage(this._lastSwappedImage, 0, 0, w, h);
+      const dfc = this.deepFaceConfig || {};
+      const num = (v, d) => (typeof v === 'number' && !isNaN(v) ? v : d);
+      const blend = Math.max(0, Math.min(1, num(dfc.swap_blend_ratio, 1)));
+      const sharpen = Math.max(0, Math.min(2, num(dfc.detail_sharpen, 0.5)));
+      const tone = Math.max(0, Math.min(1, num(dfc.tone_matching, 0.8)));
+      const src = this._lastBitmap
+        || (this._lastSwappedImage && this._lastSwappedImage.complete && this._lastSwappedImage.naturalWidth
+          ? this._lastSwappedImage
+          : null);
+      if (src) {
+        // ① 디테일 선명도(0~2) → 대비/샤픈 근사, ② 피부톤/조명 일치(0~1) → 밝기·채도 동기화
+        const contrast = (1 + sharpen * 0.30).toFixed(3);
+        const bright = (1 + (tone - 0.5) * 0.12).toFixed(3);
+        const sat = (1 + tone * 0.14).toFixed(3);
+        try { ctx.filter = `contrast(${contrast}) brightness(${bright}) saturate(${sat})`; } catch { /* ignore */ }
+        ctx.drawImage(src, 0, 0, w, h);
+        try { ctx.filter = 'none'; } catch { /* ignore */ }
+        // ③ 합성 혼합 강도(0~1): 1.0 = AI 얼굴 100%, 0.0 = 내 원본 얼굴 100%
+        if (blend < 0.999 && this.rawWebcamVideo && this.rawWebcamVideo.readyState >= 2) {
+          try {
+            ctx.globalAlpha = Math.max(0, Math.min(1, 1 - blend));
+            ctx.save();
+            ctx.translate(w, 0);
+            ctx.scale(-1, 1);
+            ctx.drawImage(this.rawWebcamVideo, 0, 0, w, h);
+            ctx.restore();
+            ctx.globalAlpha = 1;
+          } catch { /* ignore */ }
+        }
       } else {
         this._drawFacePrivacyPlaceholder(ctx, w, h);
       }
